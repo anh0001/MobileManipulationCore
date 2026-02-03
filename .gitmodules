@@ -1,0 +1,3 @@
+[submodule "src/third_party/lerobot"]
+	path = src/third_party/lerobot
+	url = https://github.com/anh0001/lerobot.git
