@@ -1,0 +1,73 @@
+# Robot-specific parameters for mobile manipulator
+# Customize these values for your specific robot configuration
+
+robot:
+  # TF frame identifiers
+  frames:
+    map: "map"
+    odom: "odom"
+    base_link: "base_link"
+    base_footprint: "base_footprint"
+    camera_link: "camera_link"
+    camera_optical: "camera_color_optical_frame"
+    ee_link: "piper_gripper"
+    arm_base: "piper_link_0"
+
+  # Topic names (customize if your robot uses different topics)
+  topics:
+    camera_rgb: "/camera/color/image_raw"
+    camera_depth: "/camera/depth/image_raw"
+    camera_info: "/camera/color/camera_info"
+    joint_states: "/joint_states"
+    cmd_vel: "/cmd_vel"
+    odom: "/odom"
+    scan: "/scan"
+
+  # Action servers
+  actions:
+    navigate_to_pose: "/navigate_to_pose"
+    follow_joint_trajectory: "/piper_arm_controller/follow_joint_trajectory"
+
+# Base (mobile platform) parameters
+base:
+  max_linear_velocity: 0.5  # m/s
+  max_angular_velocity: 1.0  # rad/s
+  max_linear_acceleration: 0.3  # m/s^2
+  max_angular_acceleration: 1.5  # rad/s^2
+  safety_distance: 0.2  # m (minimum distance to obstacles)
+
+# Arm (manipulator) parameters
+arm:
+  num_joints: 6
+  joint_names:
+    - "joint1"
+    - "joint2"
+    - "joint3"
+    - "joint4"
+    - "joint5"
+    - "joint6"
+
+  # Joint limits (radians)
+  joint_limits:
+    lower: [-3.14, -1.57, -1.57, -3.14, -1.57, -3.14]
+    upper: [3.14, 1.57, 1.57, 3.14, 1.57, 3.14]
+
+  max_joint_velocity: 1.0  # rad/s
+  max_joint_acceleration: 2.0  # rad/s^2
+
+# Gripper parameters
+gripper:
+  has_gripper: true
+  type: "parallel"  # parallel, suction, etc.
+  max_width: 0.08  # meters
+  min_width: 0.0   # meters
+  max_effort: 50.0  # Newtons
+
+# Workspace limits (in base_link frame)
+workspace:
+  x_min: 0.1
+  x_max: 0.8
+  y_min: -0.5
+  y_max: 0.5
+  z_min: 0.0
+  z_max: 1.0

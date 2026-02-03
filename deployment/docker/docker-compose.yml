@@ -1,0 +1,103 @@
+# Docker Compose for MobileManipulationCore
+# Orchestrates Jetson robot and remote policy server
+
+version: '3.8'
+
+services:
+  # Policy inference server (runs on GPU machine)
+  policy-server:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile.policy
+    image: manipulation-policy:latest
+    container_name: manipulation-policy-server
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0  # Specify GPU ID
+      - TRANSFORMERS_CACHE=/app/models/cache
+      - HF_HOME=/app/models/cache
+      - ROS_DOMAIN_ID=0
+    ports:
+      - "5000:5000"  # HTTP/gRPC endpoint
+    volumes:
+      - ./models:/app/models  # Persistent model storage
+      - ./logs:/app/logs
+    networks:
+      - manipulation-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Robot stack (runs on Jetson)
+  # Note: This is typically run directly on Jetson, not in Docker
+  # Included here for reference or development purposes
+  robot-stack:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile.jetson
+    image: manipulation-jetson:latest
+    container_name: manipulation-robot
+    runtime: nvidia
+    network_mode: host  # Required for ROS 2 DDS
+    privileged: true  # Required for hardware access
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=0
+      - ROS_LOCALHOST_ONLY=0
+      - POLICY_SERVER_URL=http://policy-server:5000
+    volumes:
+      - /dev:/dev  # Hardware device access
+      - ./config:/workspace/config:ro
+      - ./logs:/workspace/logs
+    depends_on:
+      - policy-server
+    restart: unless-stopped
+    command: >
+      bash -c "
+      source /workspace/install/setup.bash &&
+      ros2 launch manipulation_bringup core_launch.py
+        use_remote_policy:=true
+        remote_url:=$${POLICY_SERVER_URL}
+      "
+
+networks:
+  manipulation-net:
+    driver: bridge
+
+volumes:
+  models:
+    driver: local
+  logs:
+    driver: local
+
+# Usage Instructions:
+#
+# 1. Start policy server only (for split deployment):
+#    docker-compose up policy-server
+#
+# 2. Start both (for testing):
+#    docker-compose up
+#
+# 3. Start in detached mode:
+#    docker-compose up -d
+#
+# 4. View logs:
+#    docker-compose logs -f policy-server
+#
+# 5. Stop all:
+#    docker-compose down
+#
+# 6. Rebuild after code changes:
+#    docker-compose build
+#    docker-compose up
+#
+# Note: For production on Jetson, run the robot stack natively
+# and only use docker-compose for the policy server.

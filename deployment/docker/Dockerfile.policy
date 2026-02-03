@@ -1,0 +1,81 @@
+# Dockerfile for remote policy server with GPU support
+# For running VLA model inference on a powerful GPU machine
+
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    git \
+    wget \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies for VLA models
+RUN pip install --upgrade pip && \
+    pip install \
+    transformers>=4.35.0 \
+    huggingface_hub \
+    accelerate \
+    sentencepiece \
+    protobuf \
+    opencv-python \
+    numpy \
+    scipy \
+    flask \
+    fastapi \
+    uvicorn \
+    python-multipart \
+    pillow
+
+# Optional: Install LeRobot if using those models
+# RUN pip install lerobot
+
+# Optional: Install ROS 2 client for ROS-based communication
+# Note: This is a minimal install for rclpy only
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository universe \
+    && apt-get update && apt-get install -y curl \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - \
+    && sh -c 'echo "deb http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros2.list' \
+    && apt-get update \
+    && apt-get install -y ros-humble-rclpy \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy policy node code
+COPY src/manipulation_policy /app/manipulation_policy
+
+# Copy model download script (if you have one)
+# COPY scripts/download_models.sh /app/
+# RUN chmod +x /app/download_models.sh && /app/download_models.sh
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV TRANSFORMERS_CACHE=/app/models/cache
+ENV HF_HOME=/app/models/cache
+
+# Create cache directory
+RUN mkdir -p /app/models/cache
+
+# Expose port for HTTP/gRPC server
+EXPOSE 5000
+
+# Set up entrypoint
+COPY deployment/docker/entrypoint_policy.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default: Start policy server
+CMD ["python3", "-m", "manipulation_policy.policy_server"]
+
+# Usage:
+# docker build -t manipulation-policy -f deployment/docker/Dockerfile.policy .
+# docker run --gpus all -p 5000:5000 -v ./models:/app/models manipulation-policy
+
+# For multi-GPU:
+# docker run --gpus all -e CUDA_VISIBLE_DEVICES=0,1 -p 5000:5000 manipulation-policy

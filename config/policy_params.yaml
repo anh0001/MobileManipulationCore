@@ -1,0 +1,71 @@
+# Policy model configuration parameters
+
+policy:
+  # Model selection
+  model_name: "openvla-7b"  # Options: openvla-7b, openvla-1b, custom
+  model_path: ""  # Local path to model, empty to download from HuggingFace
+
+  # Inference settings
+  inference_rate: 10.0  # Hz (how often to run policy)
+  batch_size: 1
+  device: "cuda"  # cuda, cpu, or specific device like cuda:0
+
+  # Model optimization
+  use_fp16: true  # Use half-precision for faster inference
+  use_tensorrt: false  # Convert to TensorRT (Jetson optimization)
+  compile_model: false  # Use torch.compile (PyTorch 2.0+)
+
+  # Input preprocessing
+  image_size: [224, 224]  # Width, height for model input
+  normalize_image: true
+  mean: [0.485, 0.456, 0.406]  # ImageNet normalization
+  std: [0.229, 0.224, 0.225]
+
+  # Output post-processing
+  action_scaling: 1.0
+  clip_actions: true
+  action_bounds:
+    position: [-1.0, 1.0]
+    rotation: [-3.14, 3.14]
+    gripper: [0.0, 1.0]
+
+# Remote inference settings (for split deployment)
+remote:
+  enabled: false
+  server_url: "http://localhost:5000"
+  timeout: 1.0  # seconds
+  retry_attempts: 3
+  fallback_on_failure: true  # Use local stub policy if remote fails
+
+# Observation configuration
+observation:
+  include_image: true
+  include_depth: false  # Set to true if depth is available
+  include_joint_states: true
+  include_base_pose: false
+  include_task_text: false  # For language-conditioned policies
+  history_length: 1  # Number of past observations to include
+
+# Action configuration
+action:
+  output_format: "eef_pose"  # Options: eef_pose, joint_delta, hybrid
+  reference_frame: "base_link"  # Frame for EEF targets
+  use_base_hint: false  # Whether policy outputs base motion hints
+
+# Safety and monitoring
+safety:
+  confidence_threshold: 0.0  # Minimum confidence to execute action
+  timeout_sec: 2.0  # Stop if no policy output received
+  log_frequency: 100  # Log every N inferences
+
+# Model-specific parameters (adjust based on your chosen model)
+openvla:
+  tokenizer_path: ""  # Auto-download if empty
+  max_length: 512
+  temperature: 1.0
+  top_p: 0.9
+
+lerobot:
+  policy_name: "act"  # Options: act, diffusion, etc.
+  pretrained_path: ""
+  n_action_steps: 10

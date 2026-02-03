@@ -1,0 +1,113 @@
+# ROS 2
+install/
+build/
+log/
+*.bag
+*.db3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# C++
+*.o
+*.a
+*.so
+*.dylib
+*.out
+*.app
+*.dSYM/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Dependencies
+.deps/
+*.d
+
+# Model weights and large files
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+models/
+weights/
+checkpoints/
+
+# Deployment secrets
+*.pem
+*.key
+*.crt
+deployment/secrets/
+.env
+.env.local
+
+# SROS2 keys
+sros2_keys/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+
+# Documentation builds
+docs/_build/
+docs/.doctrees/
+
+# Colcon
+.colcon_install_layout
+
+# Test results
+test_results/
+*.test_result
+
+# Simulation
+.gazebo/
+
+# Custom
+*.user
+*.autosave
