@@ -1,7 +1,5 @@
 # MobileManipulationCore
 
-> A modular, production-grade intelligence stack for mobile manipulation robots
-
 MobileManipulationCore is the core "brain" for mobile manipulation, providing high-level AI/control capabilities for robots combining mobility and manipulation. This repository contains a ROS 2-based system that integrates vision-language-action models (VLA) with mobile manipulator hardware.
 
 ## Overview
