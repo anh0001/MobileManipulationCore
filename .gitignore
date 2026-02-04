@@ -5,6 +5,10 @@ log/
 *.bag
 *.db3
 
+AGENTS.md
+CLAUDE.md
+.github/
+
 # Python
 __pycache__/
 *.py[cod]
