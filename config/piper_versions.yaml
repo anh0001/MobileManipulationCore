@@ -1,8 +1,8 @@
 # Piper dependency versions
 # This file pins specific versions of Piper components for reproducibility
 
-piper_ros_repo: "https://github.com/agilexrobotics/piper_ros.git"
-piper_ros_branch: "humble"
+piper_ros_repo: "https://github.com/anh0001/piper_ros.git"
+piper_ros_branch: "ranger"
 piper_ros_commit: ""  # Leave empty for latest on branch, or specify commit hash
 
 piper_sdk_version: "latest"  # or specify version like "1.0.0"
