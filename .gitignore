@@ -35,7 +35,6 @@ htmlcov/
 *.dSYM/
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo

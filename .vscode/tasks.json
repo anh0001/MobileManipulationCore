@@ -1,0 +1,107 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run OpenVLA Policy Server",
+            "type": "shell",
+            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && export OPENVLA_MODEL_ID=\"openvla/openvla-7b\" && export OPENVLA_DEVICE=\"cuda\" && export OPENVLA_ATTENTION_IMPL=\"flash_attention_2\" && export OPENVLA_UNNORM_KEY=\"bridge_orig\" && python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 30542",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Stop OpenVLA Policy Server",
+            "type": "shell",
+            "command": "pkill -f 'manipulation_policy.policy_server'",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+        {
+            "label": "Test OpenVLA GPU",
+            "type": "shell",
+            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && python3 -c 'from transformers import AutoModelForVision2Seq, AutoProcessor; import torch; print(f\"CUDA: {torch.cuda.is_available()}\"); print(f\"Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \\\"CPU\\\"}\"); model = AutoModelForVision2Seq.from_pretrained(\"openvla/openvla-7b\", torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True).to(\"cuda\"); print(f\"Model on: {model.device}\")'",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Test Health Endpoint",
+            "type": "shell",
+            "command": "curl http://localhost:30542/health",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+        {
+            "label": "Run OpenVLA Policy Server (Background)",
+            "type": "shell",
+            "command": "nohup bash -c 'eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && export OPENVLA_MODEL_ID=\"openvla/openvla-7b\" && export OPENVLA_DEVICE=\"cuda\" && export OPENVLA_ATTENTION_IMPL=\"flash_attention_2\" && export OPENVLA_UNNORM_KEY=\"bridge_orig\" && python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 30542' > ${HOME}/policy_server.log 2>&1 & echo \"Policy server started in background. PID: $! Log: ${HOME}/policy_server.log\"",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Stop OpenVLA Policy Server (Background)",
+            "type": "shell",
+            "command": "pkill -f 'manipulation_policy.policy_server' && echo 'Policy server stopped' || echo 'No policy server process found'",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+        {
+            "label": "View Policy Server Log",
+            "type": "shell",
+            "command": "tail -f ${HOME}/policy_server.log",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated",
+                "showReuseMessage": false
+            }
+        }
+    ]
+}
