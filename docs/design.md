@@ -267,9 +267,9 @@ ros2 launch manipulation_bringup core_launch.py use_remote_policy:=true
 - Standard ROS 2 packages from apt
 
 **Python ML Dependencies:**
-- Virtual environment with `requirements.txt`
+- `PYTHONUSERBASE`-scoped installs with `requirements.txt` to avoid ROS 2 system conflicts
 - Pin exact versions for reproducibility
-- Separate venv for policy server
+- Dedicated user base for the policy server (e.g., `~/.local/ros2_humble`)
 
 **Piper Dependencies:**
 - `config/piper_versions.yaml` pins specific commits

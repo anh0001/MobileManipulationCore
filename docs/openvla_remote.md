@@ -65,24 +65,30 @@ Example response:
 
 1. Clone the repo on the GPU server.
 
-2. Create and activate a virtual environment:
+2. Configure a dedicated Python user base (keeps pip packages isolated from ROS 2 system Python).
+   If you plan to use the conda workflow below and run the server inside that conda env, you can skip this step.
 
 ```bash
 cd ~/MobileManipulationCore
-python3 -m venv ~/policy_venv
-source ~/policy_venv/bin/activate
-pip install --upgrade pip
+export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+export PATH="$PYTHONUSERBASE/bin:$PATH"
+# Persist for future shells if desired
+echo 'export PYTHONUSERBASE="$HOME/.local/ros2_humble"' >> ~/.bashrc
+echo 'export PATH="$PYTHONUSERBASE/bin:$PATH"' >> ~/.bashrc
+
+python3 -m pip install --upgrade --user pip
 ```
 
 3. Install dependencies:
 
 ```bash
 # Install PyTorch for your CUDA version
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+python3 -m pip install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Install repo requirements
-pip install -r requirements.txt
+python3 -m pip install --user -r requirements.txt
 ```
+If you are using the conda workflow below, run these inside the conda environment and omit `--user`.
 
 4. Install OpenVLA following the official installation guide.
 
@@ -135,11 +141,11 @@ For running inference only without training dependencies:
 
 ```bash
 # Install minimal requirements
-pip install -r https://raw.githubusercontent.com/openvla/openvla/main/requirements-min.txt
+python3 -m pip install --user -r https://raw.githubusercontent.com/openvla/openvla/main/requirements-min.txt
 
 # Install Flash Attention 2
-pip install packaging ninja
-pip install "flash-attn==2.5.5" --no-build-isolation
+python3 -m pip install --user packaging ninja
+python3 -m pip install --user "flash-attn==2.5.5" --no-build-isolation
 ```
 
 ### Download Model Weights
@@ -189,7 +195,8 @@ Minimum checklist for the OpenVLA implementation:
 Start the server and bind it to all interfaces so the robot can reach it:
 
 ```bash
-source ~/policy_venv/bin/activate
+export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+export PATH="$PYTHONUSERBASE/bin:$PATH"
 python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 5000
 ```
 

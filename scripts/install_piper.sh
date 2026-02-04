@@ -29,6 +29,11 @@ echo "========================================="
 echo "Piper Installation Script"
 echo "========================================="
 
+# Use a dedicated Python user base to avoid mixing with ROS 2 system Python.
+PYTHONUSERBASE="${PYTHONUSERBASE:-$HOME/.local/ros2_humble}"
+export PYTHONUSERBASE
+export PATH="$PYTHONUSERBASE/bin:$PATH"
+
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "ERROR: Configuration file not found: $CONFIG_FILE"
@@ -84,9 +89,9 @@ echo "Installing Piper SDK..."
 
 # Install Piper SDK via pip
 if [ "$PIPER_SDK_VERSION" == "latest" ]; then
-    pip3 install piper_sdk --upgrade
+    python3 -m pip install --user piper_sdk --upgrade
 else
-    pip3 install piper_sdk=="$PIPER_SDK_VERSION"
+    python3 -m pip install --user piper_sdk=="$PIPER_SDK_VERSION"
 fi
 
 echo ""

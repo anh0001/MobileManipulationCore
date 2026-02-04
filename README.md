@@ -50,6 +50,9 @@ The system follows a modular pipeline:
 git clone <repository-url>
 cd MobileManipulationCore
 
+# Initialize and update submodules recursively
+git submodule update --init --recursive
+
 # Install ROS dependencies
 rosdep install --from-paths src --ignore-src -r -y
 

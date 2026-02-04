@@ -34,47 +34,41 @@ if ! command -v nvidia-smi &> /dev/null; then
     fi
 fi
 
-# Create virtual environment if it doesn't exist
-VENV_PATH="$HOME/policy_venv"
-if [ ! -d "$VENV_PATH" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv "$VENV_PATH"
-fi
-
-# Activate virtual environment
-source "$VENV_PATH/bin/activate"
+# Use a dedicated Python user base to avoid mixing with ROS 2 system Python.
+PYTHONUSERBASE="${PYTHONUSERBASE:-$HOME/.local/ros2_humble}"
+export PYTHONUSERBASE
+export PATH="$PYTHONUSERBASE/bin:$PATH"
 
 echo "Installing Python dependencies..."
 
-# Upgrade pip
-pip install --upgrade pip
+# Upgrade pip (user base)
+python3 -m pip install --upgrade --user pip
 
 # Install PyTorch (CUDA-enabled)
 # Adjust CUDA version as needed
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+python3 -m pip install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Install Hugging Face transformers and related packages
-pip install transformers>=4.35.0
-pip install huggingface_hub
-pip install accelerate
-pip install sentencepiece
-pip install protobuf
+python3 -m pip install --user transformers>=4.35.0
+python3 -m pip install --user huggingface_hub
+python3 -m pip install --user accelerate
+python3 -m pip install --user sentencepiece
+python3 -m pip install --user protobuf
 
 # Install ROS 2 Python client (for ROS communication)
-pip install rclpy
+python3 -m pip install --user rclpy
 
 # TODO: Install specific VLA model requirements
-# pip install lerobot
-# pip install openvla
+# python3 -m pip install --user lerobot
+# python3 -m pip install --user openvla
 
 echo ""
 echo "========================================="
 echo "Policy server setup complete!"
 echo "========================================="
 echo ""
-echo "To activate the environment, run:"
-echo "  source $VENV_PATH/bin/activate"
-echo ""
-echo "To start the policy server, run from the repo root:"
+echo "To start the policy server, ensure PYTHONUSERBASE is set, then run from the repo root:"
+echo "  export PYTHONUSERBASE=\"$PYTHONUSERBASE\""
+echo "  export PATH=\"\$PYTHONUSERBASE/bin:\$PATH\""
 echo "  python3 -m manipulation_policy.policy_server"
 echo ""

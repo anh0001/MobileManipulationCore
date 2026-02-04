@@ -66,7 +66,9 @@ cd ~/
 mkdir -p manipulation_ws/src
 cd manipulation_ws/src
 git clone <repository-url> MobileManipulationCore
-cd ..
+cd MobileManipulationCore
+git submodule update --init --recursive
+cd ../..
 ```
 
 ### Step 3: Install Dependencies
@@ -78,15 +80,22 @@ sudo rosdep init  # Skip if already initialized
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 
-# Install Python ML dependencies
+# Install Python ML dependencies (use PYTHONUSERBASE to avoid ROS 2 system conflicts)
 cd src/MobileManipulationCore
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
+export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+export PATH="$PYTHONUSERBASE/bin:$PATH"
+# Persist for future shells if desired
+echo 'export PYTHONUSERBASE="$HOME/.local/ros2_humble"' >> ~/.bashrc
+echo 'export PATH="$PYTHONUSERBASE/bin:$PATH"' >> ~/.bashrc
+
+python3 -m pip install --upgrade --user pip
 # Install PyTorch (choose the correct CUDA/CPU wheel for your platform)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+python3 -m pip install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 # Install remaining dependencies
-pip install -r requirements.txt
+python3 -m pip install --user -r requirements.txt
+
+# Optional: ROS 2 <-> NumPy helpers (if needed by your integration)
+# The ros2_numpy submodule is a ROS 2 package and will be built by colcon.
 ```
 
 ### Step 4: Install Piper Dependencies (if using Piper arm)
@@ -237,7 +246,8 @@ see `docs/openvla_remote.md`.
    ```bash
    cd ~/MobileManipulationCore
    ./scripts/setup_policy_server.sh
-   source ~/policy_venv/bin/activate
+   export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+   export PATH="$PYTHONUSERBASE/bin:$PATH"
    ```
 
 2. **Start policy server**:
