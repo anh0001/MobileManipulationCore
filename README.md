@@ -16,7 +16,7 @@ This stack enables intelligent mobile manipulation by combining:
 - 🔧 **Hardware Agnostic**: Standard ROS 2 interfaces work with any compatible mobile manipulator
 - 🎯 **TF-Aware Adaptation**: Intelligent coordination of base and arm using transform trees
 - 🚀 **Flexible Deployment**: Run fully on-device (Jetson) or with remote GPU inference
-- 🔒 **Production Ready**: CI/CD, testing, Docker deployment, and security features
+- 🔒 **Production Ready**: Testing, Docker deployment, and security features
 - 📦 **Monorepo Design**: All packages in one place for easy development
 
 ## Architecture
@@ -155,29 +155,6 @@ colcon test
 colcon test-result --verbose
 ```
 
-### CI/CD
-
-GitHub Actions automatically:
-- Builds all packages
-- Runs linters (ament_lint, flake8)
-- Executes unit tests
-- Performs static analysis
-
-### Code Style
-
-- C++: Follow ROS 2 style guide, use `ament_clang_format`
-- Python: PEP 8, enforced with `flake8` and `black`
-- Commit messages: Conventional Commits format
-
-## Contributing
-
-We welcome contributions! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Ensure CI passes
-5. Submit a pull request
-
 ## License
 
 Apache License 2.0. See `LICENSE`.
@@ -189,7 +166,7 @@ If you use this work in your research, please cite:
 ```bibtex
 @software{mobilemanipulationcore,
   title={MobileManipulationCore: A Modular Intelligence Stack for Mobile Manipulation},
-  author={[Your Team]},
+  author={Anhar Risnumawan},
   year={2026},
   url={[repository-url]}
 }
@@ -200,12 +177,6 @@ If you use this work in your research, please cite:
 - Built on [OpenVLA](https://openvla.github.io/) and [LeRobot](https://huggingface.co/lerobot)
 - Compatible with [Piper](https://github.com/agilexrobotics/piper_ros) robotic arm
 - Follows [RoboNeuron](https://arxiv.org/abs/2512.10394) principles for modularity
-
-## Contact
-
-For questions, issues, or collaboration:
-- GitHub Issues: [repository-url]/issues
-- Email: [your-contact]
 
 ---
 
