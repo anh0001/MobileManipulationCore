@@ -188,6 +188,9 @@ ros2 run manipulation_perception perception_node \
 | `model_path` | string | `` | Local model path (empty = download) |
 | `use_remote` | bool | `false` | Use remote inference server |
 | `remote_url` | string | `http://localhost:5000` | Remote server URL |
+| `remote_timeout_sec` | double | 1.0 | Remote inference timeout (seconds) |
+| `remote_retry_attempts` | int | 3 | Remote retry attempts |
+| `remote_fallback_on_failure` | bool | `true` | Fallback to stub when remote fails |
 | `inference_rate` | double | 10.0 | Inference frequency (Hz) |
 | `device` | string | `cuda` | Compute device (cuda/cpu) |
 | `use_fp16` | bool | `true` | Use half-precision |
@@ -207,6 +210,9 @@ ros2 run manipulation_policy policy_node \
 |-----------|------|---------|-------------|
 | `base_frame` | string | `base_link` | Base reference frame |
 | `ee_frame` | string | `piper_gripper` | End-effector frame |
+| `joint_states_topic` | string | `/joint_states` | Joint states topic |
+| `navigate_to_pose_action` | string | `/navigate_to_pose` | Nav2 action name |
+| `follow_joint_trajectory_action` | string | `/piper_arm_controller/follow_joint_trajectory` | Arm trajectory action name |
 | `max_base_velocity` | double | 0.5 | Max base speed (m/s) |
 | `max_arm_velocity` | double | 1.0 | Max joint velocity (rad/s) |
 | `safety_timeout_sec` | double | 2.0 | Policy timeout (seconds) |

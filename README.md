@@ -79,6 +79,8 @@ ros2 launch manipulation_bringup core_launch.py
 ```bash
 # On remote GPU server:
 ros2 launch manipulation_policy remote_server_launch.py
+# Or, if ROS 2 CLI is not available:
+# python3 -m manipulation_policy.policy_server
 
 # On robot:
 ros2 launch manipulation_bringup core_launch.py use_remote_policy:=true
@@ -178,7 +180,7 @@ We welcome contributions! Please:
 
 ## License
 
-[Specify your license here - e.g., Apache 2.0, MIT, BSD-3-Clause]
+Apache License 2.0. See `LICENSE`.
 
 ## Citation
 

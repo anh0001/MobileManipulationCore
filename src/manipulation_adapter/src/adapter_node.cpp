@@ -13,12 +13,18 @@
 // limitations under the License.
 
 #include <rclcpp/rclcpp.hpp>
+#include <cmath>
 #include <geometry_msgs/msg/twist.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <manipulation_msgs/msg/policy_output.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 /**
  * @brief Adapter node that maps policy outputs to hardware commands
@@ -40,16 +46,36 @@ public:
     // Declare parameters
     this->declare_parameter<std::string>("base_frame", "base_link");
     this->declare_parameter<std::string>("ee_frame", "piper_gripper");
+    this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
+    this->declare_parameter<std::string>("navigate_to_pose_action", "/navigate_to_pose");
+    this->declare_parameter<std::string>(
+      "follow_joint_trajectory_action", "/piper_arm_controller/follow_joint_trajectory");
     this->declare_parameter<double>("max_base_velocity", 0.5);
     this->declare_parameter<double>("max_arm_velocity", 1.0);
     this->declare_parameter<double>("safety_timeout_sec", 2.0);
+    this->declare_parameter<double>("workspace_x_min", 0.1);
+    this->declare_parameter<double>("workspace_x_max", 0.8);
+    this->declare_parameter<double>("workspace_y_min", -0.5);
+    this->declare_parameter<double>("workspace_y_max", 0.5);
+    this->declare_parameter<double>("workspace_z_min", 0.0);
+    this->declare_parameter<double>("workspace_z_max", 1.0);
 
     // Get parameters
     base_frame_ = this->get_parameter("base_frame").as_string();
     ee_frame_ = this->get_parameter("ee_frame").as_string();
+    joint_states_topic_ = this->get_parameter("joint_states_topic").as_string();
+    navigate_to_pose_action_ = this->get_parameter("navigate_to_pose_action").as_string();
+    follow_joint_trajectory_action_ =
+      this->get_parameter("follow_joint_trajectory_action").as_string();
     max_base_velocity_ = this->get_parameter("max_base_velocity").as_double();
     max_arm_velocity_ = this->get_parameter("max_arm_velocity").as_double();
     safety_timeout_sec_ = this->get_parameter("safety_timeout_sec").as_double();
+    workspace_x_min_ = this->get_parameter("workspace_x_min").as_double();
+    workspace_x_max_ = this->get_parameter("workspace_x_max").as_double();
+    workspace_y_min_ = this->get_parameter("workspace_y_min").as_double();
+    workspace_y_max_ = this->get_parameter("workspace_y_max").as_double();
+    workspace_z_min_ = this->get_parameter("workspace_z_min").as_double();
+    workspace_z_max_ = this->get_parameter("workspace_z_max").as_double();
 
     // Initialize TF
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -60,10 +86,17 @@ public:
       "/manipulation/policy_output", 10,
       std::bind(&AdapterNode::policyCallback, this, std::placeholders::_1));
 
+    joint_states_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+      joint_states_topic_, 10,
+      std::bind(&AdapterNode::jointStatesCallback, this, std::placeholders::_1));
+
     // Create publishers for hardware commands
     cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
 
-    // TODO: Create action clients for arm control and navigation
+    nav_client_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(
+      this, navigate_to_pose_action_);
+    arm_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
+      this, follow_joint_trajectory_action_);
 
     // Create safety timer
     safety_timer_ = this->create_wall_timer(
@@ -101,15 +134,42 @@ private:
 
   void processEndEffectorTarget(const manipulation_msgs::msg::PolicyOutput::SharedPtr msg)
   {
-    // TODO: Transform target to base frame if needed
+    geometry_msgs::msg::PoseStamped target_in;
+    target_in.header.frame_id = msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
+    target_in.header.stamp = msg->header.stamp;
+    target_in.pose = msg->eef_target_pose;
+
+    geometry_msgs::msg::PoseStamped target_out;
+    if (target_in.header.frame_id != base_frame_) {
+      try {
+        auto transform = tf_buffer_->lookupTransform(
+          base_frame_, target_in.header.frame_id, tf2::TimePointZero);
+        tf2::doTransform(target_in, target_out, transform);
+      } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
+        return;
+      }
+    } else {
+      target_out = target_in;
+    }
+
+    if (!isWithinWorkspace(target_out.pose.position)) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "EEF target outside workspace bounds [%.2f, %.2f] [%.2f, %.2f] [%.2f, %.2f]",
+        workspace_x_min_, workspace_x_max_, workspace_y_min_, workspace_y_max_,
+        workspace_z_min_, workspace_z_max_);
+      return;
+    }
+
     // TODO: Check if target is reachable
     // TODO: Compute inverse kinematics
     // TODO: Send arm trajectory command
 
     RCLCPP_INFO(this->get_logger(), "Processing EEF target at [%.2f, %.2f, %.2f]",
-                msg->eef_target_pose.position.x,
-                msg->eef_target_pose.position.y,
-                msg->eef_target_pose.position.z);
+                target_out.pose.position.x,
+                target_out.pose.position.y,
+                target_out.pose.position.z);
   }
 
   void processGripperCommand(double command)
@@ -155,12 +215,33 @@ private:
     }
   }
 
+  void jointStatesCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
+  {
+    last_joint_state_ = msg;
+  }
+
+  bool isWithinWorkspace(const geometry_msgs::msg::Point& point) const
+  {
+    return point.x >= workspace_x_min_ && point.x <= workspace_x_max_ &&
+           point.y >= workspace_y_min_ && point.y <= workspace_y_max_ &&
+           point.z >= workspace_z_min_ && point.z <= workspace_z_max_;
+  }
+
   // Parameters
   std::string base_frame_;
   std::string ee_frame_;
+  std::string joint_states_topic_;
+  std::string navigate_to_pose_action_;
+  std::string follow_joint_trajectory_action_;
   double max_base_velocity_;
   double max_arm_velocity_;
   double safety_timeout_sec_;
+  double workspace_x_min_;
+  double workspace_x_max_;
+  double workspace_y_min_;
+  double workspace_y_max_;
+  double workspace_z_min_;
+  double workspace_z_max_;
 
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -168,11 +249,15 @@ private:
 
   // ROS communication
   rclcpp::Subscription<manipulation_msgs::msg::PolicyOutput>::SharedPtr policy_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+  rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr nav_client_;
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr arm_client_;
   rclcpp::TimerBase::SharedPtr safety_timer_;
 
   // State
   rclcpp::Time last_policy_time_{0, 0, RCL_ROS_TIME};
+  sensor_msgs::msg::JointState::SharedPtr last_joint_state_;
 };
 
 int main(int argc, char** argv)

@@ -83,9 +83,10 @@ cd src/MobileManipulationCore
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
+# Install PyTorch (choose the correct CUDA/CPU wheel for your platform)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install transformers huggingface_hub accelerate
-pip install opencv-python numpy scipy
+# Install remaining dependencies
+pip install -r requirements.txt
 ```
 
 ### Step 4: Install Piper Dependencies (if using Piper arm)
@@ -202,6 +203,18 @@ This will:
 2. **Start policy server**:
    ```bash
    ros2 launch manipulation_policy remote_server_launch.py
+   ```
+   If ROS 2 CLI is not installed on the server, you can run it directly:
+   ```bash
+   python3 -m manipulation_policy.policy_server
+   ```
+   By default the server listens on `0.0.0.0:5000` and exposes:
+   - `GET /health`
+   - `POST /infer`
+
+   You can override host/port:
+   ```bash
+   ros2 launch manipulation_policy remote_server_launch.py host:=0.0.0.0 port:=5000
    ```
 
 3. **On Jetson**, start with remote mode:

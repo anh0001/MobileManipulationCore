@@ -17,6 +17,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.hpp>
+#include <opencv2/imgproc.hpp>
 
 /**
  * @brief Perception node for processing sensor data
@@ -34,11 +35,15 @@ public:
     this->declare_parameter<std::string>("camera_topic", "/camera/color/image_raw");
     this->declare_parameter<std::string>("depth_topic", "/camera/depth/image_raw");
     this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
+    this->declare_parameter<int>("image_width", 224);
+    this->declare_parameter<int>("image_height", 224);
 
     // Get parameters
     std::string camera_topic = this->get_parameter("camera_topic").as_string();
     std::string depth_topic = this->get_parameter("depth_topic").as_string();
     std::string joint_states_topic = this->get_parameter("joint_states_topic").as_string();
+    image_width_ = static_cast<int>(this->get_parameter("image_width").as_int());
+    image_height_ = static_cast<int>(this->get_parameter("image_height").as_int());
 
     // Create subscriptions
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
@@ -68,6 +73,11 @@ private:
 
       // TODO: Process image (resize, normalize, etc.) for policy input
       // TODO: Publish processed observation
+      if (image_width_ > 0 && image_height_ > 0 &&
+          (cv_ptr->image.cols != image_width_ || cv_ptr->image.rows != image_height_)) {
+        cv::Mat resized;
+        cv::resize(cv_ptr->image, resized, cv::Size(image_width_, image_height_));
+      }
 
       RCLCPP_DEBUG(this->get_logger(), "Received image: %dx%d", msg->width, msg->height);
     } catch (cv_bridge::Exception& e) {
@@ -90,6 +100,8 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
+  int image_width_{224};
+  int image_height_{224};
 };
 
 int main(int argc, char** argv)

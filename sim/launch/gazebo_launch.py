@@ -19,21 +19,14 @@ Launch file to spawn robot in Gazebo for simulation testing.
 This launch file starts Gazebo with a specified world and spawns the robot model.
 """
 
-import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch.conditions import IfCondition
-from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    # Get package directories
-    pkg_share = get_package_share_directory('manipulation_bringup')  # Adjust if needed
-
     # Declare arguments
     world_arg = DeclareLaunchArgument(
         'world',
@@ -62,6 +55,7 @@ def generate_launch_description():
     # Note: Update this path based on where you place this launch file
     world_path = PathJoinSubstitution([
         FindPackageShare('manipulation_bringup'),
+        'sim',
         'worlds',
         [world_name, '.sdf']
     ])
@@ -82,7 +76,7 @@ def generate_launch_description():
     gzclient = ExecuteProcess(
         cmd=['gzclient'],
         output='screen',
-        condition=IfCondition(gui)
+        condition=IfCondition(PythonExpression([gui, ' and not ', headless]))
     )
 
     # TODO: Spawn robot model

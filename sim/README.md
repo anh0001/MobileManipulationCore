@@ -19,11 +19,6 @@ sim/
 ros2 launch manipulation_bringup sim_launch.py
 ```
 
-Or directly:
-
-```bash
-ros2 launch sim/launch/gazebo_launch.py
-```
 
 ## URDF Files
 
