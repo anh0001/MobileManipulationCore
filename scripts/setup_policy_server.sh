@@ -14,14 +14,15 @@
 # limitations under the License.
 
 #
-# Script to set up remote policy server
+# Script to set up remote policy server with conda (recommended)
 #
-# This script prepares a remote GPU server for running VLA model inference
+# This script prepares a remote GPU server for running OpenVLA inference.
+# For detailed instructions, see docs/openvla_remote.md
 
 set -e
 
 echo "========================================="
-echo "Policy Server Setup"
+echo "Policy Server Setup (Conda Method)"
 echo "========================================="
 
 # Check if running on a GPU-enabled machine
@@ -34,41 +35,106 @@ if ! command -v nvidia-smi &> /dev/null; then
     fi
 fi
 
-# Use a dedicated Python user base to avoid mixing with ROS 2 system Python.
-PYTHONUSERBASE="${PYTHONUSERBASE:-$HOME/.local/ros2_humble}"
-export PYTHONUSERBASE
-export PATH="$PYTHONUSERBASE/bin:$PATH"
+# Check for conda
+if ! command -v conda &> /dev/null; then
+    echo "ERROR: conda not found. Please install Miniconda or Anaconda first."
+    echo "Visit: https://docs.conda.io/en/latest/miniconda.html"
+    exit 1
+fi
 
-echo "Installing Python dependencies..."
+# Detect CUDA version
+CUDA_VERSION="12.4"
+if command -v nvidia-smi &> /dev/null; then
+    DETECTED_CUDA=$(nvidia-smi | grep "CUDA Version" | sed -n 's/.*CUDA Version: \([0-9]*\.[0-9]*\).*/\1/p')
+    if [[ -n "$DETECTED_CUDA" ]]; then
+        echo "Detected CUDA version: $DETECTED_CUDA"
+        # Map to supported PyTorch CUDA versions
+        if [[ "$DETECTED_CUDA" == 11.* ]]; then
+            CUDA_VERSION="11.8"
+        elif [[ "$DETECTED_CUDA" == 12.* ]]; then
+            CUDA_VERSION="12.4"
+        fi
+    fi
+fi
 
-# Upgrade pip (user base)
-python3 -m pip install --upgrade --user pip
+echo "Using PyTorch CUDA version: $CUDA_VERSION"
 
-# Install PyTorch (CUDA-enabled)
-# Adjust CUDA version as needed
-python3 -m pip install --user torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Conda environment name
+ENV_NAME="mobile_manipulation_vla"
 
-# Install Hugging Face transformers and related packages
-python3 -m pip install --user transformers>=4.35.0
-python3 -m pip install --user huggingface_hub
-python3 -m pip install --user accelerate
-python3 -m pip install --user sentencepiece
-python3 -m pip install --user protobuf
+# Check if environment already exists
+if conda env list | grep -q "^${ENV_NAME} "; then
+    echo "Conda environment '$ENV_NAME' already exists."
+    read -p "Remove and recreate? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        conda env remove -n "$ENV_NAME" -y
+    else
+        echo "Using existing environment."
+    fi
+fi
 
-# Install ROS 2 Python client (for ROS communication)
-python3 -m pip install --user rclpy
+# Create conda environment if it doesn't exist
+if ! conda env list | grep -q "^${ENV_NAME} "; then
+    echo "Creating conda environment: $ENV_NAME"
+    conda create -n "$ENV_NAME" python=3.10 -y
+fi
 
-# TODO: Install specific VLA model requirements
-# python3 -m pip install --user lerobot
-# python3 -m pip install --user openvla
+# Activate environment
+echo "Activating conda environment..."
+eval "$(conda shell.bash hook)"
+conda activate "$ENV_NAME"
+
+# Install PyTorch
+echo "Installing PyTorch with CUDA $CUDA_VERSION..."
+if [[ "$CUDA_VERSION" == "11.8" ]]; then
+    conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y
+else
+    conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia -y
+fi
+
+# Install pinned versions for stability
+echo "Installing pinned dependency versions..."
+pip install torch==2.2.0 torchvision==0.17.0
+pip install transformers==4.40.1 tokenizers==0.19.1 timm==0.9.10
+
+# Install repo requirements
+echo "Installing repo requirements..."
+if [[ -f "requirements.txt" ]]; then
+    pip install -r requirements.txt
+else
+    echo "WARNING: requirements.txt not found in current directory"
+fi
+
+# Install Flash Attention 2
+echo "Installing Flash Attention 2..."
+pip install packaging ninja
+pip install "flash-attn==2.5.5" --no-build-isolation
+
+# Install HuggingFace CLI
+echo "Installing HuggingFace CLI..."
+pip install huggingface_hub
 
 echo ""
 echo "========================================="
 echo "Policy server setup complete!"
 echo "========================================="
 echo ""
-echo "To start the policy server, ensure PYTHONUSERBASE is set, then run from the repo root:"
-echo "  export PYTHONUSERBASE=\"$PYTHONUSERBASE\""
-echo "  export PATH=\"\$PYTHONUSERBASE/bin:\$PATH\""
-echo "  python3 -m manipulation_policy.policy_server"
+echo "Next steps:"
+echo "1. Authenticate with HuggingFace:"
+echo "   conda activate $ENV_NAME"
+echo "   huggingface-cli login"
+echo ""
+echo "2. (Optional) Clone OpenVLA for development:"
+echo "   cd ~/"
+echo "   git clone https://github.com/openvla/openvla.git"
+echo "   cd openvla"
+echo "   pip install -e ."
+echo ""
+echo "3. Start the policy server:"
+echo "   conda activate $ENV_NAME"
+echo "   cd <repo-root>"
+echo "   python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 5000"
+echo ""
+echo "For detailed instructions, see docs/openvla_remote.md"
 echo ""

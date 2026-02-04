@@ -63,17 +63,88 @@ Example response:
 
 ## Remote GPU Server Setup
 
-1. Clone the repo on the GPU server.
+You have two options for setting up the remote policy server:
 
-2. Configure a dedicated Python user base (keeps pip packages isolated from ROS 2 system Python).
-   If you plan to use the conda workflow below and run the server inside that conda env, you can skip this step.
+### Automated Setup (Easiest)
+
+For a quick, automated setup using conda, run the provided script:
 
 ```bash
 cd ~/MobileManipulationCore
-export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+bash scripts/setup_policy_server.sh
+```
+
+This script will:
+- Check for GPU and conda availability
+- Auto-detect CUDA version
+- Create the `mobile_manipulation_vla` conda environment
+- Install all dependencies with pinned versions
+- Install Flash Attention 2
+- Provide next steps for authentication and running the server
+
+After running the script, skip to the "Authenticate with HuggingFace" section below.
+
+### Manual Setup
+
+If you prefer manual control or need to customize the installation, follow one of these options:
+
+#### Option A: Conda Environment (Recommended)
+
+**Best for:** Remote GPU servers, clean isolation, easier dependency management
+
+1. Clone the repo on the GPU server:
+
+```bash
+git clone <your-repo-url> ~/MobileManipulationCore
+cd ~/MobileManipulationCore
+git submodule update --init --recursive
+```
+
+2. Create and activate conda environment:
+
+```bash
+conda create -n mobile_manipulation_vla python=3.10 -y
+conda activate mobile_manipulation_vla
+```
+
+3. Install PyTorch for your CUDA version:
+
+```bash
+# For CUDA 12.4
+conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia -y
+
+# For CUDA 11.8
+# conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y
+```
+
+4. Install repo requirements:
+
+```bash
+pip install -r requirements.txt
+```
+
+5. Continue to "Official OpenVLA Installation" section below.
+
+#### Option B: System Python with PYTHONUSERBASE
+
+**Best for:** Environments where conda is unavailable or when ROS 2 is installed system-wide
+
+1. Clone the repo on the GPU server:
+
+```bash
+git clone <your-repo-url> ~/MobileManipulationCore
+cd ~/MobileManipulationCore
+git submodule update --init --recursive
+```
+
+2. Configure a dedicated Python user base:
+
+```bash
+export PYTHONUSERBASE="$HOME/.local/mobile_manipulation"
 export PATH="$PYTHONUSERBASE/bin:$PATH"
-# Persist for future shells if desired
-echo 'export PYTHONUSERBASE="$HOME/.local/ros2_humble"' >> ~/.bashrc
+
+# Persist for future shells
+echo 'export PYTHONUSERBASE="$HOME/.local/mobile_manipulation"' >> ~/.bashrc
 echo 'export PATH="$PYTHONUSERBASE/bin:$PATH"' >> ~/.bashrc
 
 python3 -m pip install --upgrade --user pip
@@ -88,9 +159,8 @@ python3 -m pip install --user torch torchvision torchaudio --index-url https://d
 # Install repo requirements
 python3 -m pip install --user -r requirements.txt
 ```
-If you are using the conda workflow below, run these inside the conda environment and omit `--user`.
 
-4. Install OpenVLA following the official installation guide.
+4. Continue to "Official OpenVLA Installation" section below.
 
 ## Official OpenVLA Installation
 
@@ -114,17 +184,20 @@ Based on the [official OpenVLA repository](https://github.com/openvla/openvla).
 
 ### Installation Steps
 
-#### Option 1: Full Installation (with conda)
+#### Conda Installation (Recommended)
+
+If you followed **Option A: Conda Environment** above, your environment is already activated. Now install OpenVLA:
 
 ```bash
-# Create and activate conda environment
-conda create -n openvla python=3.10 -y
-conda activate openvla
+# Ensure your conda environment is active
+conda activate mobile_manipulation_vla
 
-# Install PyTorch (adjust CUDA version as needed - example uses CUDA 12.4)
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia -y
+# Install pinned versions for stability
+pip install torch==2.2.0 torchvision==0.17.0
+pip install transformers==4.40.1 tokenizers==0.19.1 timm==0.9.10
 
 # Clone and install OpenVLA
+cd ~/
 git clone https://github.com/openvla/openvla.git
 cd openvla
 pip install -e .
@@ -135,11 +208,19 @@ ninja --version  # Verify ninja installation
 pip install "flash-attn==2.5.5" --no-build-isolation
 ```
 
-#### Option 2: Minimal Installation (inference only)
+#### System Python Installation (PYTHONUSERBASE)
 
-For running inference only without training dependencies:
+If you followed **Option B: System Python with PYTHONUSERBASE** above:
 
 ```bash
+# Ensure PYTHONUSERBASE is set
+export PYTHONUSERBASE="$HOME/.local/mobile_manipulation"
+export PATH="$PYTHONUSERBASE/bin:$PATH"
+
+# Install pinned versions for stability
+python3 -m pip install --user torch==2.2.0 torchvision==0.17.0
+python3 -m pip install --user transformers==4.40.1 tokenizers==0.19.1 timm==0.9.10
+
 # Install minimal requirements
 python3 -m pip install --user -r https://raw.githubusercontent.com/openvla/openvla/main/requirements-min.txt
 
@@ -148,15 +229,21 @@ python3 -m pip install --user packaging ninja
 python3 -m pip install --user "flash-attn==2.5.5" --no-build-isolation
 ```
 
-### Download Model Weights
+### Authenticate with HuggingFace
 
 Set your HuggingFace token to download the pretrained models:
 
 ```bash
+# Install HuggingFace CLI (if not already installed)
+pip install huggingface_hub
+
+# Login with your token (recommended - persists credentials)
+huggingface-cli login
+# Paste your token when prompted
+
+# Alternative: set as environment variable
 export HUGGINGFACE_HUB_TOKEN="your_token_here"
 ```
-
-Or use `huggingface-cli login` for persistent authentication.
 
 ### Model Licensing
 
@@ -164,11 +251,18 @@ Or use `huggingface-cli login` for persistent authentication.
 
 ### Verify Installation
 
-```python
+Test that OpenVLA loads correctly:
+
+```bash
+# If using conda
+conda activate mobile_manipulation_vla
+
+# Test loading the model
+python3 << 'EOF'
 from transformers import AutoModelForVision2Seq, AutoProcessor
 import torch
 
-# Test loading the model
+print("Loading OpenVLA model...")
 processor = AutoProcessor.from_pretrained("openvla/openvla-7b", trust_remote_code=True)
 model = AutoModelForVision2Seq.from_pretrained(
     "openvla/openvla-7b",
@@ -176,34 +270,76 @@ model = AutoModelForVision2Seq.from_pretrained(
     low_cpu_mem_usage=True,
     trust_remote_code=True
 )
-print("OpenVLA loaded successfully!")
+print("✓ OpenVLA loaded successfully!")
+print(f"Model device: {model.device}")
+print(f"Model dtype: {model.dtype}")
+EOF
 ```
 
-## Add OpenVLA Inference to the Server
+## OpenVLA Inference Implementation
 
-Edit `src/manipulation_policy/manipulation_policy/policy_server.py` and replace `build_stub_response()` with OpenVLA inference. The function receives the request JSON and must return a dict matching the response schema above.
+The policy server now includes OpenVLA inference implementation in `src/manipulation_policy/manipulation_policy/policy_server.py`. The `build_stub_response()` function:
 
-Minimum checklist for the OpenVLA implementation:
+- Decodes base64-encoded images from requests
+- Builds prompts from task instructions and joint states
+- Runs OpenVLA inference with Flash Attention 2
+- Converts 7-DOF actions (x, y, z, roll, pitch, yaw, gripper) to PolicyOutput JSON
+- Returns no-op responses when images are missing
 
-- Decode `request["image"]` from base64 JPEG.
-- Use the decoded image and joint states to build model inputs.
-- Run the model on the GPU in FP16 when possible.
-- Convert the model output into the `PolicyOutput`-compatible JSON.
+The implementation supports:
+- Automatic model loading with thread-safe singleton pattern
+- GPU/CPU device selection via `OPENVLA_DEVICE` environment variable
+- Custom model selection via `OPENVLA_MODEL_ID` (default: `openvla/openvla-7b`)
+- Flash Attention 2 or fallback attention via `OPENVLA_ATTENTION_IMPL`
+- Action unnormalization via `OPENVLA_UNNORM_KEY` (default: `bridge_orig`)
 
 ## Run the Remote Server
 
-Start the server and bind it to all interfaces so the robot can reach it:
+Start the server and bind it to all interfaces so the robot can reach it.
+
+### If Using Conda:
 
 ```bash
-export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+# Activate conda environment
+conda activate mobile_manipulation_vla
+
+# Navigate to repo root
+cd ~/MobileManipulationCore
+
+# Set environment variables (optional)
+export OPENVLA_MODEL_ID="openvla/openvla-7b"  # or openvla/openvla-1b
+export OPENVLA_DEVICE="cuda"  # or cuda:0, cuda:1, etc.
+export OPENVLA_ATTENTION_IMPL="flash_attention_2"
+export OPENVLA_UNNORM_KEY="bridge_orig"
+
+# Start the server
+python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 5000
+```
+
+### If Using System Python with PYTHONUSERBASE:
+
+```bash
+# Set PYTHONUSERBASE
+export PYTHONUSERBASE="$HOME/.local/mobile_manipulation"
 export PATH="$PYTHONUSERBASE/bin:$PATH"
+
+# Navigate to repo root
+cd ~/MobileManipulationCore
+
+# Set environment variables (optional)
+export OPENVLA_MODEL_ID="openvla/openvla-7b"
+export OPENVLA_DEVICE="cuda"
+
+# Start the server
 python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 5000
 ```
 
 The server exposes:
 
-- `GET /health`
-- `POST /infer`
+- `GET /health` - Health check endpoint
+- `POST /infer` - Policy inference endpoint
+
+On first request, the server will download and cache the OpenVLA model (~14GB for 7B variant).
 
 ## Configure the Robot Side
 
