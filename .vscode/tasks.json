@@ -51,7 +51,7 @@
         {
             "label": "Test Health Endpoint",
             "type": "shell",
-            "command": "curl http://localhost:30542/health",
+            "command": "curl http://100.112.100.20:30542/health",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
