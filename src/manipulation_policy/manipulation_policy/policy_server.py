@@ -349,7 +349,7 @@ class PolicyRequestHandler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Remote policy inference server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host")
-    parser.add_argument("--port", type=int, default=5000, help="Bind port")
+    parser.add_argument("--port", type=int, default=30542, help="Bind port")
     parser.add_argument(
         "--log-level",
         default="info",

@@ -28,7 +28,7 @@ def generate_launch_description():
     )
     port_arg = DeclareLaunchArgument(
         "port",
-        default_value="5000",
+        default_value="30542",
         description="Port for the policy server",
     )
     log_level_arg = DeclareLaunchArgument(

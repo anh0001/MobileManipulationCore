@@ -313,7 +313,7 @@ export OPENVLA_ATTENTION_IMPL="flash_attention_2"
 export OPENVLA_UNNORM_KEY="bridge_orig"
 
 # Start the server
-python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 5000
+python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 30542
 ```
 
 ### If Using System Python with PYTHONUSERBASE:
@@ -331,7 +331,7 @@ export OPENVLA_MODEL_ID="openvla/openvla-7b"
 export OPENVLA_DEVICE="cuda"
 
 # Start the server
-python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 5000
+python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 30542
 ```
 
 The server exposes:
@@ -348,7 +348,7 @@ Launch the manipulation stack with remote inference enabled:
 ```bash
 ros2 launch manipulation_bringup core_launch.py \
   use_remote_policy:=true \
-  remote_url:=http://YOUR_SERVER_IP:5000
+  remote_url:=http://YOUR_SERVER_IP:30542
 ```
 
 Optional ROS 2 parameters to tune the remote path:
@@ -362,7 +362,7 @@ Optional ROS 2 parameters to tune the remote path:
 1. Health check:
 
 ```bash
-curl http://YOUR_SERVER_IP:5000/health
+curl http://YOUR_SERVER_IP:30542/health
 ```
 
 Expected response:
@@ -374,7 +374,7 @@ Expected response:
 2. Inference request with minimal payload (no image):
 
 ```bash
-curl -X POST http://YOUR_SERVER_IP:5000/infer \
+curl -X POST http://YOUR_SERVER_IP:30542/infer \
   -H 'Content-Type: application/json' \
   -d '{
     "reference_frame": "base_link",
