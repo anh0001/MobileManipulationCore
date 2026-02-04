@@ -107,7 +107,19 @@ pip install transformers==4.40.1 tokenizers==0.19.1 timm==0.9.10
 
 > **Important:** These specific versions are required for stability. Later versions have reported regressions and breaking changes.
 
-6. **Clone and install OpenVLA:**
+6. **Install the manipulation_policy package:**
+
+```bash
+# Navigate to the manipulation_policy package directory
+cd ~/MobileManipulationCore/src/manipulation_policy
+
+# Install the package in editable mode
+pip install -e .
+```
+
+> **Important:** This step is required for Python to find the `manipulation_policy` module when running the policy server.
+
+7. **Clone and install OpenVLA:**
 
 ```bash
 cd ~/
@@ -116,7 +128,7 @@ cd openvla
 pip install -e .
 ```
 
-7. **Install Flash Attention 2 (required for optimal performance):**
+8. **Install Flash Attention 2 (required for optimal performance):**
 
 ```bash
 pip install packaging ninja
@@ -200,7 +212,7 @@ Start the server and bind it to all interfaces so the robot can reach it:
 
 ```bash
 # Activate conda environment
-conda activate mobile_manipulation_vla
+eval "$(${HOME}/miniconda3/bin/conda shell.bash hook)" && conda activate mobile_manipulation_vla
 
 # Navigate to repo root
 cd ~/MobileManipulationCore
