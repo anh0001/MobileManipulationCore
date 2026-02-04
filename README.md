@@ -79,6 +79,9 @@ ros2 launch manipulation_bringup core_launch.py
 ```
 
 **Split Deployment (Jetson + Remote Server):**
+
+> **Note:** For detailed OpenVLA remote server setup instructions, see [docs/openvla_remote.md](docs/openvla_remote.md)
+
 ```bash
 # On remote GPU server:
 ros2 launch manipulation_policy remote_server_launch.py
