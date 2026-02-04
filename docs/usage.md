@@ -82,10 +82,10 @@ rosdep install --from-paths src --ignore-src -r -y
 
 # Install Python ML dependencies (use PYTHONUSERBASE to avoid ROS 2 system conflicts)
 cd src/MobileManipulationCore
-export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+export PYTHONUSERBASE="$HOME/.local/mobile_manipulation_core"
 export PATH="$PYTHONUSERBASE/bin:$PATH"
 # Persist for future shells if desired
-echo 'export PYTHONUSERBASE="$HOME/.local/ros2_humble"' >> ~/.bashrc
+echo 'export PYTHONUSERBASE="$HOME/.local/mobile_manipulation_core"' >> ~/.bashrc
 echo 'export PATH="$PYTHONUSERBASE/bin:$PATH"' >> ~/.bashrc
 
 python3 -m pip install --upgrade --user pip
@@ -246,7 +246,7 @@ see `docs/openvla_remote.md`.
    ```bash
    cd ~/MobileManipulationCore
    ./scripts/setup_policy_server.sh
-   export PYTHONUSERBASE="$HOME/.local/ros2_humble"
+   export PYTHONUSERBASE="$HOME/.local/mobile_manipulation_core"
    export PATH="$PYTHONUSERBASE/bin:$PATH"
    ```
 
