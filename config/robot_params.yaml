@@ -9,15 +9,15 @@ robot:
     base_link: "base_link"
     base_footprint: "base_footprint"
     camera_link: "camera_link"
-    camera_optical: "camera_color_optical_frame"
-    ee_link: "piper_gripper"
-    arm_base: "piper_link_0"
+    camera_optical: "camera_optical_frame"
+    ee_link: "piper_tool0"
+    arm_base: "piper_base_link"
 
   # Topic names (customize if your robot uses different topics)
   topics:
-    camera_rgb: "/camera/color/image_raw"
+    camera_rgb: "/camera/image_raw"
     camera_depth: "/camera/depth/image_raw"
-    camera_info: "/camera/color/camera_info"
+    camera_info: "/camera/camera_info"
     joint_states: "/joint_states"
     cmd_vel: "/cmd_vel"
     odom: "/odom"

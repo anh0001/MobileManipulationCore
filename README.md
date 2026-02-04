@@ -115,7 +115,7 @@ MobileManipulationCore/
 ### Key Topics
 
 **Inputs (from base stack):**
-- `/camera/color/image_raw` - RGB camera feed
+- `/camera/image_raw` - RGB camera feed
 - `/joint_states` - Robot joint states
 - `/tf`, `/tf_static` - Transform tree
 

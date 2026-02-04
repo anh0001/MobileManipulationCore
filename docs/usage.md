@@ -186,6 +186,43 @@ piper_sdk_version: "1.2.3"
 ros2 launch manipulation_bringup sim_launch.py
 ```
 
+### Using the Ranger Garden Assistant Base Stack
+
+If the robot base stack is installed in `/home/robofi/codes/ranger-garden-assistant`, make sure to
+build and source it before launching this repo so ROS can resolve the packages and TF tree:
+
+```bash
+# Build the base stack (one-time or after changes)
+cd /home/robofi/codes/ranger-garden-assistant
+colcon build --symlink-install
+
+# Source the base stack
+source /home/robofi/codes/ranger-garden-assistant/install/setup.bash
+
+# Source this stack (overlay)
+source ~/manipulation_ws/install/setup.bash
+```
+
+Launch the base stack:
+```bash
+ros2 launch robofi_bringup ranger_complete_bringup.launch.py
+```
+
+Then launch the manipulation stack:
+```bash
+ros2 launch manipulation_bringup core_launch.py
+```
+
+**Notes:**
+- The Tier IV C2-176 camera publishes `/camera/image_raw` by default.
+- The expected camera optical frame is `camera_optical_frame`.
+- If your PiPER arm uses a different end-effector frame, update `config/robot_params.yaml`.
+
+You can also launch both stacks together (requires `robofi_bringup` to be in your ROS environment):
+```bash
+ros2 launch manipulation_bringup ranger_integration.launch.py
+```
+
 This will:
 - Launch Gazebo (when configured)
 - Start all manipulation components

@@ -84,7 +84,7 @@ Provided by `adapter_node` (future implementation).
 
 ### Subscribed Topics (Inputs from Base)
 
-#### /camera/color/image_raw
+#### /camera/image_raw
 - **Type:** `sensor_msgs/msg/Image`
 - **Description:** RGB camera feed for visual input
 - **Subscribers:** `perception_node`
