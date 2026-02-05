@@ -10,7 +10,7 @@ robot:
     base_footprint: "base_footprint"
     camera_link: "piper_camera_link"
     camera_optical: "piper_camera_optical_frame"
-    ee_link: "piper_tool0"
+    ee_link: "piper_gripper_base"
     arm_base: "piper_base_link"
 
   # Topic names (customize if your robot uses different topics)
