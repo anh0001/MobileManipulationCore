@@ -469,8 +469,7 @@ private:
       rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SendGoalOptions();
 
     send_goal_options.goal_response_callback =
-      [this](const auto& future) {
-        auto goal_handle = future.get();
+      [this](rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle) {
         if (!goal_handle) {
           RCLCPP_WARN(this->get_logger(), "MoveIt goal was rejected");
           moveit_goal_active_.store(false);
@@ -538,8 +537,7 @@ private:
       rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SendGoalOptions();
 
     send_goal_options.goal_response_callback =
-      [this, label, active_flag, handle_slot](const auto& future) {
-        auto goal_handle = future.get();
+      [this, label, active_flag, handle_slot](rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr goal_handle) {
         if (!goal_handle) {
           RCLCPP_WARN(this->get_logger(), "%s trajectory goal rejected", label.c_str());
           if (active_flag) {
