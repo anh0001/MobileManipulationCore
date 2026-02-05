@@ -124,6 +124,7 @@ def generate_launch_description():
             'remote_retry_attempts': int(remote_cfg.get('retry_attempts', 3)),
             'remote_fallback_on_failure': bool(remote_cfg.get('fallback_on_failure', True)),
             'camera_topic': camera_topic,
+            'camera_frame': robot_frames.get('camera_link', ''),
             'joint_states_topic': joint_states_topic,
         }]
     )
@@ -145,6 +146,7 @@ def generate_launch_description():
             'remote_retry_attempts': int(remote_cfg.get('retry_attempts', 3)),
             'remote_fallback_on_failure': bool(remote_cfg.get('fallback_on_failure', True)),
             'camera_topic': camera_topic,
+            'camera_frame': robot_frames.get('camera_link', ''),
             'joint_states_topic': joint_states_topic,
         }]
     )

@@ -59,6 +59,7 @@ class PolicyNode(Node):
         self.declare_parameter('remote_retry_attempts', 3)
         self.declare_parameter('remote_fallback_on_failure', True)
         self.declare_parameter('camera_topic', '/camera/color/image_raw')
+        self.declare_parameter('camera_frame', '')
         self.declare_parameter('joint_states_topic', '/joint_states')
 
         # Get parameters
@@ -74,6 +75,7 @@ class PolicyNode(Node):
         self.remote_fallback_on_failure = self.get_parameter('remote_fallback_on_failure').value
         self.remote_infer_url = f"{self.remote_url}/infer"
         camera_topic = self.get_parameter('camera_topic').value
+        self.camera_frame = self.get_parameter('camera_frame').value
         joint_states_topic = self.get_parameter('joint_states_topic').value
 
         # Initialize CV bridge
@@ -125,6 +127,8 @@ class PolicyNode(Node):
 
     def image_callback(self, msg):
         """Store latest image for inference."""
+        if self.camera_frame:
+            msg.header.frame_id = self.camera_frame
         self.latest_image = msg
 
     def joint_states_callback(self, msg):
