@@ -227,8 +227,10 @@ private:
       return false;
     }
     try {
+      // Use tf2::TimePointZero to get the latest available transform
+      // This avoids extrapolation errors when image timestamps are ahead of TF data
       out = tf_buffer_->lookupTransform(
-        target_frame, source_frame, stamp, tf2::durationFromSec(tf_timeout_sec_));
+        target_frame, source_frame, tf2::TimePointZero, tf2::durationFromSec(tf_timeout_sec_));
       return true;
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN_THROTTLE(

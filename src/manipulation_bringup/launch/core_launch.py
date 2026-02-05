@@ -59,6 +59,7 @@ def generate_launch_description():
     workspace_cfg = robot_cfg.get('workspace', {})
 
     policy_cfg = policy_cfg_full.get('policy', {})
+    action_cfg = policy_cfg_full.get('action', {})
     remote_cfg = policy_cfg_full.get('remote', {})
     safety_cfg = policy_cfg_full.get('safety', {})
     observation_cfg = policy_cfg_full.get('observation', {})
@@ -188,6 +189,7 @@ def generate_launch_description():
             'workspace_y_max': float(workspace_cfg.get('y_max', 0.5)),
             'workspace_z_min': float(workspace_cfg.get('z_min', 0.0)),
             'workspace_z_max': float(workspace_cfg.get('z_max', 1.0)),
+            'eef_target_is_delta': bool(action_cfg.get('eef_pose_is_delta', False)),
         }]
     )
 

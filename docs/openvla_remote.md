@@ -61,6 +61,12 @@ Example response:
 }
 ```
 
+### Delta Actions
+
+OpenVLA emits **delta** end-effector motions (not absolute poses). The robot-side adapter can interpret these
+as deltas when `action.eef_pose_is_delta: true` in `config/policy_params.yaml` (passed to the adapter as
+`eef_target_is_delta`). If you provide absolute targets instead, set this flag to `false`.
+
 ## Remote GPU Server Setup
 
 ### Prerequisites

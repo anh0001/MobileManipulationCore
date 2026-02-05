@@ -25,6 +25,7 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/LinearMath/Transform.h>
 
 /**
  * @brief Adapter node that maps policy outputs to hardware commands
@@ -59,6 +60,7 @@ public:
     this->declare_parameter<double>("workspace_y_max", 0.5);
     this->declare_parameter<double>("workspace_z_min", 0.0);
     this->declare_parameter<double>("workspace_z_max", 1.0);
+    this->declare_parameter<bool>("eef_target_is_delta", false);
 
     // Get parameters
     base_frame_ = this->get_parameter("base_frame").as_string();
@@ -76,6 +78,7 @@ public:
     workspace_y_max_ = this->get_parameter("workspace_y_max").as_double();
     workspace_z_min_ = this->get_parameter("workspace_z_min").as_double();
     workspace_z_max_ = this->get_parameter("workspace_z_max").as_double();
+    eef_target_is_delta_ = this->get_parameter("eef_target_is_delta").as_bool();
 
     // Initialize TF
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -106,6 +109,7 @@ public:
     RCLCPP_INFO(this->get_logger(), "Adapter node initialized");
     RCLCPP_INFO(this->get_logger(), "  Base frame: %s", base_frame_.c_str());
     RCLCPP_INFO(this->get_logger(), "  EE frame: %s", ee_frame_.c_str());
+    RCLCPP_INFO(this->get_logger(), "  EEF target is delta: %s", eef_target_is_delta_ ? "true" : "false");
   }
 
 private:
@@ -134,23 +138,9 @@ private:
 
   void processEndEffectorTarget(const manipulation_msgs::msg::PolicyOutput::SharedPtr msg)
   {
-    geometry_msgs::msg::PoseStamped target_in;
-    target_in.header.frame_id = msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
-    target_in.header.stamp = msg->header.stamp;
-    target_in.pose = msg->eef_target_pose;
-
     geometry_msgs::msg::PoseStamped target_out;
-    if (target_in.header.frame_id != base_frame_) {
-      try {
-        auto transform = tf_buffer_->lookupTransform(
-          base_frame_, target_in.header.frame_id, tf2::TimePointZero);
-        tf2::doTransform(target_in, target_out, transform);
-      } catch (const tf2::TransformException& ex) {
-        RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
-        return;
-      }
-    } else {
-      target_out = target_in;
+    if (!resolveEndEffectorTarget(msg, target_out)) {
+      return;
     }
 
     if (!isWithinWorkspace(target_out.pose.position)) {
@@ -227,6 +217,101 @@ private:
            point.z >= workspace_z_min_ && point.z <= workspace_z_max_;
   }
 
+  bool resolveEndEffectorTarget(
+    const manipulation_msgs::msg::PolicyOutput::SharedPtr msg,
+    geometry_msgs::msg::PoseStamped& target_out)
+  {
+    const std::string reference_frame =
+      msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
+
+    if (!eef_target_is_delta_) {
+      geometry_msgs::msg::PoseStamped target_in;
+      target_in.header.frame_id = reference_frame;
+      target_in.header.stamp = msg->header.stamp;
+      target_in.pose = msg->eef_target_pose;
+
+      if (target_in.header.frame_id != base_frame_) {
+        try {
+          auto transform = tf_buffer_->lookupTransform(
+            base_frame_, target_in.header.frame_id, tf2::TimePointZero);
+          tf2::doTransform(target_in, target_out, transform);
+        } catch (const tf2::TransformException& ex) {
+          RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
+          return false;
+        }
+      } else {
+        target_out = target_in;
+      }
+
+      return true;
+    }
+
+    geometry_msgs::msg::TransformStamped ee_transform;
+    try {
+      ee_transform = tf_buffer_->lookupTransform(
+        base_frame_, ee_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_WARN(this->get_logger(), "TF lookup for current EEF failed: %s", ex.what());
+      return false;
+    }
+
+    tf2::Transform current_ee;
+    tf2::fromMsg(ee_transform.transform, current_ee);
+
+    tf2::Vector3 delta_translation(
+      msg->eef_target_pose.position.x,
+      msg->eef_target_pose.position.y,
+      msg->eef_target_pose.position.z);
+
+    tf2::Quaternion delta_rotation(
+      msg->eef_target_pose.orientation.x,
+      msg->eef_target_pose.orientation.y,
+      msg->eef_target_pose.orientation.z,
+      msg->eef_target_pose.orientation.w);
+    if (delta_rotation.length2() < 1e-12) {
+      delta_rotation.setValue(0.0, 0.0, 0.0, 1.0);
+    } else {
+      delta_rotation.normalize();
+    }
+
+    tf2::Vector3 delta_translation_base = delta_translation;
+    tf2::Quaternion delta_rotation_base = delta_rotation;
+
+    if (reference_frame != base_frame_) {
+      try {
+        auto transform = tf_buffer_->lookupTransform(
+          base_frame_, reference_frame, tf2::TimePointZero);
+        tf2::Quaternion q_base_ref;
+        tf2::fromMsg(transform.transform.rotation, q_base_ref);
+        if (q_base_ref.length2() < 1e-12) {
+          q_base_ref.setValue(0.0, 0.0, 0.0, 1.0);
+        } else {
+          q_base_ref.normalize();
+        }
+        tf2::Quaternion q_ref_base = q_base_ref.inverse();
+        delta_translation_base = tf2::quatRotate(q_base_ref, delta_translation);
+        delta_rotation_base = q_base_ref * delta_rotation * q_ref_base;
+        delta_rotation_base.normalize();
+      } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
+        return false;
+      }
+    }
+
+    tf2::Vector3 target_translation = current_ee.getOrigin() + delta_translation_base;
+    tf2::Quaternion target_rotation = delta_rotation_base * current_ee.getRotation();
+    target_rotation.normalize();
+
+    target_out.header.frame_id = base_frame_;
+    target_out.header.stamp = msg->header.stamp;
+    target_out.pose.position.x = target_translation.x();
+    target_out.pose.position.y = target_translation.y();
+    target_out.pose.position.z = target_translation.z();
+    target_out.pose.orientation = tf2::toMsg(target_rotation);
+
+    return true;
+  }
+
   // Parameters
   std::string base_frame_;
   std::string ee_frame_;
@@ -242,6 +327,7 @@ private:
   double workspace_y_max_;
   double workspace_z_min_;
   double workspace_z_max_;
+  bool eef_target_is_delta_;
 
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

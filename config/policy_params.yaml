@@ -53,6 +53,7 @@ action:
   output_format: "eef_pose"  # Options: eef_pose, joint_delta, hybrid
   reference_frame: "base_link"  # Frame for EEF targets
   use_base_hint: false  # Whether policy outputs base motion hints
+  eef_pose_is_delta: true  # OpenVLA outputs delta poses; set false for absolute targets
 
 # Safety and monitoring
 safety:
