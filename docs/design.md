@@ -175,7 +175,8 @@ The adapter implements:
 
 **Action Clients:**
 - `/navigate_to_pose` (nav2_msgs/action/NavigateToPose)
-- `/piper_arm_controller/follow_joint_trajectory` (control_msgs/action/FollowJointTrajectory)
+- `/arm_controller/follow_joint_trajectory` (control_msgs/action/FollowJointTrajectory)
+- `/move_action` (moveit_msgs/action/MoveGroup)
 
 ### TF Frame Expectations
 
@@ -184,7 +185,7 @@ Required frames:
 - `odom` - odometry frame
 - `base_link` - robot base
 - `piper_link_*` - arm links
-- `piper_gripper` - end-effector
+- `piper_gripper_base` - end-effector
 - `camera_link` - camera mount
 - `camera_color_optical_frame` - camera optical frame
 

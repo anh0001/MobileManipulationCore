@@ -56,6 +56,8 @@ def generate_launch_description():
     robot_actions = robot_cfg.get('robot', {}).get('actions', {})
     base_cfg = robot_cfg.get('base', {})
     arm_cfg = robot_cfg.get('arm', {})
+    gripper_cfg = robot_cfg.get('gripper', {})
+    moveit_cfg = robot_cfg.get('moveit', {})
     workspace_cfg = robot_cfg.get('workspace', {})
 
     policy_cfg = policy_cfg_full.get('policy', {})
@@ -174,12 +176,36 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'base_frame': robot_frames.get('base_link', 'base_link'),
-            'ee_frame': robot_frames.get('ee_link', 'piper_gripper'),
+            'ee_frame': robot_frames.get('ee_link', 'piper_gripper_base'),
             'joint_states_topic': robot_topics.get('joint_states', '/joint_states'),
             'navigate_to_pose_action': robot_actions.get('navigate_to_pose', '/navigate_to_pose'),
             'follow_joint_trajectory_action': robot_actions.get(
-                'follow_joint_trajectory', '/piper_arm_controller/follow_joint_trajectory'
+                'follow_joint_trajectory', '/arm_controller/follow_joint_trajectory'
             ),
+            'gripper_follow_joint_trajectory_action': robot_actions.get(
+                'gripper_follow_joint_trajectory', '/gripper_controller/follow_joint_trajectory'
+            ),
+            'use_moveit': bool(moveit_cfg.get('enabled', False)),
+            'move_group_action': moveit_cfg.get('move_group_action', '/move_action'),
+            'move_group_name': moveit_cfg.get('move_group_name', 'arm'),
+            'move_group_eef_link': moveit_cfg.get('eef_link', 'piper_link6'),
+            'moveit_action_wait_sec': float(moveit_cfg.get('action_wait_sec', 1.0)),
+            'moveit_planning_time': float(moveit_cfg.get('planning_time', 2.0)),
+            'moveit_planning_attempts': int(moveit_cfg.get('planning_attempts', 3)),
+            'moveit_velocity_scaling': float(moveit_cfg.get('velocity_scaling', 0.5)),
+            'moveit_accel_scaling': float(moveit_cfg.get('accel_scaling', 0.5)),
+            'moveit_position_tolerance': float(moveit_cfg.get('position_tolerance', 0.01)),
+            'moveit_orientation_tolerance': float(moveit_cfg.get('orientation_tolerance', 0.1)),
+            'arm_joint_names': arm_cfg.get('joint_names', []),
+            'arm_command_duration_sec': float(arm_cfg.get('command_duration_sec', 1.5)),
+            'gripper_joint_name': gripper_cfg.get('joint_name', 'piper_joint7'),
+            'gripper_joint_names': gripper_cfg.get('joint_names', []),
+            'gripper_open_position': float(gripper_cfg.get('open_position', 0.035)),
+            'gripper_closed_position': float(gripper_cfg.get('closed_position', 0.0)),
+            'gripper_open_positions': gripper_cfg.get('open_positions', []),
+            'gripper_closed_positions': gripper_cfg.get('closed_positions', []),
+            'gripper_command_duration_sec': float(gripper_cfg.get('command_duration_sec', 0.75)),
+            'gripper_command_epsilon': float(gripper_cfg.get('command_epsilon', 0.01)),
             'max_base_velocity': float(base_cfg.get('max_linear_velocity', 0.5)),
             'max_arm_velocity': float(arm_cfg.get('max_joint_velocity', 1.0)),
             'safety_timeout_sec': float(safety_cfg.get('timeout_sec', 2.0)),
