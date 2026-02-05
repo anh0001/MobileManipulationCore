@@ -112,6 +112,7 @@ def generate_launch_description():
             'include_image': bool(observation_cfg.get('include_image', True)),
             'include_depth': bool(observation_cfg.get('include_depth', False)),
             'include_joint_states': bool(observation_cfg.get('include_joint_states', True)),
+            'sync_tolerance_sec': float(observation_cfg.get('sync_tolerance_sec', 0.05)),
         }]
     )
 

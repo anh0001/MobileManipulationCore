@@ -45,6 +45,8 @@ observation:
   include_base_pose: false
   include_task_text: false  # For language-conditioned policies
   history_length: 1  # Number of past observations to include
+  topic: "/manipulation/observation"
+  sync_tolerance_sec: 0.15  # Sensor sync tolerance (increase for slower cameras, e.g., 10 Hz)
 
 # Action configuration
 action:
