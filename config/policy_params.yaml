@@ -6,7 +6,7 @@ policy:
   model_path: ""  # Local path to model, empty to download from HuggingFace
 
   # Inference settings
-  inference_rate: 10.0  # Hz (how often to run policy)
+  inference_rate: 0.5  # Hz (how often to run policy)
   batch_size: 1
   device: "cuda"  # cuda, cpu, or specific device like cuda:0
 
@@ -33,7 +33,7 @@ policy:
 remote:
   enabled: false
   server_url: "http://localhost:30542"
-  timeout: 1.0  # seconds
+  timeout: 2.0  # seconds
   retry_attempts: 3
   fallback_on_failure: true  # Use local stub policy if remote fails
 

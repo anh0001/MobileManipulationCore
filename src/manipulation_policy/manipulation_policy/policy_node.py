@@ -27,7 +27,7 @@ from urllib import request as urlrequest
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
-from manipulation_msgs.msg import PolicyOutput
+from manipulation_msgs.msg import Observation, PolicyOutput
 from geometry_msgs.msg import Pose, Twist
 from cv_bridge import CvBridge
 
@@ -61,6 +61,9 @@ class PolicyNode(Node):
         self.declare_parameter('camera_topic', '/camera/color/image_raw')
         self.declare_parameter('camera_frame', '')
         self.declare_parameter('joint_states_topic', '/joint_states')
+        self.declare_parameter('use_observation', True)
+        self.declare_parameter('observation_topic', '/manipulation/observation')
+        self.declare_parameter('observation_timeout_sec', 0.5)
 
         # Get parameters
         self.model_name = self.get_parameter('model_name').value
@@ -77,13 +80,17 @@ class PolicyNode(Node):
         camera_topic = self.get_parameter('camera_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value
         joint_states_topic = self.get_parameter('joint_states_topic').value
+        self.use_observation = self.get_parameter('use_observation').value
+        self.observation_topic = self.get_parameter('observation_topic').value
+        self.observation_timeout_sec = float(self.get_parameter('observation_timeout_sec').value)
 
         # Initialize CV bridge
         self.bridge = CvBridge()
 
         # State variables
-        self.latest_image = None
-        self.latest_joint_states = None
+        self.latest_observation = None
+        self.latest_raw_image = None
+        self.latest_raw_joint_states = None
         self.warned_no_cv2 = False
 
         # Create subscriptions
@@ -98,6 +105,13 @@ class PolicyNode(Node):
             JointState,
             joint_states_topic,
             self.joint_states_callback,
+            10
+        )
+
+        self.observation_sub = self.create_subscription(
+            Observation,
+            self.observation_topic,
+            self.observation_callback,
             10
         )
 
@@ -129,21 +143,47 @@ class PolicyNode(Node):
         """Store latest image for inference."""
         if self.camera_frame:
             msg.header.frame_id = self.camera_frame
-        self.latest_image = msg
+        self.latest_raw_image = msg
 
     def joint_states_callback(self, msg):
         """Store latest joint states for inference."""
-        self.latest_joint_states = msg
+        self.latest_raw_joint_states = msg
+
+    def observation_callback(self, msg):
+        """Store latest aggregated observation for inference."""
+        self.latest_observation = msg
+
+    def _observation_fresh(self, obs):
+        if obs is None:
+            return False
+        if obs.header.stamp.sec == 0 and obs.header.stamp.nanosec == 0:
+            return True
+        obs_time = rclpy.time.Time.from_msg(obs.header.stamp)
+        age = (self.get_clock().now() - obs_time).nanoseconds * 1e-9
+        return age <= self.observation_timeout_sec
+
+    def _select_inputs(self):
+        if self.use_observation and self._observation_fresh(self.latest_observation):
+            obs = self.latest_observation
+            image = obs.rgb_image if getattr(obs, 'has_rgb_image', False) else None
+            joints = obs.joint_states if getattr(obs, 'has_joint_states', False) else None
+            if image is None:
+                image = self.latest_raw_image
+            if joints is None:
+                joints = self.latest_raw_joint_states
+            return image, joints
+        return self.latest_raw_image, self.latest_raw_joint_states
 
     def inference_callback(self):
         """Run policy inference and publish output."""
-        if self.latest_image is None or self.latest_joint_states is None:
+        image_msg, joint_states = self._select_inputs()
+        if image_msg is None or joint_states is None:
             self.get_logger().debug('Waiting for sensor data...')
             return
 
         try:
             if self.use_remote:
-                output = self.run_inference_remote()
+                output = self.run_inference_remote(image_msg, joint_states)
             else:
                 output = self.run_inference_stub()
 
@@ -185,21 +225,21 @@ class PolicyNode(Node):
 
         return output
 
-    def run_inference_remote(self):
+    def run_inference_remote(self, image_msg, joint_states):
         """Send observation to remote server and convert response."""
         payload = {
             'reference_frame': 'base_link',
             'joint_states': {
-                'name': list(self.latest_joint_states.name),
-                'position': list(self.latest_joint_states.position),
-                'velocity': list(self.latest_joint_states.velocity),
-                'effort': list(self.latest_joint_states.effort),
+                'name': list(joint_states.name),
+                'position': list(joint_states.position),
+                'velocity': list(joint_states.velocity),
+                'effort': list(joint_states.effort),
             },
         }
 
-        if self.latest_image is not None and cv2 is not None:
+        if image_msg is not None and cv2 is not None:
             try:
-                cv_image = self.bridge.imgmsg_to_cv2(self.latest_image, desired_encoding='bgr8')
+                cv_image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8')
                 success, encoded = cv2.imencode('.jpg', cv_image)
                 if success:
                     payload['image'] = base64.b64encode(encoded.tobytes()).decode('ascii')

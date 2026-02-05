@@ -61,10 +61,12 @@ def generate_launch_description():
     policy_cfg = policy_cfg_full.get('policy', {})
     remote_cfg = policy_cfg_full.get('remote', {})
     safety_cfg = policy_cfg_full.get('safety', {})
+    observation_cfg = policy_cfg_full.get('observation', {})
 
     image_size = policy_cfg.get('image_size', [224, 224])
     image_width = image_size[0] if isinstance(image_size, (list, tuple)) and len(image_size) > 0 else 224
     image_height = image_size[1] if isinstance(image_size, (list, tuple)) and len(image_size) > 1 else 224
+    observation_topic = observation_cfg.get('topic', '/manipulation/observation')
 
     # Declare launch arguments
     use_remote_policy_arg = DeclareLaunchArgument(
@@ -103,6 +105,13 @@ def generate_launch_description():
             'joint_states_topic': robot_topics.get('joint_states', '/joint_states'),
             'image_width': int(image_width),
             'image_height': int(image_height),
+            'observation_topic': observation_topic,
+            'base_frame': robot_frames.get('base_link', 'base_link'),
+            'camera_frame': robot_frames.get('camera_link', ''),
+            'ee_frame': robot_frames.get('ee_link', ''),
+            'include_image': bool(observation_cfg.get('include_image', True)),
+            'include_depth': bool(observation_cfg.get('include_depth', False)),
+            'include_joint_states': bool(observation_cfg.get('include_joint_states', True)),
         }]
     )
 
@@ -126,6 +135,8 @@ def generate_launch_description():
             'camera_topic': camera_topic,
             'camera_frame': robot_frames.get('camera_link', ''),
             'joint_states_topic': joint_states_topic,
+            'use_observation': True,
+            'observation_topic': observation_topic,
         }]
     )
 
@@ -148,6 +159,8 @@ def generate_launch_description():
             'camera_topic': camera_topic,
             'camera_frame': robot_frames.get('camera_link', ''),
             'joint_states_topic': joint_states_topic,
+            'use_observation': True,
+            'observation_topic': observation_topic,
         }]
     )
 

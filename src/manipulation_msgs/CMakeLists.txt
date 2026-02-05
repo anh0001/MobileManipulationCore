@@ -15,6 +15,7 @@ find_package(action_msgs REQUIRED)
 
 # Generate messages, services, and actions
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Observation.msg"
   "msg/PolicyOutput.msg"
   "action/ManipulationTask.action"
   DEPENDENCIES std_msgs geometry_msgs sensor_msgs action_msgs
