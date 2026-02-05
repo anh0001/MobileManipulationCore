@@ -56,7 +56,7 @@ git submodule update --init --recursive
 # Install ROS dependencies
 rosdep install --from-paths src --ignore-src -r -y
 
-# Install Piper arm dependencies (if using Piper)
+# Install Piper arm dependencies, if using Piper (optional)
 ./scripts/install_piper.sh
 
 # Build the workspace
