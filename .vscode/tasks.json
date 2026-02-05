@@ -102,6 +102,78 @@
                 "panel": "dedicated",
                 "showReuseMessage": false
             }
+        },
+        {
+            "label": "Run Core with Remote Policy",
+            "type": "shell",
+            "command": "source install/setup.bash && ros2 launch manipulation_bringup core_launch.py use_remote_policy:=true remote_url:=http://100.112.100.20:30542",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Run Core with Remote Policy (Custom URL)",
+            "type": "shell",
+            "command": "source install/setup.bash && ros2 launch manipulation_bringup core_launch.py use_remote_policy:=true remote_url:=${input:remoteUrl}",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Build Workspace",
+            "type": "shell",
+            "command": "source /opt/ros/humble/setup.bash && colcon build --symlink-install",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Build and Run Remote Policy Setup",
+            "dependsOn": [
+                "Build Workspace"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "remoteUrl",
+            "type": "promptString",
+            "description": "Remote policy server URL (e.g., http://100.112.100.20:30542)",
+            "default": "http://100.112.100.20:30542"
         }
     ]
 }
