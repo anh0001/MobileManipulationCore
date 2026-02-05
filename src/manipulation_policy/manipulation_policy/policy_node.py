@@ -58,6 +58,8 @@ class PolicyNode(Node):
         self.declare_parameter('remote_timeout_sec', 1.0)
         self.declare_parameter('remote_retry_attempts', 3)
         self.declare_parameter('remote_fallback_on_failure', True)
+        self.declare_parameter('camera_topic', '/camera/color/image_raw')
+        self.declare_parameter('joint_states_topic', '/joint_states')
 
         # Get parameters
         self.model_name = self.get_parameter('model_name').value
@@ -71,6 +73,8 @@ class PolicyNode(Node):
         self.remote_retry_attempts = int(self.get_parameter('remote_retry_attempts').value)
         self.remote_fallback_on_failure = self.get_parameter('remote_fallback_on_failure').value
         self.remote_infer_url = f"{self.remote_url}/infer"
+        camera_topic = self.get_parameter('camera_topic').value
+        joint_states_topic = self.get_parameter('joint_states_topic').value
 
         # Initialize CV bridge
         self.bridge = CvBridge()
@@ -83,14 +87,14 @@ class PolicyNode(Node):
         # Create subscriptions
         self.image_sub = self.create_subscription(
             Image,
-            '/camera/color/image_raw',
+            camera_topic,
             self.image_callback,
             10
         )
 
         self.joint_states_sub = self.create_subscription(
             JointState,
-            '/joint_states',
+            joint_states_topic,
             self.joint_states_callback,
             10
         )
@@ -303,7 +307,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

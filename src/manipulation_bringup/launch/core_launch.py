@@ -89,6 +89,7 @@ def generate_launch_description():
     use_remote_policy = LaunchConfiguration('use_remote_policy')
     remote_url = LaunchConfiguration('remote_url')
     camera_topic = LaunchConfiguration('camera_topic')
+    joint_states_topic = robot_topics.get('joint_states', '/joint_states')
 
     # Perception node
     perception_node = Node(
@@ -122,6 +123,8 @@ def generate_launch_description():
             'remote_timeout_sec': float(remote_cfg.get('timeout', 1.0)),
             'remote_retry_attempts': int(remote_cfg.get('retry_attempts', 3)),
             'remote_fallback_on_failure': bool(remote_cfg.get('fallback_on_failure', True)),
+            'camera_topic': camera_topic,
+            'joint_states_topic': joint_states_topic,
         }]
     )
 
@@ -141,6 +144,8 @@ def generate_launch_description():
             'remote_timeout_sec': float(remote_cfg.get('timeout', 1.0)),
             'remote_retry_attempts': int(remote_cfg.get('retry_attempts', 3)),
             'remote_fallback_on_failure': bool(remote_cfg.get('fallback_on_failure', True)),
+            'camera_topic': camera_topic,
+            'joint_states_topic': joint_states_topic,
         }]
     )
 
