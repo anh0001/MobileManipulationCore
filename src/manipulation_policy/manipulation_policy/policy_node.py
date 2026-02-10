@@ -84,6 +84,9 @@ class PolicyNode(Node):
         self.remote_infer_url = f"{self.remote_url}/infer"
         camera_topic = self.get_parameter('camera_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value
+        # OpenVLA outputs actions in the wrist camera frame (piper_camera_link).
+        # The frame follows REP-103 convention: X forward, Z up.
+        self.reference_frame = self.camera_frame if self.camera_frame else 'piper_camera_link'
         joint_states_topic = self.get_parameter('joint_states_topic').value
         self.use_observation = self.get_parameter('use_observation').value
         self.observation_topic = self.get_parameter('observation_topic').value
@@ -310,7 +313,7 @@ class PolicyNode(Node):
         """
         output = PolicyOutput()
         output.header.stamp = self.get_clock().now().to_msg()
-        output.header.frame_id = 'base_link'
+        output.header.frame_id = self.reference_frame
 
         # Stub: output a fixed target
         output.has_eef_target = True
@@ -327,7 +330,7 @@ class PolicyNode(Node):
         output.gripper_active = True
 
         output.has_base_hint = False
-        output.reference_frame = 'base_link'
+        output.reference_frame = self.reference_frame
         output.confidence = 0.0
 
         return output
@@ -335,7 +338,7 @@ class PolicyNode(Node):
     def run_inference_remote(self, image_msg, joint_states):
         """Send observation to remote server and convert response."""
         payload = {
-            'reference_frame': 'base_link',
+            'reference_frame': self.reference_frame,
             'task': self.current_task_prompt,
             'joint_states': {
                 'name': list(joint_states.name),
@@ -438,7 +441,9 @@ class PolicyNode(Node):
             output.base_velocity_hint.angular.y = float(angular.get('y', 0.0))
             output.base_velocity_hint.angular.z = float(angular.get('z', 0.0))
 
-        output.reference_frame = str(data.get('reference_frame', 'base_link'))
+        # Actions from OpenVLA are expressed in the wrist camera frame (piper_camera_link),
+        # which is set to follow REP-103 convention: X forward, Z up.
+        output.reference_frame = str(data.get('reference_frame', self.reference_frame))
         output.confidence = float(data.get('confidence', 0.0))
         output.header.frame_id = output.reference_frame
 
