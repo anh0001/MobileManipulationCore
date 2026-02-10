@@ -715,23 +715,24 @@ private:
       pose_in_ref.pose.orientation = tf2::toMsg(target_rotation);
     }
 
-    // Transform target from reference_frame into move_group_eef_link_ (piper_link6)
-    // so MoveIt receives the goal expressed in the EEF frame.
-    if (reference_frame == move_group_eef_link_) {
+    // Transform target into arm_base_frame_ so MoveIt receives pose constraints
+    // in the robot arm base frame (not in the EEF link frame).
+    if (reference_frame == arm_base_frame_) {
       target_out = pose_in_ref;
+      target_out.header.frame_id = arm_base_frame_;
       return true;
     }
 
     try {
-      auto tf_to_eef = tf_buffer_->lookupTransform(
-        move_group_eef_link_, reference_frame, tf2::TimePointZero);
-      tf2::doTransform(pose_in_ref, target_out, tf_to_eef);
-      target_out.header.frame_id = move_group_eef_link_;
+      auto tf_to_arm_base = tf_buffer_->lookupTransform(
+        arm_base_frame_, reference_frame, tf2::TimePointZero);
+      tf2::doTransform(pose_in_ref, target_out, tf_to_arm_base);
+      target_out.header.frame_id = arm_base_frame_;
       target_out.header.stamp = msg->header.stamp;
     } catch (const tf2::TransformException& ex) {
       RCLCPP_WARN(this->get_logger(),
-                  "TF transform from '%s' to EEF frame '%s' failed: %s",
-                  reference_frame.c_str(), move_group_eef_link_.c_str(), ex.what());
+                  "TF transform from '%s' to arm base frame '%s' failed: %s",
+                  reference_frame.c_str(), arm_base_frame_.c_str(), ex.what());
       return false;
     }
 

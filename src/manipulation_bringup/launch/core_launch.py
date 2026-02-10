@@ -211,6 +211,10 @@ def generate_launch_description():
             'max_base_velocity': float(base_cfg.get('max_linear_velocity', 0.5)),
             'max_arm_velocity': float(arm_cfg.get('max_joint_velocity', 1.0)),
             'safety_timeout_sec': float(safety_cfg.get('timeout_sec', 2.0)),
+            'workspace_frame_id': workspace_cfg.get(
+                'frame_id',
+                robot_frames.get('arm_base', 'piper_base_link'),
+            ),
             'workspace_x_min': float(workspace_cfg.get('x_min', 0.1)),
             'workspace_x_max': float(workspace_cfg.get('x_max', 0.8)),
             'workspace_y_min': float(workspace_cfg.get('y_min', -0.5)),
@@ -218,6 +222,7 @@ def generate_launch_description():
             'workspace_z_min': float(workspace_cfg.get('z_min', 0.0)),
             'workspace_z_max': float(workspace_cfg.get('z_max', 1.0)),
             'eef_target_is_delta': bool(action_cfg.get('eef_pose_is_delta', False)),
+            'arm_base_frame': robot_frames.get('arm_base', 'piper_base_link'),
         }]
     )
 
