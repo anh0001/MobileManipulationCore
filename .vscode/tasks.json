@@ -108,7 +108,23 @@
             "type": "shell",
             "command": "source install/setup.bash && ros2 launch manipulation_bringup core_launch.py use_remote_policy:=true remote_url:=http://100.112.100.20:30542",
             "isBackground": true,
-            "problemMatcher": [],
+            "problemMatcher": [
+                {
+                    "pattern": [
+                        {
+                            "regexp": ".",
+                            "file": 1,
+                            "location": 2,
+                            "message": 3
+                        }
+                    ],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": "^\\[policy_node\\]",
+                        "endsPattern": "Policy node initialized"
+                    }
+                }
+            ],
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -120,6 +136,15 @@
             "options": {
                 "cwd": "${workspaceFolder}"
             }
+        },
+        {
+            "label": "Run Core + Task Prompt CLI",
+            "dependsOn": [
+                "Run Core with Remote Policy",
+                "Task Prompt CLI"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
         },
         {
             "label": "Run Core with Remote Policy (Custom URL)",
@@ -157,6 +182,23 @@
             "group": {
                 "kind": "build",
                 "isDefault": true
+            }
+        },
+        {
+            "label": "Task Prompt CLI",
+            "type": "shell",
+            "command": "source install/setup.bash && ros2 run manipulation_policy task_prompt_cli",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
             }
         },
         {

@@ -28,6 +28,7 @@ from urllib import request as urlrequest
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
+from std_msgs.msg import String
 from manipulation_msgs.msg import Observation, PolicyOutput
 from geometry_msgs.msg import Pose, Twist
 from cv_bridge import CvBridge
@@ -65,6 +66,8 @@ class PolicyNode(Node):
         self.declare_parameter('use_observation', True)
         self.declare_parameter('observation_topic', '/manipulation/observation')
         self.declare_parameter('observation_timeout_sec', 0.5)
+        self.declare_parameter('task_prompt', '')
+        self.declare_parameter('task_prompt_topic', '/manipulation/task_prompt')
 
         # Get parameters
         self.model_name = self.get_parameter('model_name').value
@@ -84,6 +87,8 @@ class PolicyNode(Node):
         self.use_observation = self.get_parameter('use_observation').value
         self.observation_topic = self.get_parameter('observation_topic').value
         self.observation_timeout_sec = float(self.get_parameter('observation_timeout_sec').value)
+        self.current_task_prompt = self.get_parameter('task_prompt').value
+        task_prompt_topic = self.get_parameter('task_prompt_topic').value
 
         # Initialize CV bridge
         self.bridge = CvBridge()
@@ -93,6 +98,7 @@ class PolicyNode(Node):
         self.latest_raw_image = None
         self.latest_raw_joint_states = None
         self.warned_no_cv2 = False
+        self._warned_no_task_prompt = False
 
         # Create subscriptions
         self.image_sub = self.create_subscription(
@@ -113,6 +119,13 @@ class PolicyNode(Node):
             Observation,
             self.observation_topic,
             self.observation_callback,
+            10
+        )
+
+        self.task_prompt_sub = self.create_subscription(
+            String,
+            task_prompt_topic,
+            self.task_prompt_callback,
             10
         )
 
@@ -228,6 +241,15 @@ class PolicyNode(Node):
         """Store latest aggregated observation for inference."""
         self.latest_observation = msg
 
+    def task_prompt_callback(self, msg):
+        """Update the current task prompt from the CLI or other publishers."""
+        self.current_task_prompt = msg.data.strip()
+        self._warned_no_task_prompt = False
+        if self.current_task_prompt:
+            self.get_logger().info(f'Task prompt updated: "{self.current_task_prompt}"')
+        else:
+            self.get_logger().info('Task prompt cleared')
+
     def _observation_fresh(self, obs):
         if obs is None:
             return False
@@ -255,6 +277,13 @@ class PolicyNode(Node):
         if image_msg is None or joint_states is None:
             self.get_logger().debug('Waiting for sensor data...')
             return
+
+        if self.use_remote and not self.current_task_prompt and not self._warned_no_task_prompt:
+            self.get_logger().warn(
+                'No task prompt set. Publish a task to /manipulation/task_prompt '
+                'or run: ros2 run manipulation_policy task_prompt_cli'
+            )
+            self._warned_no_task_prompt = True
 
         try:
             if self.use_remote:
@@ -304,6 +333,7 @@ class PolicyNode(Node):
         """Send observation to remote server and convert response."""
         payload = {
             'reference_frame': 'base_link',
+            'task': self.current_task_prompt,
             'joint_states': {
                 'name': list(joint_states.name),
                 'position': list(joint_states.position),
@@ -326,6 +356,11 @@ class PolicyNode(Node):
         elif cv2 is None and not self.warned_no_cv2:
             self.get_logger().warn('cv2 not available; sending remote inference without image')
             self.warned_no_cv2 = True
+
+        if self.current_task_prompt:
+            self.get_logger().debug(f'Inferring with task: "{self.current_task_prompt}"')
+        else:
+            self.get_logger().debug('Inferring with no task prompt set')
 
         last_error = None
         for attempt in range(self.remote_retry_attempts):

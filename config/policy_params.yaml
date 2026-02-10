@@ -31,8 +31,8 @@ policy:
 
 # Remote inference settings (for split deployment)
 remote:
-  enabled: false
-  server_url: "http://localhost:30542"
+  enabled: true
+  server_url: "http://100.112.100.20:30542"
   timeout: 2.0  # seconds
   retry_attempts: 3
   fallback_on_failure: true  # Use local stub policy if remote fails
