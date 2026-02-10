@@ -22,6 +22,7 @@ to generate manipulation actions from observations.
 
 import base64
 import json
+import math
 from urllib import error as urlerror
 from urllib import request as urlrequest
 import rclpy
@@ -138,6 +139,80 @@ class PolicyNode(Node):
             self.get_logger().info(f'Using remote inference at: {self.remote_infer_url}')
 
         self.get_logger().info('Policy node initialized')
+
+    @staticmethod
+    def _euler_to_quaternion(roll, pitch, yaw):
+        """Convert roll/pitch/yaw (rad) to quaternion."""
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+
+        qw = cr * cp * cy + sr * sp * sy
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        return qx, qy, qz, qw
+
+    @staticmethod
+    def _normalize_gripper_value(value):
+        """Map gripper values to [0, 1] (supports [-1, 1] and [0, 1])."""
+        try:
+            val = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if val < 0.0 or val > 1.0:
+            val = (val + 1.0) * 0.5
+        return max(0.0, min(1.0, val))
+
+    def _coerce_action_vector(self, value):
+        """Convert a candidate action payload to a 7D float list if possible."""
+        if value is None:
+            return None
+
+        if hasattr(value, 'tolist'):
+            return self._coerce_action_vector(value.tolist())
+
+        if isinstance(value, dict):
+            for key in ('action', 'actions', 'action_values', 'values', 'data'):
+                converted = self._coerce_action_vector(value.get(key))
+                if converted is not None:
+                    return converted
+            return None
+
+        if isinstance(value, (list, tuple)):
+            candidate = value
+            if len(candidate) == 1 and isinstance(candidate[0], (list, tuple)):
+                candidate = candidate[0]
+            if len(candidate) < 7:
+                return None
+            try:
+                out = [float(v) for v in candidate[:7]]
+            except (TypeError, ValueError):
+                return None
+            if all(math.isfinite(v) for v in out):
+                return out
+
+        return None
+
+    def _extract_openvla_action(self, data):
+        """Extract a raw OpenVLA 7D action from common response shapes."""
+        for key in ('action', 'actions', 'action_values', 'openvla_action'):
+            converted = self._coerce_action_vector(data.get(key))
+            if converted is not None:
+                return converted
+
+        result = data.get('result')
+        if isinstance(result, dict):
+            for key in ('action', 'actions', 'action_values', 'openvla_action'):
+                converted = self._coerce_action_vector(result.get(key))
+                if converted is not None:
+                    return converted
+
+        return None
 
     def image_callback(self, msg):
         """Store latest image for inference."""
@@ -307,7 +382,9 @@ class PolicyNode(Node):
         output.has_joint_deltas = bool(data.get('has_joint_deltas', False))
         output.joint_deltas = [float(v) for v in data.get('joint_deltas', [])]
 
-        output.gripper_command = float(data.get('gripper_command', 0.0))
+        has_gripper_command = 'gripper_command' in data
+        has_gripper_active = 'gripper_active' in data
+        output.gripper_command = self._normalize_gripper_value(data.get('gripper_command', 0.0))
         output.gripper_active = bool(data.get('gripper_active', False))
 
         output.has_base_hint = bool(data.get('has_base_hint', False))
@@ -326,6 +403,34 @@ class PolicyNode(Node):
         output.reference_frame = str(data.get('reference_frame', 'base_link'))
         output.confidence = float(data.get('confidence', 0.0))
         output.header.frame_id = output.reference_frame
+
+        # Fallback: accept raw OpenVLA 7D action vectors and convert to delta EEF targets.
+        if not output.has_eef_target and not output.has_joint_deltas:
+            action_values = self._extract_openvla_action(data)
+            if action_values is not None:
+                dx, dy, dz, roll, pitch, yaw, gripper = action_values
+                qx, qy, qz, qw = self._euler_to_quaternion(roll, pitch, yaw)
+
+                output.has_eef_target = True
+                output.eef_target_pose = Pose()
+                output.eef_target_pose.position.x = dx
+                output.eef_target_pose.position.y = dy
+                output.eef_target_pose.position.z = dz
+                output.eef_target_pose.orientation.x = qx
+                output.eef_target_pose.orientation.y = qy
+                output.eef_target_pose.orientation.z = qz
+                output.eef_target_pose.orientation.w = qw
+
+                if not has_gripper_command:
+                    output.gripper_command = self._normalize_gripper_value(gripper)
+                if not has_gripper_active:
+                    output.gripper_active = True
+                if 'confidence' not in data:
+                    output.confidence = 1.0
+
+                self.get_logger().debug(
+                    'Converted raw OpenVLA action vector to delta EEF target for adapter'
+                )
 
         return output
 

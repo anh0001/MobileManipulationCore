@@ -79,7 +79,7 @@ gripper:
 moveit:
   enabled: true
   move_group_action: "/move_action"
-  move_group_name: "arm"
+  move_group_name: "piper_arm"
   eef_link: "piper_link6"
   action_wait_sec: 1.0
   planning_time: 2.0
