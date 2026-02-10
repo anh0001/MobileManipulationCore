@@ -86,7 +86,7 @@ moveit:
   velocity_scaling: 0.5
   accel_scaling: 0.5
   position_tolerance: 0.01
-  orientation_tolerance: 1.57  # ~90 degrees: allow any orientation since policy outputs position only
+  orientation_tolerance: 0.1
 
 # Workspace limits (in base_link frame)
 workspace:

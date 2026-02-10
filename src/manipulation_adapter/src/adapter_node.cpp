@@ -382,25 +382,27 @@ private:
     position_constraint.constraint_region.primitive_poses.push_back(region_pose);
     constraints.position_constraints.push_back(position_constraint);
 
-    moveit_msgs::msg::OrientationConstraint orientation_constraint;
-    orientation_constraint.header = target.header;
-    orientation_constraint.link_name = move_group_eef_link_;
-
+    // Only add orientation constraint when the target has a meaningful orientation
+    // (non-identity quaternion). Policy outputs typically have position-only targets;
+    // adding a tight orientation constraint causes OMPL to fail finding valid IK states.
     tf2::Quaternion orientation;
     tf2::fromMsg(target.pose.orientation, orientation);
-    if (orientation.length2() < 1e-12) {
-      orientation.setValue(0.0, 0.0, 0.0, 1.0);
-    } else {
-      orientation.normalize();
-    }
-    orientation_constraint.orientation = tf2::toMsg(orientation);
+    bool has_orientation = orientation.length2() > 1e-12 &&
+      std::abs(orientation.w() - 1.0) > 1e-3;
 
-    double orientation_tol = std::max(1e-4, moveit_orientation_tolerance_);
-    orientation_constraint.absolute_x_axis_tolerance = orientation_tol;
-    orientation_constraint.absolute_y_axis_tolerance = orientation_tol;
-    orientation_constraint.absolute_z_axis_tolerance = orientation_tol;
-    orientation_constraint.weight = 1.0;
-    constraints.orientation_constraints.push_back(orientation_constraint);
+    if (has_orientation) {
+      moveit_msgs::msg::OrientationConstraint orientation_constraint;
+      orientation_constraint.header = target.header;
+      orientation_constraint.link_name = move_group_eef_link_;
+      orientation.normalize();
+      orientation_constraint.orientation = tf2::toMsg(orientation);
+      double orientation_tol = std::max(1e-4, moveit_orientation_tolerance_);
+      orientation_constraint.absolute_x_axis_tolerance = orientation_tol;
+      orientation_constraint.absolute_y_axis_tolerance = orientation_tol;
+      orientation_constraint.absolute_z_axis_tolerance = orientation_tol;
+      orientation_constraint.weight = 1.0;
+      constraints.orientation_constraints.push_back(orientation_constraint);
+    }
 
     return constraints;
   }

@@ -68,6 +68,7 @@ class PolicyNode(Node):
         self.declare_parameter('observation_timeout_sec', 0.5)
         self.declare_parameter('task_prompt', '')
         self.declare_parameter('task_prompt_topic', '/manipulation/task_prompt')
+        self.declare_parameter('arm_base_frame', 'piper_base_link')
 
         # Get parameters
         self.model_name = self.get_parameter('model_name').value
@@ -278,12 +279,14 @@ class PolicyNode(Node):
             self.get_logger().debug('Waiting for sensor data...')
             return
 
-        if self.use_remote and not self.current_task_prompt and not self._warned_no_task_prompt:
-            self.get_logger().warn(
-                'No task prompt set. Publish a task to /manipulation/task_prompt '
-                'or run: ros2 run manipulation_policy task_prompt_cli'
-            )
-            self._warned_no_task_prompt = True
+        if not self.current_task_prompt:
+            if not self._warned_no_task_prompt:
+                self.get_logger().warn(
+                    'No task prompt set — inference paused. Publish a task to '
+                    '/manipulation/task_prompt or run: ros2 run manipulation_policy task_prompt_cli'
+                )
+                self._warned_no_task_prompt = True
+            return
 
         try:
             if self.use_remote:
