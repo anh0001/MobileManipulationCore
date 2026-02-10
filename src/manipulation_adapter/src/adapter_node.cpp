@@ -21,6 +21,7 @@
 #include <unordered_map>
 #include <geometry_msgs/msg/twist.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <manipulation_msgs/msg/policy_output.hpp>
@@ -98,6 +99,7 @@ public:
     this->declare_parameter<double>("workspace_z_min", 0.0);
     this->declare_parameter<double>("workspace_z_max", 1.0);
     this->declare_parameter<bool>("eef_target_is_delta", false);
+    this->declare_parameter<std::string>("arm_base_frame", "piper_base_link");
 
     // Get parameters
     base_frame_ = this->get_parameter("base_frame").as_string();
@@ -141,6 +143,7 @@ public:
     workspace_z_min_ = this->get_parameter("workspace_z_min").as_double();
     workspace_z_max_ = this->get_parameter("workspace_z_max").as_double();
     eef_target_is_delta_ = this->get_parameter("eef_target_is_delta").as_bool();
+    arm_base_frame_ = this->get_parameter("arm_base_frame").as_string();
 
     // Initialize TF
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -185,6 +188,7 @@ public:
       RCLCPP_INFO(this->get_logger(), "  MoveIt EEF link: %s", move_group_eef_link_.c_str());
     }
     RCLCPP_INFO(this->get_logger(), "  EEF target is delta: %s", eef_target_is_delta_ ? "true" : "false");
+    RCLCPP_INFO(this->get_logger(), "  Arm base frame: %s", arm_base_frame_.c_str());
   }
 
 private:
@@ -225,10 +229,11 @@ private:
       return false;
     }
 
-    if (!isWithinWorkspace(target_out.pose.position)) {
+    if (!isWithinWorkspace(target_out)) {
       RCLCPP_WARN(
         this->get_logger(),
-        "EEF target outside workspace bounds [%.2f, %.2f] [%.2f, %.2f] [%.2f, %.2f]",
+        "EEF target outside workspace bounds (in %s) [%.2f, %.2f] [%.2f, %.2f] [%.2f, %.2f]",
+        arm_base_frame_.c_str(),
         workspace_x_min_, workspace_x_max_, workspace_y_min_, workspace_y_max_,
         workspace_z_min_, workspace_z_max_);
       return false;
@@ -625,48 +630,59 @@ private:
     last_joint_state_ = msg;
   }
 
-  bool isWithinWorkspace(const geometry_msgs::msg::Point& point) const
+  bool isWithinWorkspace(const geometry_msgs::msg::PoseStamped& target) const
   {
-    return point.x >= workspace_x_min_ && point.x <= workspace_x_max_ &&
-           point.y >= workspace_y_min_ && point.y <= workspace_y_max_ &&
-           point.z >= workspace_z_min_ && point.z <= workspace_z_max_;
+    geometry_msgs::msg::PointStamped point_in;
+    point_in.header = target.header;
+    point_in.point = target.pose.position;
+
+    geometry_msgs::msg::PointStamped point_arm;
+    if (target.header.frame_id != arm_base_frame_) {
+      try {
+        auto transform = tf_buffer_->lookupTransform(
+          arm_base_frame_, target.header.frame_id, tf2::TimePointZero);
+        tf2::doTransform(point_in, point_arm, transform);
+      } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN(this->get_logger(),
+                    "TF transform for workspace check failed: %s", ex.what());
+        return false;
+      }
+    } else {
+      point_arm = point_in;
+    }
+
+    return point_arm.point.x >= workspace_x_min_ && point_arm.point.x <= workspace_x_max_ &&
+           point_arm.point.y >= workspace_y_min_ && point_arm.point.y <= workspace_y_max_ &&
+           point_arm.point.z >= workspace_z_min_ && point_arm.point.z <= workspace_z_max_;
   }
 
   bool resolveEndEffectorTarget(
     const manipulation_msgs::msg::PolicyOutput::SharedPtr msg,
     geometry_msgs::msg::PoseStamped& target_out)
   {
+    // The frame_id is taken directly from the message (e.g. piper_camera_link).
+    // MoveIt resolves the frame via TF internally — no manual rotation needed.
     const std::string reference_frame =
       msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
 
     if (!eef_target_is_delta_) {
-      geometry_msgs::msg::PoseStamped target_in;
-      target_in.header.frame_id = reference_frame;
-      target_in.header.stamp = msg->header.stamp;
-      target_in.pose = msg->eef_target_pose;
-
-      if (target_in.header.frame_id != base_frame_) {
-        try {
-          auto transform = tf_buffer_->lookupTransform(
-            base_frame_, target_in.header.frame_id, tf2::TimePointZero);
-          tf2::doTransform(target_in, target_out, transform);
-        } catch (const tf2::TransformException& ex) {
-          RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
-          return false;
-        }
-      } else {
-        target_out = target_in;
-      }
-
+      // Policy outputs an absolute pose — pass through directly.
+      target_out.header.frame_id = reference_frame;
+      target_out.header.stamp = msg->header.stamp;
+      target_out.pose = msg->eef_target_pose;
       return true;
     }
 
+    // Delta mode: look up current EEF pose in reference_frame, then add the delta
+    // to produce an absolute target pose, still expressed in reference_frame.
     geometry_msgs::msg::TransformStamped ee_transform;
     try {
       ee_transform = tf_buffer_->lookupTransform(
-        base_frame_, ee_frame_, tf2::TimePointZero);
+        reference_frame, ee_frame_, tf2::TimePointZero);
     } catch (const tf2::TransformException& ex) {
-      RCLCPP_WARN(this->get_logger(), "TF lookup for current EEF failed: %s", ex.what());
+      RCLCPP_WARN(this->get_logger(),
+                  "TF lookup for current EEF in '%s' failed: %s",
+                  reference_frame.c_str(), ex.what());
       return false;
     }
 
@@ -689,35 +705,11 @@ private:
       delta_rotation.normalize();
     }
 
-    tf2::Vector3 delta_translation_base = delta_translation;
-    tf2::Quaternion delta_rotation_base = delta_rotation;
-
-    if (reference_frame != base_frame_) {
-      try {
-        auto transform = tf_buffer_->lookupTransform(
-          base_frame_, reference_frame, tf2::TimePointZero);
-        tf2::Quaternion q_base_ref;
-        tf2::fromMsg(transform.transform.rotation, q_base_ref);
-        if (q_base_ref.length2() < 1e-12) {
-          q_base_ref.setValue(0.0, 0.0, 0.0, 1.0);
-        } else {
-          q_base_ref.normalize();
-        }
-        tf2::Quaternion q_ref_base = q_base_ref.inverse();
-        delta_translation_base = tf2::quatRotate(q_base_ref, delta_translation);
-        delta_rotation_base = q_base_ref * delta_rotation * q_ref_base;
-        delta_rotation_base.normalize();
-      } catch (const tf2::TransformException& ex) {
-        RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
-        return false;
-      }
-    }
-
-    tf2::Vector3 target_translation = current_ee.getOrigin() + delta_translation_base;
-    tf2::Quaternion target_rotation = delta_rotation_base * current_ee.getRotation();
+    tf2::Vector3 target_translation = current_ee.getOrigin() + delta_translation;
+    tf2::Quaternion target_rotation = delta_rotation * current_ee.getRotation();
     target_rotation.normalize();
 
-    target_out.header.frame_id = base_frame_;
+    target_out.header.frame_id = reference_frame;
     target_out.header.stamp = msg->header.stamp;
     target_out.pose.position.x = target_translation.x();
     target_out.pose.position.y = target_translation.y();
@@ -765,6 +757,7 @@ private:
   double workspace_z_min_;
   double workspace_z_max_;
   bool eef_target_is_delta_;
+  std::string arm_base_frame_;
 
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

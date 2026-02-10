@@ -23,6 +23,7 @@ to generate manipulation actions from observations.
 import base64
 import json
 import math
+from collections import deque
 from urllib import error as urlerror
 from urllib import request as urlrequest
 import rclpy
@@ -101,8 +102,9 @@ class PolicyNode(Node):
         self.latest_observation = None
         self.latest_raw_image = None
         self.latest_raw_joint_states = None
+        self.pending_task_prompts = deque()
         self.warned_no_cv2 = False
-        self._warned_no_task_prompt = False
+        self._warned_waiting_for_sensor_data = False
 
         # Create subscriptions
         self.image_sub = self.create_subscription(
@@ -140,7 +142,7 @@ class PolicyNode(Node):
             10
         )
 
-        # Create timer for inference loop
+        # Timer checks for queued prompts and processes one per tick.
         self.inference_timer = self.create_timer(
             1.0 / inference_rate,
             self.inference_callback
@@ -246,12 +248,18 @@ class PolicyNode(Node):
         self.latest_observation = msg
 
     def task_prompt_callback(self, msg):
-        """Update the current task prompt from the CLI or other publishers."""
-        self.current_task_prompt = msg.data.strip()
-        self._warned_no_task_prompt = False
-        if self.current_task_prompt:
-            self.get_logger().info(f'Task prompt updated: "{self.current_task_prompt}"')
+        """Queue task prompts for one-shot inference."""
+        prompt = msg.data.strip()
+        self.current_task_prompt = prompt
+        self._warned_waiting_for_sensor_data = False
+
+        if prompt:
+            self.pending_task_prompts.append(prompt)
+            self.get_logger().info(
+                f'Task prompt queued ({len(self.pending_task_prompts)} pending): "{prompt}"'
+            )
         else:
+            self.pending_task_prompts.clear()
             self.get_logger().info('Task prompt cleared')
 
     def _observation_fresh(self, obs):
@@ -276,20 +284,20 @@ class PolicyNode(Node):
         return self.latest_raw_image, self.latest_raw_joint_states
 
     def inference_callback(self):
-        """Run policy inference and publish output."""
-        image_msg, joint_states = self._select_inputs()
-        if image_msg is None or joint_states is None:
-            self.get_logger().debug('Waiting for sensor data...')
+        """Run one policy inference per queued prompt."""
+        if not self.pending_task_prompts:
             return
 
-        if not self.current_task_prompt:
-            if not self._warned_no_task_prompt:
-                self.get_logger().warn(
-                    'No task prompt set — inference paused. Publish a task to '
-                    '/manipulation/task_prompt or run: ros2 run manipulation_policy task_prompt_cli'
-                )
-                self._warned_no_task_prompt = True
+        image_msg, joint_states = self._select_inputs()
+        if image_msg is None or joint_states is None:
+            if not self._warned_waiting_for_sensor_data:
+                self.get_logger().info('Prompt queued, waiting for sensor data before inference')
+                self._warned_waiting_for_sensor_data = True
             return
+
+        self._warned_waiting_for_sensor_data = False
+        prompt = self.pending_task_prompts.popleft()
+        self.current_task_prompt = prompt
 
         try:
             if self.use_remote:
@@ -301,6 +309,7 @@ class PolicyNode(Node):
                 return
 
             self.policy_output_pub.publish(output)
+            self.get_logger().info(f'Published policy output for prompt: "{prompt}"')
 
         except Exception as e:
             self.get_logger().error(f'Inference error: {str(e)}')
