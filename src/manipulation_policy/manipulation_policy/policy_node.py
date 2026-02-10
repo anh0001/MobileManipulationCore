@@ -23,7 +23,6 @@ to generate manipulation actions from observations.
 import base64
 import json
 import math
-from collections import deque
 from urllib import error as urlerror
 from urllib import request as urlrequest
 import rclpy
@@ -70,6 +69,7 @@ class PolicyNode(Node):
         self.declare_parameter('task_prompt', '')
         self.declare_parameter('task_prompt_topic', '/manipulation/task_prompt')
         self.declare_parameter('arm_base_frame', 'piper_base_link')
+        self.declare_parameter('max_steps', 50)
 
         # Get parameters
         self.model_name = self.get_parameter('model_name').value
@@ -94,6 +94,7 @@ class PolicyNode(Node):
         self.observation_timeout_sec = float(self.get_parameter('observation_timeout_sec').value)
         self.current_task_prompt = self.get_parameter('task_prompt').value
         task_prompt_topic = self.get_parameter('task_prompt_topic').value
+        self.max_steps = int(self.get_parameter('max_steps').value)
 
         # Initialize CV bridge
         self.bridge = CvBridge()
@@ -102,7 +103,8 @@ class PolicyNode(Node):
         self.latest_observation = None
         self.latest_raw_image = None
         self.latest_raw_joint_states = None
-        self.pending_task_prompts = deque()
+        self.active_prompt = self.current_task_prompt or None
+        self.steps_remaining = 0
         self.warned_no_cv2 = False
         self._warned_waiting_for_sensor_data = False
 
@@ -142,7 +144,7 @@ class PolicyNode(Node):
             10
         )
 
-        # Timer checks for queued prompts and processes one per tick.
+        # Timer runs inference for the active prompt at inference_rate Hz.
         self.inference_timer = self.create_timer(
             1.0 / inference_rate,
             self.inference_callback
@@ -248,18 +250,20 @@ class PolicyNode(Node):
         self.latest_observation = msg
 
     def task_prompt_callback(self, msg):
-        """Queue task prompts for one-shot inference."""
+        """Set or overwrite the active task prompt and reset the step budget."""
         prompt = msg.data.strip()
         self.current_task_prompt = prompt
         self._warned_waiting_for_sensor_data = False
 
         if prompt:
-            self.pending_task_prompts.append(prompt)
+            self.active_prompt = prompt
+            self.steps_remaining = self.max_steps
             self.get_logger().info(
-                f'Task prompt queued ({len(self.pending_task_prompts)} pending): "{prompt}"'
+                f'Task prompt set: "{prompt}" ({self.max_steps} steps)'
             )
         else:
-            self.pending_task_prompts.clear()
+            self.active_prompt = None
+            self.steps_remaining = 0
             self.get_logger().info('Task prompt cleared')
 
     def _observation_fresh(self, obs):
@@ -284,20 +288,18 @@ class PolicyNode(Node):
         return self.latest_raw_image, self.latest_raw_joint_states
 
     def inference_callback(self):
-        """Run one policy inference per queued prompt."""
-        if not self.pending_task_prompts:
+        """Run one inference step for the active prompt, counting down the step budget."""
+        if not self.active_prompt or self.steps_remaining <= 0:
             return
 
         image_msg, joint_states = self._select_inputs()
         if image_msg is None or joint_states is None:
             if not self._warned_waiting_for_sensor_data:
-                self.get_logger().info('Prompt queued, waiting for sensor data before inference')
+                self.get_logger().info('Prompt active, waiting for sensor data before inference')
                 self._warned_waiting_for_sensor_data = True
             return
 
         self._warned_waiting_for_sensor_data = False
-        prompt = self.pending_task_prompts.popleft()
-        self.current_task_prompt = prompt
 
         try:
             if self.use_remote:
@@ -309,7 +311,18 @@ class PolicyNode(Node):
                 return
 
             self.policy_output_pub.publish(output)
-            self.get_logger().info(f'Published policy output for prompt: "{prompt}"')
+            self.steps_remaining -= 1
+            self.get_logger().info(
+                f'Published policy output for prompt: "{self.active_prompt}" '
+                f'(step {self.max_steps - self.steps_remaining}/{self.max_steps})'
+            )
+
+            if self.steps_remaining <= 0:
+                self.get_logger().info(
+                    f'Task "{self.active_prompt}" reached max steps ({self.max_steps}), '
+                    f'waiting for next prompt'
+                )
+                self.active_prompt = None
 
         except Exception as e:
             self.get_logger().error(f'Inference error: {str(e)}')

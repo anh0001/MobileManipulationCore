@@ -7,6 +7,7 @@ policy:
 
   # Inference settings
   inference_rate: 0.5  # Hz (how often to run policy)
+  max_steps: 50        # Number of inference steps per task prompt before stopping
   batch_size: 1
   device: "cuda"  # cuda, cpu, or specific device like cuda:0
 

@@ -92,6 +92,7 @@ public:
     this->declare_parameter<double>("max_base_velocity", 0.5);
     this->declare_parameter<double>("max_arm_velocity", 1.0);
     this->declare_parameter<double>("safety_timeout_sec", 2.0);
+    this->declare_parameter<std::string>("workspace_frame_id", "piper_base_link");
     this->declare_parameter<double>("workspace_x_min", 0.1);
     this->declare_parameter<double>("workspace_x_max", 0.8);
     this->declare_parameter<double>("workspace_y_min", -0.5);
@@ -136,6 +137,7 @@ public:
     max_base_velocity_ = this->get_parameter("max_base_velocity").as_double();
     max_arm_velocity_ = this->get_parameter("max_arm_velocity").as_double();
     safety_timeout_sec_ = this->get_parameter("safety_timeout_sec").as_double();
+    workspace_frame_id_ = this->get_parameter("workspace_frame_id").as_string();
     workspace_x_min_ = this->get_parameter("workspace_x_min").as_double();
     workspace_x_max_ = this->get_parameter("workspace_x_max").as_double();
     workspace_y_min_ = this->get_parameter("workspace_y_min").as_double();
@@ -233,7 +235,7 @@ private:
       RCLCPP_WARN(
         this->get_logger(),
         "EEF target outside workspace bounds (in %s) [%.2f, %.2f] [%.2f, %.2f] [%.2f, %.2f]",
-        arm_base_frame_.c_str(),
+        workspace_frame_id_.c_str(),
         workspace_x_min_, workspace_x_max_, workspace_y_min_, workspace_y_max_,
         workspace_z_min_, workspace_z_max_);
       return false;
@@ -636,24 +638,24 @@ private:
     point_in.header = target.header;
     point_in.point = target.pose.position;
 
-    geometry_msgs::msg::PointStamped point_arm;
-    if (target.header.frame_id != arm_base_frame_) {
+    geometry_msgs::msg::PointStamped point_ws;
+    if (target.header.frame_id != workspace_frame_id_) {
       try {
         auto transform = tf_buffer_->lookupTransform(
-          arm_base_frame_, target.header.frame_id, tf2::TimePointZero);
-        tf2::doTransform(point_in, point_arm, transform);
+          workspace_frame_id_, target.header.frame_id, tf2::TimePointZero);
+        tf2::doTransform(point_in, point_ws, transform);
       } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN(this->get_logger(),
                     "TF transform for workspace check failed: %s", ex.what());
         return false;
       }
     } else {
-      point_arm = point_in;
+      point_ws = point_in;
     }
 
-    return point_arm.point.x >= workspace_x_min_ && point_arm.point.x <= workspace_x_max_ &&
-           point_arm.point.y >= workspace_y_min_ && point_arm.point.y <= workspace_y_max_ &&
-           point_arm.point.z >= workspace_z_min_ && point_arm.point.z <= workspace_z_max_;
+    return point_ws.point.x >= workspace_x_min_ && point_ws.point.x <= workspace_x_max_ &&
+           point_ws.point.y >= workspace_y_min_ && point_ws.point.y <= workspace_y_max_ &&
+           point_ws.point.z >= workspace_z_min_ && point_ws.point.z <= workspace_z_max_;
   }
 
   bool resolveEndEffectorTarget(
@@ -750,6 +752,7 @@ private:
   double max_base_velocity_;
   double max_arm_velocity_;
   double safety_timeout_sec_;
+  std::string workspace_frame_id_;
   double workspace_x_min_;
   double workspace_x_max_;
   double workspace_y_min_;
