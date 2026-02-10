@@ -662,61 +662,78 @@ private:
     const manipulation_msgs::msg::PolicyOutput::SharedPtr msg,
     geometry_msgs::msg::PoseStamped& target_out)
   {
-    // The frame_id is taken directly from the message (e.g. piper_camera_link).
-    // MoveIt resolves the frame via TF internally — no manual rotation needed.
     const std::string reference_frame =
       msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
 
+    geometry_msgs::msg::PoseStamped pose_in_ref;
+    pose_in_ref.header.frame_id = reference_frame;
+    pose_in_ref.header.stamp = msg->header.stamp;
+
     if (!eef_target_is_delta_) {
-      // Policy outputs an absolute pose — pass through directly.
-      target_out.header.frame_id = reference_frame;
-      target_out.header.stamp = msg->header.stamp;
-      target_out.pose = msg->eef_target_pose;
+      // Policy outputs an absolute pose in reference_frame.
+      pose_in_ref.pose = msg->eef_target_pose;
+    } else {
+      // Delta mode: look up current EEF pose in reference_frame, then add the delta
+      // to produce an absolute target pose, still expressed in reference_frame.
+      geometry_msgs::msg::TransformStamped ee_transform;
+      try {
+        ee_transform = tf_buffer_->lookupTransform(
+          reference_frame, ee_frame_, tf2::TimePointZero);
+      } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN(this->get_logger(),
+                    "TF lookup for current EEF in '%s' failed: %s",
+                    reference_frame.c_str(), ex.what());
+        return false;
+      }
+
+      tf2::Transform current_ee;
+      tf2::fromMsg(ee_transform.transform, current_ee);
+
+      tf2::Vector3 delta_translation(
+        msg->eef_target_pose.position.x,
+        msg->eef_target_pose.position.y,
+        msg->eef_target_pose.position.z);
+
+      tf2::Quaternion delta_rotation(
+        msg->eef_target_pose.orientation.x,
+        msg->eef_target_pose.orientation.y,
+        msg->eef_target_pose.orientation.z,
+        msg->eef_target_pose.orientation.w);
+      if (delta_rotation.length2() < 1e-12) {
+        delta_rotation.setValue(0.0, 0.0, 0.0, 1.0);
+      } else {
+        delta_rotation.normalize();
+      }
+
+      tf2::Vector3 target_translation = current_ee.getOrigin() + delta_translation;
+      tf2::Quaternion target_rotation = delta_rotation * current_ee.getRotation();
+      target_rotation.normalize();
+
+      pose_in_ref.pose.position.x = target_translation.x();
+      pose_in_ref.pose.position.y = target_translation.y();
+      pose_in_ref.pose.position.z = target_translation.z();
+      pose_in_ref.pose.orientation = tf2::toMsg(target_rotation);
+    }
+
+    // Transform target from reference_frame into move_group_eef_link_ (piper_link6)
+    // so MoveIt receives the goal expressed in the EEF frame.
+    if (reference_frame == move_group_eef_link_) {
+      target_out = pose_in_ref;
       return true;
     }
 
-    // Delta mode: look up current EEF pose in reference_frame, then add the delta
-    // to produce an absolute target pose, still expressed in reference_frame.
-    geometry_msgs::msg::TransformStamped ee_transform;
     try {
-      ee_transform = tf_buffer_->lookupTransform(
-        reference_frame, ee_frame_, tf2::TimePointZero);
+      auto tf_to_eef = tf_buffer_->lookupTransform(
+        move_group_eef_link_, reference_frame, tf2::TimePointZero);
+      tf2::doTransform(pose_in_ref, target_out, tf_to_eef);
+      target_out.header.frame_id = move_group_eef_link_;
+      target_out.header.stamp = msg->header.stamp;
     } catch (const tf2::TransformException& ex) {
       RCLCPP_WARN(this->get_logger(),
-                  "TF lookup for current EEF in '%s' failed: %s",
-                  reference_frame.c_str(), ex.what());
+                  "TF transform from '%s' to EEF frame '%s' failed: %s",
+                  reference_frame.c_str(), move_group_eef_link_.c_str(), ex.what());
       return false;
     }
-
-    tf2::Transform current_ee;
-    tf2::fromMsg(ee_transform.transform, current_ee);
-
-    tf2::Vector3 delta_translation(
-      msg->eef_target_pose.position.x,
-      msg->eef_target_pose.position.y,
-      msg->eef_target_pose.position.z);
-
-    tf2::Quaternion delta_rotation(
-      msg->eef_target_pose.orientation.x,
-      msg->eef_target_pose.orientation.y,
-      msg->eef_target_pose.orientation.z,
-      msg->eef_target_pose.orientation.w);
-    if (delta_rotation.length2() < 1e-12) {
-      delta_rotation.setValue(0.0, 0.0, 0.0, 1.0);
-    } else {
-      delta_rotation.normalize();
-    }
-
-    tf2::Vector3 target_translation = current_ee.getOrigin() + delta_translation;
-    tf2::Quaternion target_rotation = delta_rotation * current_ee.getRotation();
-    target_rotation.normalize();
-
-    target_out.header.frame_id = reference_frame;
-    target_out.header.stamp = msg->header.stamp;
-    target_out.pose.position.x = target_translation.x();
-    target_out.pose.position.y = target_translation.y();
-    target_out.pose.position.z = target_translation.z();
-    target_out.pose.orientation = tf2::toMsg(target_rotation);
 
     return true;
   }

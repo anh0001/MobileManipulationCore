@@ -10,7 +10,7 @@ robot:
     base_footprint: "base_footprint"
     camera_link: "piper_camera_link"
     camera_optical: "piper_camera_optical_frame"
-    ee_link: "piper_gripper_base"
+    ee_link: "piper_link6"
     arm_base: "piper_base_link"
 
   # Topic names (customize if your robot uses different topics)
@@ -92,8 +92,8 @@ moveit:
 workspace:
   frame_id: piper_base_link
   x_min: 0.1
-  x_max: 0.8
+  x_max: 1.5
   y_min: -0.5
   y_max: 0.5
-  z_min: 0.0
+  z_min: -0.2
   z_max: 1.0
