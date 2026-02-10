@@ -129,9 +129,10 @@
                 "echo": true,
                 "reveal": "always",
                 "focus": false,
-                "panel": "dedicated",
+                "panel": "new",
                 "showReuseMessage": false,
-                "clear": false
+                "clear": false,
+                "group": "remote-policy"
             },
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -193,9 +194,10 @@
                 "echo": true,
                 "reveal": "always",
                 "focus": true,
-                "panel": "dedicated",
+                "panel": "new",
                 "showReuseMessage": false,
-                "clear": true
+                "clear": true,
+                "group": "remote-policy"
             },
             "options": {
                 "cwd": "${workspaceFolder}"

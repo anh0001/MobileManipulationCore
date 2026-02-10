@@ -26,8 +26,8 @@ robot:
   # Action servers
   actions:
     navigate_to_pose: "/navigate_to_pose"
-    follow_joint_trajectory: "/arm_controller/follow_joint_trajectory"
-    gripper_follow_joint_trajectory: "/gripper_controller/follow_joint_trajectory"
+    follow_joint_trajectory: "/piper_arm_controller/follow_joint_trajectory"
+    gripper_follow_joint_trajectory: "/piper_gripper_controller/follow_joint_trajectory"
 
 # Base (mobile platform) parameters
 base:
@@ -67,11 +67,10 @@ gripper:
   joint_name: "piper_joint7"
   joint_names:
     - "piper_joint7"
-    - "piper_joint8"
   open_position: 0.035
   closed_position: 0.0
-  open_positions: [0.035, -0.035]
-  closed_positions: [0.0, 0.0]
+  open_positions: [0.035]
+  closed_positions: [0.0]
   command_duration_sec: 0.75
   command_epsilon: 0.01
 
@@ -87,7 +86,7 @@ moveit:
   velocity_scaling: 0.5
   accel_scaling: 0.5
   position_tolerance: 0.01
-  orientation_tolerance: 0.1
+  orientation_tolerance: 1.57  # ~90 degrees: allow any orientation since policy outputs position only
 
 # Workspace limits (in base_link frame)
 workspace:
