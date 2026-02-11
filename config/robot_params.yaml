@@ -67,9 +67,9 @@ gripper:
   joint_name: "piper_joint7"
   joint_names:
     - "piper_joint7"
-  open_position: 0.035
+  open_position: 0.075
   closed_position: 0.0
-  open_positions: [0.035]
+  open_positions: [0.075]
   closed_positions: [0.0]
   command_duration_sec: 0.75
   command_epsilon: 0.01
