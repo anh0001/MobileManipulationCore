@@ -26,6 +26,7 @@ If no image is provided, the server returns a no-op policy output.
 
 import argparse
 import base64
+import errno
 import io
 import json
 import logging
@@ -56,6 +57,11 @@ _OPENVLA_MODEL = None
 _OPENVLA_PROCESSOR = None
 _OPENVLA_DEVICE = None
 _OPENVLA_DTYPE = None
+_CLIENT_DISCONNECT_ERRNOS = {
+    errno.EPIPE,
+    errno.ECONNRESET,
+    errno.ECONNABORTED,
+}
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -105,22 +111,48 @@ def _load_openvla() -> Tuple[Any, Any, str, Any]:
         }
         if attn_impl:
             model_kwargs["attn_implementation"] = attn_impl
+        if attn_impl and device.startswith("cuda"):
+            # FlashAttention initialization expects CUDA placement up front.
+            model_kwargs["device_map"] = {"": device}
+
+        load_kwargs = dict(model_kwargs)
 
         try:
-            model = AutoModelForVision2Seq.from_pretrained(model_id, **model_kwargs)
+            model = AutoModelForVision2Seq.from_pretrained(model_id, **load_kwargs)
         except Exception as exc:
-            if "attn_implementation" in model_kwargs:
+            if "device_map" in load_kwargs:
+                logging.warning(
+                    "OpenVLA model load failed with device_map=%s: %s. Retrying without device_map.",
+                    load_kwargs["device_map"],
+                    exc,
+                )
+                load_kwargs.pop("device_map", None)
+                try:
+                    model = AutoModelForVision2Seq.from_pretrained(model_id, **load_kwargs)
+                except Exception as second_exc:
+                    if "attn_implementation" in load_kwargs:
+                        logging.warning(
+                            "OpenVLA model load failed with attn impl '%s': %s. Retrying without it.",
+                            attn_impl,
+                            second_exc,
+                        )
+                        load_kwargs.pop("attn_implementation", None)
+                        model = AutoModelForVision2Seq.from_pretrained(model_id, **load_kwargs)
+                    else:
+                        raise
+            elif "attn_implementation" in load_kwargs:
                 logging.warning(
                     "OpenVLA model load failed with attn impl '%s': %s. Retrying without it.",
                     attn_impl,
                     exc,
                 )
-                model_kwargs.pop("attn_implementation", None)
-                model = AutoModelForVision2Seq.from_pretrained(model_id, **model_kwargs)
+                load_kwargs.pop("attn_implementation", None)
+                model = AutoModelForVision2Seq.from_pretrained(model_id, **load_kwargs)
             else:
                 raise
 
-        model.to(device)
+        if "device_map" not in load_kwargs:
+            model.to(device)
         model.eval()
 
         _OPENVLA_MODEL = model
@@ -316,11 +348,18 @@ class PolicyRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: Dict[str, Any], status_code: int = 200) -> None:
         response = json.dumps(payload).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(response)))
-        self.end_headers()
-        self.wfile.write(response)
+        try:
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+        except OSError as exc:
+            if exc.errno in _CLIENT_DISCONNECT_ERRNOS:
+                logging.debug("Client disconnected before response write completed: %s", exc)
+                self.close_connection = True
+                return
+            raise
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler naming)
         if self.path == "/health":
