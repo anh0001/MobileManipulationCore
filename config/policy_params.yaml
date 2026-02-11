@@ -7,7 +7,8 @@ policy:
 
   # Inference settings
   inference_rate: 0.5  # Hz (how often to run policy)
-  max_steps: 50        # Number of inference steps per task prompt before stopping
+  max_steps: 50        # Number of steps per prompt; set <=0 to run continuously until prompt is cleared
+  task_prompt_topic: "/manipulation/task_prompt"  # Topic used by task_prompt_cli and policy node
   batch_size: 1
   device: "cuda"  # cuda, cpu, or specific device like cuda:0
 
@@ -59,7 +60,7 @@ action:
 # Safety and monitoring
 safety:
   confidence_threshold: 0.0  # Minimum confidence to execute action
-  timeout_sec: 2.0  # Stop if no policy output received
+  timeout_sec: 6.0  # Keep > policy period and remote latency to avoid false safety stops
   log_frequency: 100  # Log every N inferences
 
 # Model-specific parameters (adjust based on your chosen model)

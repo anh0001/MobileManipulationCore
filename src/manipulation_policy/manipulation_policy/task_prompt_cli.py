@@ -26,8 +26,10 @@ Then type prompts like:
     > stop   (or press Ctrl+C to exit)
 """
 
+import argparse
 import sys
 import threading
+import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -41,6 +43,7 @@ The robot will execute the task using the VLA policy.
 
 Commands:
   stop        Clear the current task (robot stops acting)
+  clear       Alias for stop
   status      Show the last task sent
   help        Show this help message
   quit / exit Exit the CLI
@@ -57,6 +60,7 @@ Examples:
 class TaskPromptNode(Node):
     def __init__(self, topic: str):
         super().__init__('task_prompt_cli')
+        self.topic = topic
         self.pub = self.create_publisher(String, topic, 10)
         self.last_task = ''
 
@@ -72,12 +76,24 @@ def spin_thread(node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    argv = list(args) if args is not None else sys.argv[1:]
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        '--topic',
+        default='/manipulation/task_prompt',
+        help='Topic to publish task prompts to',
+    )
+    parser.add_argument(
+        '--wait-for-subscriber-sec',
+        type=float,
+        default=2.0,
+        help='Wait time for policy subscriber before entering prompt loop',
+    )
+    known_args, ros_args = parser.parse_known_args(argv)
 
-    topic = '/manipulation/task_prompt'
-    # Allow override via CLI: task_prompt_cli --ros-args -p topic:=/my/topic
-    # (rclpy handles --ros-args automatically; topic param not declared here
-    #  since it's a simple publisher — use the default or change the source)
+    rclpy.init(args=ros_args)
+
+    topic = known_args.topic
 
     node = TaskPromptNode(topic)
 
@@ -86,7 +102,16 @@ def main(args=None):
     t.start()
 
     print(HELP_TEXT)
-    print(f'Publishing to: {topic}')
+    wait_sec = max(0.0, float(known_args.wait_for_subscriber_sec))
+    if wait_sec > 0.0:
+        deadline = time.monotonic() + wait_sec
+        while time.monotonic() < deadline and node.pub.get_subscription_count() == 0:
+            time.sleep(0.05)
+
+    if node.pub.get_subscription_count() == 0:
+        print(f'Publishing to: {topic} (no subscribers detected yet)')
+    else:
+        print(f'Publishing to: {topic} ({node.pub.get_subscription_count()} subscriber(s))')
     print()
 
     try:
@@ -110,7 +135,9 @@ def main(args=None):
                     print(f'Current task: "{node.last_task}"')
                 else:
                     print('No task sent yet.')
-            elif lower == 'stop':
+                print(f'Topic: {node.topic}')
+                print(f'Subscribers: {node.pub.get_subscription_count()}')
+            elif lower in ('stop', 'clear'):
                 node.send('')
                 print('Task cleared. Robot will stop acting on previous prompt.')
             else:

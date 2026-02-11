@@ -189,6 +189,21 @@ piper_sdk_version: "1.2.3"
    # /adapter_node
    ```
 
+4. **Send interactive task prompts**:
+   ```bash
+   ros2 run manipulation_policy task_prompt_cli
+   ```
+   Then type natural-language prompts in the CLI:
+   ```text
+   > pick up the bottle
+   > place it in the bin
+   > stop
+   ```
+   Notes:
+   - Prompt topic defaults to `/manipulation/task_prompt` (configurable via `policy.task_prompt_topic`).
+   - `policy.max_steps` controls how many inference steps execute per prompt.
+   - Set `policy.max_steps <= 0` for continuous execution until `stop`/`clear`.
+
 ### In Simulation
 
 ```bash

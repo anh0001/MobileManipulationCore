@@ -92,6 +92,17 @@ ros2 launch manipulation_policy remote_server_launch.py
 ros2 launch manipulation_bringup core_launch.py use_remote_policy:=true
 ```
 
+**Interactive Task Prompts (OpenVLA via policy node):**
+```bash
+# In another terminal (after launching core stack):
+ros2 run manipulation_policy task_prompt_cli
+
+# Example prompts:
+# > pick up the bottle
+# > place the bottle on the table
+# > stop
+```
+
 ## Repository Structure
 
 ```

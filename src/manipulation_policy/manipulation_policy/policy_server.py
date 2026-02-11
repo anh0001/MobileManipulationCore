@@ -58,6 +58,14 @@ _OPENVLA_DEVICE = None
 _OPENVLA_DTYPE = None
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse common boolean env-var values."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _load_openvla() -> Tuple[Any, Any, str, Any]:
     """Load OpenVLA model and processor once (thread-safe)."""
     global _OPENVLA_MODEL, _OPENVLA_PROCESSOR, _OPENVLA_DEVICE, _OPENVLA_DTYPE
@@ -177,9 +185,10 @@ def _build_prompt(request: Dict[str, Any]) -> str:
     )
     if not instruction.lower().startswith("what action"):
         instruction = f"What action should the robot take to {instruction}?"
-    joint_context = _build_joint_state_context(request.get("joint_states"))
-    if joint_context:
-        instruction = f"{instruction}\n{joint_context}"
+    if _env_flag("OPENVLA_INCLUDE_JOINT_STATES_IN_PROMPT", default=False):
+        joint_context = _build_joint_state_context(request.get("joint_states"))
+        if joint_context:
+            instruction = f"{instruction}\n{joint_context}"
 
     return f"In: {instruction}\nOut:"
 

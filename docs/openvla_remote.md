@@ -212,7 +212,7 @@ Model dtype: torch.bfloat16
 The policy server now includes OpenVLA inference implementation in `src/manipulation_policy/manipulation_policy/policy_server.py`. The `build_stub_response()` function:
 
 - Decodes base64-encoded images from requests
-- Builds prompts from task instructions and joint states
+- Builds prompts from task instructions
 - Runs OpenVLA inference with Flash Attention 2
 - Converts 7-DOF actions (x, y, z, roll, pitch, yaw, gripper) to PolicyOutput JSON
 - Returns no-op responses when images are missing
@@ -223,6 +223,7 @@ The implementation supports:
 - Custom model selection via `OPENVLA_MODEL_ID` (default: `openvla/openvla-7b`)
 - Flash Attention 2 or fallback attention via `OPENVLA_ATTENTION_IMPL`
 - Action unnormalization via `OPENVLA_UNNORM_KEY` (default: `bridge_orig`)
+- Optional joint-state prompt context via `OPENVLA_INCLUDE_JOINT_STATES_IN_PROMPT` (default: `false`)
 
 ## Run the Remote Server
 
@@ -240,6 +241,8 @@ export OPENVLA_MODEL_ID="openvla/openvla-7b"  # or openvla/openvla-1b
 export OPENVLA_DEVICE="cuda"  # or cuda:0, cuda:1, etc.
 export OPENVLA_ATTENTION_IMPL="flash_attention_2"
 export OPENVLA_UNNORM_KEY="bridge_orig"
+# Optional: append joint states to prompt text (usually keep this disabled)
+export OPENVLA_INCLUDE_JOINT_STATES_IN_PROMPT="false"
 
 # Start the server
 python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 30542

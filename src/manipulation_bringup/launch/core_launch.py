@@ -70,6 +70,20 @@ def generate_launch_description():
     image_width = image_size[0] if isinstance(image_size, (list, tuple)) and len(image_size) > 0 else 224
     image_height = image_size[1] if isinstance(image_size, (list, tuple)) and len(image_size) > 1 else 224
     observation_topic = observation_cfg.get('topic', '/manipulation/observation')
+    inference_rate_hz = float(policy_cfg.get('inference_rate', 10.0))
+    configured_safety_timeout_sec = float(safety_cfg.get('timeout_sec', 2.0))
+
+    # Keep adapter safety timeout comfortably above expected policy output intervals.
+    # This avoids canceling active goals when inference runs slowly (e.g., 0.5 Hz remote OpenVLA).
+    effective_safety_timeout_sec = configured_safety_timeout_sec
+    if inference_rate_hz > 0.0:
+        effective_safety_timeout_sec = max(effective_safety_timeout_sec, 3.0 / inference_rate_hz)
+
+    # Remote inference callbacks can block up to timeout * retries. Account for that worst case.
+    remote_timeout_sec = float(remote_cfg.get('timeout', 1.0))
+    remote_retry_attempts = int(remote_cfg.get('retry_attempts', 3))
+    worst_case_remote_cycle_sec = remote_timeout_sec * max(1, remote_retry_attempts)
+    effective_safety_timeout_sec = max(effective_safety_timeout_sec, worst_case_remote_cycle_sec + 1.0)
 
     # Declare launch arguments
     use_remote_policy_arg = DeclareLaunchArgument(
@@ -142,6 +156,7 @@ def generate_launch_description():
             'joint_states_topic': joint_states_topic,
             'use_observation': True,
             'observation_topic': observation_topic,
+            'task_prompt_topic': policy_cfg.get('task_prompt_topic', '/manipulation/task_prompt'),
         }]
     )
 
@@ -167,6 +182,7 @@ def generate_launch_description():
             'joint_states_topic': joint_states_topic,
             'use_observation': True,
             'observation_topic': observation_topic,
+            'task_prompt_topic': policy_cfg.get('task_prompt_topic', '/manipulation/task_prompt'),
         }]
     )
 
@@ -210,7 +226,7 @@ def generate_launch_description():
             'gripper_command_epsilon': float(gripper_cfg.get('command_epsilon', 0.01)),
             'max_base_velocity': float(base_cfg.get('max_linear_velocity', 0.5)),
             'max_arm_velocity': float(arm_cfg.get('max_joint_velocity', 1.0)),
-            'safety_timeout_sec': float(safety_cfg.get('timeout_sec', 2.0)),
+            'safety_timeout_sec': effective_safety_timeout_sec,
             'workspace_frame_id': workspace_cfg.get(
                 'frame_id',
                 robot_frames.get('arm_base', 'piper_base_link'),

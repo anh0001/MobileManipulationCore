@@ -104,7 +104,7 @@ class PolicyNode(Node):
         self.latest_raw_image = None
         self.latest_raw_joint_states = None
         self.active_prompt = self.current_task_prompt or None
-        self.steps_remaining = 0
+        self.steps_remaining = self._compute_step_budget() if self.active_prompt else 0
         self.warned_no_cv2 = False
         self._warned_waiting_for_sensor_data = False
 
@@ -160,6 +160,12 @@ class PolicyNode(Node):
             self.get_logger().info(f'Using remote inference at: {self.remote_infer_url}')
 
         self.get_logger().info('Policy node initialized')
+
+    def _compute_step_budget(self):
+        """Return step budget for current prompt; <=0 means run until prompt is cleared."""
+        if self.max_steps <= 0:
+            return -1
+        return self.max_steps
 
     @staticmethod
     def _euler_to_quaternion(roll, pitch, yaw):
@@ -257,10 +263,15 @@ class PolicyNode(Node):
 
         if prompt:
             self.active_prompt = prompt
-            self.steps_remaining = self.max_steps
-            self.get_logger().info(
-                f'Task prompt set: "{prompt}" ({self.max_steps} steps)'
-            )
+            self.steps_remaining = self._compute_step_budget()
+            if self.steps_remaining < 0:
+                self.get_logger().info(
+                    f'Task prompt set: "{prompt}" (continuous until cleared)'
+                )
+            else:
+                self.get_logger().info(
+                    f'Task prompt set: "{prompt}" ({self.max_steps} steps)'
+                )
         else:
             self.active_prompt = None
             self.steps_remaining = 0
@@ -289,7 +300,7 @@ class PolicyNode(Node):
 
     def inference_callback(self):
         """Run one inference step for the active prompt, counting down the step budget."""
-        if not self.active_prompt or self.steps_remaining <= 0:
+        if not self.active_prompt or self.steps_remaining == 0:
             return
 
         image_msg, joint_states = self._select_inputs()
@@ -311,18 +322,23 @@ class PolicyNode(Node):
                 return
 
             self.policy_output_pub.publish(output)
-            self.steps_remaining -= 1
-            self.get_logger().info(
-                f'Published policy output for prompt: "{self.active_prompt}" '
-                f'(step {self.max_steps - self.steps_remaining}/{self.max_steps})'
-            )
-
-            if self.steps_remaining <= 0:
+            if self.steps_remaining > 0:
+                self.steps_remaining -= 1
                 self.get_logger().info(
-                    f'Task "{self.active_prompt}" reached max steps ({self.max_steps}), '
-                    f'waiting for next prompt'
+                    f'Published policy output for prompt: "{self.active_prompt}" '
+                    f'(step {self.max_steps - self.steps_remaining}/{self.max_steps})'
                 )
-                self.active_prompt = None
+                if self.steps_remaining <= 0:
+                    self.get_logger().info(
+                        f'Task "{self.active_prompt}" reached max steps ({self.max_steps}), '
+                        f'waiting for next prompt'
+                    )
+                    self.active_prompt = None
+            else:
+                self.get_logger().info(
+                    f'Published policy output for prompt: "{self.active_prompt}" '
+                    '(continuous mode)'
+                )
 
         except Exception as e:
             self.get_logger().error(f'Inference error: {str(e)}')
