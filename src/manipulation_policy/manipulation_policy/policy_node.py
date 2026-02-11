@@ -69,6 +69,7 @@ class PolicyNode(Node):
         self.declare_parameter('task_prompt', '')
         self.declare_parameter('task_prompt_topic', '/manipulation/task_prompt')
         self.declare_parameter('arm_base_frame', 'piper_base_link')
+        self.declare_parameter('reference_frame', '')
         self.declare_parameter('max_steps', 50)
 
         # Get parameters
@@ -92,8 +93,13 @@ class PolicyNode(Node):
         camera_topic = self.get_parameter('camera_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value
         self.arm_base_frame = self.get_parameter('arm_base_frame').value
-        # Bridge-Orig OpenVLA actions are interpreted in the robot arm base frame.
-        self.reference_frame = self.arm_base_frame if self.arm_base_frame else 'piper_base_link'
+        configured_reference_frame = self.get_parameter('reference_frame').value
+        # Bridge-Orig OpenVLA actions are interpreted in a base-like reference frame.
+        self.reference_frame = (
+            configured_reference_frame
+            if configured_reference_frame
+            else (self.arm_base_frame if self.arm_base_frame else 'piper_base_link')
+        )
         joint_states_topic = self.get_parameter('joint_states_topic').value
         self.use_observation = self.get_parameter('use_observation').value
         self.observation_topic = self.get_parameter('observation_topic').value

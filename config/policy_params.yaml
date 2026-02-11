@@ -11,6 +11,7 @@ policy:
   task_prompt_topic: "/manipulation/task_prompt"  # Topic used by task_prompt_cli and policy node
   batch_size: 1
   device: "cuda"  # cuda, cpu, or specific device like cuda:0
+  reference_frame: ""  # Optional action reference frame override; empty -> use arm_base_frame
 
   # Model optimization
   use_fp16: true  # Use half-precision for faster inference

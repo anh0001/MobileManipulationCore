@@ -107,6 +107,9 @@ ros2 run manipulation_policy task_prompt_cli
 - `policy_node` uses `arm_base_frame` as `reference_frame` (default: `piper_base_link`), not `camera_link`.
 - `core_launch.py` passes this from `config/robot_params.yaml` -> `robot.frames.arm_base`.
 - Keep `adapter_node.arm_base_frame` aligned with the same frame.
+- Optional Bridge-V2 virtual frames can be enabled in `config/robot_params.yaml` (`bridge_v2_virtual_frames.enabled`).
+  This publishes `bridge_v2_camera_virtual` attached to `piper_camera_link` and a derived
+  `bridge_v2_base_virtual`; policy outputs then use `bridge_v2_base_virtual` as `reference_frame`.
 
 ## Repository Structure
 

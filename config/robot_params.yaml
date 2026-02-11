@@ -29,6 +29,23 @@ robot:
     follow_joint_trajectory: "/piper_arm_controller/follow_joint_trajectory"
     gripper_follow_joint_trajectory: "/piper_gripper_controller/follow_joint_trajectory"
 
+bridge_v2_virtual_frames:
+  enabled: true
+  # Keep this on piper_camera_link to emulate Bridge-V2 camera conditioning from wrist camera data.
+  parent_camera_frame: "piper_camera_link"
+  camera_virtual_frame: "bridge_v2_camera_virtual"
+  base_virtual_frame: "bridge_v2_base_virtual"
+  # Bridge V2 nominal camera pose expressed in Bridge base frame.
+  # When enabled, launch inverts this pose and publishes:
+  # bridge_v2_camera_virtual -> bridge_v2_base_virtual
+  camera_in_bridge_base:
+    x: -0.18
+    y: 0.0
+    z: 0.50
+    roll: 0.0
+    pitch: -0.78539816339
+    yaw: 0.0
+
 # Base (mobile platform) parameters
 base:
   max_linear_velocity: 0.5  # m/s

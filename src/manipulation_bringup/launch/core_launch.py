@@ -20,6 +20,7 @@ This launch file starts all components needed for mobile manipulation
 on the real robot (Jetson-only deployment).
 """
 
+import math
 import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -48,6 +49,51 @@ def generate_launch_description():
         )
         return fallback
 
+    def normalize_quaternion(qx, qy, qz, qw):
+        norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+        if norm < 1e-12:
+            return 0.0, 0.0, 0.0, 1.0
+        inv = 1.0 / norm
+        return qx * inv, qy * inv, qz * inv, qw * inv
+
+    def rpy_to_quaternion(roll, pitch, yaw):
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        qw = cr * cp * cy + sr * sp * sy
+        return normalize_quaternion(qx, qy, qz, qw)
+
+    def quaternion_multiply(lhs, rhs):
+        lx, ly, lz, lw = lhs
+        rx, ry, rz, rw = rhs
+        return (
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+            lw * rw - lx * rx - ly * ry - lz * rz,
+        )
+
+    def rotate_vector(q, vec):
+        vx, vy, vz = vec
+        qx, qy, qz, qw = normalize_quaternion(*q)
+        q_vec = (vx, vy, vz, 0.0)
+        q_conj = (-qx, -qy, -qz, qw)
+        rotated = quaternion_multiply(quaternion_multiply((qx, qy, qz, qw), q_vec), q_conj)
+        return rotated[0], rotated[1], rotated[2]
+
+    def invert_transform(tx, ty, tz, roll, pitch, yaw):
+        qx, qy, qz, qw = rpy_to_quaternion(roll, pitch, yaw)
+        q_inv = (-qx, -qy, -qz, qw)
+        rx, ry, rz = rotate_vector(q_inv, (tx, ty, tz))
+        return -rx, -ry, -rz, q_inv[0], q_inv[1], q_inv[2], q_inv[3]
+
     robot_cfg = load_yaml(resolve_config_path('robot_params.yaml'))
     policy_cfg_full = load_yaml(resolve_config_path('policy_params.yaml'))
 
@@ -59,6 +105,7 @@ def generate_launch_description():
     gripper_cfg = robot_cfg.get('gripper', {})
     moveit_cfg = robot_cfg.get('moveit', {})
     workspace_cfg = robot_cfg.get('workspace', {})
+    bridge_virtual_cfg = robot_cfg.get('bridge_v2_virtual_frames', {})
 
     policy_cfg = policy_cfg_full.get('policy', {})
     action_cfg = policy_cfg_full.get('action', {})
@@ -84,6 +131,45 @@ def generate_launch_description():
     remote_retry_attempts = int(remote_cfg.get('retry_attempts', 3))
     worst_case_remote_cycle_sec = remote_timeout_sec * max(1, remote_retry_attempts)
     effective_safety_timeout_sec = max(effective_safety_timeout_sec, worst_case_remote_cycle_sec + 1.0)
+
+    bridge_virtual_enabled = bool(bridge_virtual_cfg.get('enabled', False))
+    bridge_parent_camera_frame = str(
+        bridge_virtual_cfg.get('parent_camera_frame', robot_frames.get('camera_link', ''))
+    )
+    bridge_camera_virtual_frame = str(
+        bridge_virtual_cfg.get('camera_virtual_frame', 'bridge_v2_camera_virtual')
+    )
+    bridge_base_virtual_frame = str(
+        bridge_virtual_cfg.get('base_virtual_frame', 'bridge_v2_base_virtual')
+    )
+
+    camera_in_bridge_base_cfg = bridge_virtual_cfg.get('camera_in_bridge_base', {})
+    bridge_cam_x = float(camera_in_bridge_base_cfg.get('x', -0.18))
+    bridge_cam_y = float(camera_in_bridge_base_cfg.get('y', 0.0))
+    bridge_cam_z = float(camera_in_bridge_base_cfg.get('z', 0.50))
+    bridge_cam_roll = float(camera_in_bridge_base_cfg.get('roll', 0.0))
+    bridge_cam_pitch = float(camera_in_bridge_base_cfg.get('pitch', -0.78539816339))
+    bridge_cam_yaw = float(camera_in_bridge_base_cfg.get('yaw', 0.0))
+
+    bridge_base_from_camera = invert_transform(
+        bridge_cam_x,
+        bridge_cam_y,
+        bridge_cam_z,
+        bridge_cam_roll,
+        bridge_cam_pitch,
+        bridge_cam_yaw,
+    )
+    configured_policy_reference_frame = str(policy_cfg.get('reference_frame', '')).strip()
+    policy_reference_frame = (
+        bridge_base_virtual_frame if bridge_virtual_enabled else configured_policy_reference_frame
+    )
+    if bridge_virtual_enabled and (
+        not bridge_parent_camera_frame
+        or not bridge_camera_virtual_frame
+        or not bridge_base_virtual_frame
+    ):
+        bridge_virtual_enabled = False
+        policy_reference_frame = configured_policy_reference_frame
 
     # Declare launch arguments
     use_remote_policy_arg = DeclareLaunchArgument(
@@ -133,6 +219,43 @@ def generate_launch_description():
         }]
     )
 
+    bridge_virtual_nodes = []
+    if bridge_virtual_enabled:
+        inv_x, inv_y, inv_z, inv_qx, inv_qy, inv_qz, inv_qw = bridge_base_from_camera
+        base_parent_frame = bridge_camera_virtual_frame
+        if bridge_camera_virtual_frame != bridge_parent_camera_frame:
+            bridge_virtual_nodes.append(
+                Node(
+                    package='tf2_ros',
+                    executable='static_transform_publisher',
+                    name='bridge_v2_camera_virtual_tf',
+                    output='screen',
+                    arguments=[
+                        '0.0', '0.0', '0.0',
+                        '0.0', '0.0', '0.0', '1.0',
+                        bridge_parent_camera_frame,
+                        bridge_camera_virtual_frame,
+                    ],
+                )
+            )
+        else:
+            base_parent_frame = bridge_parent_camera_frame
+
+        bridge_virtual_nodes.append(
+            Node(
+                package='tf2_ros',
+                executable='static_transform_publisher',
+                name='bridge_v2_base_virtual_tf',
+                output='screen',
+                arguments=[
+                    str(inv_x), str(inv_y), str(inv_z),
+                    str(inv_qx), str(inv_qy), str(inv_qz), str(inv_qw),
+                    base_parent_frame,
+                    bridge_base_virtual_frame,
+                ],
+            )
+        )
+
     # Policy node (local)
     policy_node_local = Node(
         package='manipulation_policy',
@@ -154,6 +277,7 @@ def generate_launch_description():
             'camera_topic': camera_topic,
             'camera_frame': robot_frames.get('camera_link', ''),
             'arm_base_frame': robot_frames.get('arm_base', 'piper_base_link'),
+            'reference_frame': policy_reference_frame,
             'joint_states_topic': joint_states_topic,
             'use_observation': True,
             'observation_topic': observation_topic,
@@ -181,6 +305,7 @@ def generate_launch_description():
             'camera_topic': camera_topic,
             'camera_frame': robot_frames.get('camera_link', ''),
             'arm_base_frame': robot_frames.get('arm_base', 'piper_base_link'),
+            'reference_frame': policy_reference_frame,
             'joint_states_topic': joint_states_topic,
             'use_observation': True,
             'observation_topic': observation_topic,
@@ -252,6 +377,7 @@ def generate_launch_description():
 
         # Nodes
         perception_node,
+        *bridge_virtual_nodes,
         policy_node_local,
         policy_node_remote,
         adapter_node,
