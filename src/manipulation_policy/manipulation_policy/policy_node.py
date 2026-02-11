@@ -59,7 +59,7 @@ class PolicyNode(Node):
         self.declare_parameter('use_fp16', True)
         self.declare_parameter('remote_timeout_sec', 1.0)
         self.declare_parameter('remote_retry_attempts', 3)
-        self.declare_parameter('remote_fallback_on_failure', True)
+        self.declare_parameter('remote_fallback_on_failure', False)
         self.declare_parameter('camera_topic', '/camera/color/image_raw')
         self.declare_parameter('camera_frame', '')
         self.declare_parameter('joint_states_topic', '/joint_states')
@@ -82,6 +82,12 @@ class PolicyNode(Node):
         self.remote_timeout_sec = self.get_parameter('remote_timeout_sec').value
         self.remote_retry_attempts = int(self.get_parameter('remote_retry_attempts').value)
         self.remote_fallback_on_failure = self.get_parameter('remote_fallback_on_failure').value
+        if self.use_remote and self.remote_fallback_on_failure:
+            self.get_logger().warn(
+                'remote_fallback_on_failure=true with use_remote=true is unsafe; '
+                'overriding to false to prevent stub actions.'
+            )
+            self.remote_fallback_on_failure = False
         self.remote_infer_url = f"{self.remote_url}/infer"
         camera_topic = self.get_parameter('camera_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value

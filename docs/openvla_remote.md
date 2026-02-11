@@ -271,6 +271,9 @@ Optional ROS 2 parameters to tune the remote path:
 - `remote_retry_attempts`
 - `remote_fallback_on_failure`
 
+Safety note:
+- Keep `remote_fallback_on_failure` set to `false` in remote mode so the robot does not execute stub/default actions when the OpenVLA server is unavailable or times out.
+
 ## Test the Remote Server
 
 1. Health check:
