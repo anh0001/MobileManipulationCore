@@ -11,7 +11,7 @@ bool has_eef_target
 float64[] joint_deltas
 bool has_joint_deltas
 
-# Gripper command
+# Gripper command (normalized)
 float64 gripper_command  # 0.0 = closed, 1.0 = open
 bool gripper_active
 

@@ -307,6 +307,14 @@ private:
 
   void processGripperCommand(double command)
   {
+    if (command < 0.0 || command > 1.0) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Received out-of-range gripper_command=%.4f; expected normalized [0, 1]. "
+        "Clamping before mapping to gripper joint position.",
+        command);
+    }
+
     double clamped = std::clamp(command, 0.0, 1.0);
     if (last_gripper_command_.has_value() &&
         std::abs(last_gripper_command_.value() - clamped) < gripper_command_epsilon_) {

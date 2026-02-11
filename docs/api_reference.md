@@ -46,6 +46,9 @@ float32 confidence
 **Usage:**
 Published by `policy_node`, subscribed by `adapter_node`.
 
+`gripper_command` is normalized. The adapter converts it to a joint-space target using configured
+`gripper_closed_position` and `gripper_open_position` (or per-joint arrays).
+
 ---
 
 ## Custom Actions

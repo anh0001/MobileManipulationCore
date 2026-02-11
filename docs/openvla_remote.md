@@ -30,7 +30,7 @@ Return JSON that maps to `manipulation_msgs/PolicyOutput.msg`:
 - `eef_target_pose.orientation` (object with `x`, `y`, `z`, `w` floats)
 - `has_joint_deltas` (bool)
 - `joint_deltas` (float array)
-- `gripper_command` (float)
+- `gripper_command` (float, normalized in `[0.0, 1.0]`; `0.0` = closed, `1.0` = open)
 - `gripper_active` (bool)
 - `has_base_hint` (bool)
 - `base_velocity_hint.linear` (object with `x`, `y`, `z` floats)
@@ -66,6 +66,18 @@ Example response:
 OpenVLA emits **delta** end-effector motions (not absolute poses). The robot-side adapter can interpret these
 as deltas when `action.eef_pose_is_delta: true` in `config/policy_params.yaml` (passed to the adapter as
 `eef_target_is_delta`). If you provide absolute targets instead, set this flag to `false`.
+
+### Gripper Semantics
+
+`gripper_command` is a normalized command, not a raw joint position. The adapter maps it to the configured
+gripper joint range as:
+
+`target = closed_position + gripper_command * (open_position - closed_position)`
+
+For the default Piper config in this repo, `closed_position = 0.0` and `open_position = 0.035`, so:
+- `gripper_command = 1.0` maps to `0.035` (fully open)
+- `gripper_command = 0.0` maps to `0.0` (fully closed)
+- `gripper_command = 0.996` maps to `0.03486` (effectively fully open)
 
 ## Remote GPU Server Setup
 
