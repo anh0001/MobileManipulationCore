@@ -35,8 +35,8 @@ policy:
 remote:
   enabled: true
   server_url: "http://100.112.100.20:30542"
-  timeout: 2.0  # seconds
-  retry_attempts: 3
+  timeout: 10.0  # seconds (safer for remote OpenVLA inference)
+  retry_attempts: 1  # avoid long retry chains that fall back to stub
   fallback_on_failure: true  # Use local stub policy if remote fails
 
 # Observation configuration
