@@ -71,6 +71,8 @@ class PolicyNode(Node):
         self.declare_parameter('arm_base_frame', 'piper_base_link')
         self.declare_parameter('reference_frame', '')
         self.declare_parameter('max_steps', 50)
+        self.declare_parameter('openvla_xyz_scaling', 1.0)
+        self.declare_parameter('openvla_rotation_scaling', 1.0)
 
         # Get parameters
         self.model_name = self.get_parameter('model_name').value
@@ -107,6 +109,14 @@ class PolicyNode(Node):
         self.current_task_prompt = self.get_parameter('task_prompt').value
         task_prompt_topic = self.get_parameter('task_prompt_topic').value
         self.max_steps = int(self.get_parameter('max_steps').value)
+        self.openvla_xyz_scaling = self._validated_positive_scaling(
+            self.get_parameter('openvla_xyz_scaling').value,
+            'openvla_xyz_scaling',
+        )
+        self.openvla_rotation_scaling = self._validated_positive_scaling(
+            self.get_parameter('openvla_rotation_scaling').value,
+            'openvla_rotation_scaling',
+        )
 
         # Initialize CV bridge
         self.bridge = CvBridge()
@@ -206,6 +216,24 @@ class PolicyNode(Node):
         if val < 0.0 or val > 1.0:
             val = (val + 1.0) * 0.5
         return max(0.0, min(1.0, val))
+
+    def _validated_positive_scaling(self, value, param_name):
+        """Validate a scaling parameter. Falls back to 1.0 when invalid."""
+        try:
+            scale = float(value)
+        except (TypeError, ValueError):
+            self.get_logger().warn(
+                f'{param_name} must be a finite number > 0; falling back to 1.0'
+            )
+            return 1.0
+
+        if not math.isfinite(scale) or scale <= 0.0:
+            self.get_logger().warn(
+                f'{param_name} must be a finite number > 0; falling back to 1.0'
+            )
+            return 1.0
+
+        return scale
 
     def _coerce_action_vector(self, value):
         """Convert a candidate action payload to a 7D float list if possible."""
@@ -390,6 +418,8 @@ class PolicyNode(Node):
         payload = {
             'reference_frame': self.reference_frame,
             'task': self.current_task_prompt,
+            'openvla_xyz_scaling': self.openvla_xyz_scaling,
+            'openvla_rotation_scaling': self.openvla_rotation_scaling,
             'joint_states': {
                 'name': list(joint_states.name),
                 'position': list(joint_states.position),
@@ -501,6 +531,12 @@ class PolicyNode(Node):
             action_values = self._extract_openvla_action(data)
             if action_values is not None:
                 dx, dy, dz, roll, pitch, yaw, gripper = action_values
+                dx *= self.openvla_xyz_scaling
+                dy *= self.openvla_xyz_scaling
+                dz *= self.openvla_xyz_scaling
+                roll *= self.openvla_rotation_scaling
+                pitch *= self.openvla_rotation_scaling
+                yaw *= self.openvla_rotation_scaling
                 qx, qy, qz, qw = self._euler_to_quaternion(roll, pitch, yaw)
 
                 output.has_eef_target = True

@@ -11,6 +11,8 @@ The repo ships a lightweight HTTP server in `src/manipulation_policy/manipulatio
 The policy node sends JSON to `POST /infer` with these fields:
 
 - `reference_frame` (string, optional)
+- `openvla_xyz_scaling` (float, optional; gain for OpenVLA xyz deltas, default `1.0`)
+- `openvla_rotation_scaling` (float, optional; gain for OpenVLA roll/pitch/yaw deltas, default `1.0`)
 - `joint_states` (object)
 - `joint_states.name` (string array)
 - `joint_states.position` (float array)
@@ -223,6 +225,8 @@ The implementation supports:
 - Custom model selection via `OPENVLA_MODEL_ID` (default: `openvla/openvla-7b`)
 - Flash Attention 2 or fallback attention via `OPENVLA_ATTENTION_IMPL`
 - Action unnormalization via `OPENVLA_UNNORM_KEY` (default: `bridge_orig`)
+- Action gains via request fields `openvla_xyz_scaling` / `openvla_rotation_scaling`
+- Env fallbacks `OPENVLA_XYZ_SCALING` / `OPENVLA_ROTATION_SCALING`
 - Optional joint-state prompt context via `OPENVLA_INCLUDE_JOINT_STATES_IN_PROMPT` (default: `false`)
 
 ## Run the Remote Server
@@ -241,6 +245,8 @@ export OPENVLA_MODEL_ID="openvla/openvla-7b"  # or openvla/openvla-1b
 export OPENVLA_DEVICE="cuda"  # or cuda:0, cuda:1, etc.
 export OPENVLA_ATTENTION_IMPL="flash_attention_2"
 export OPENVLA_UNNORM_KEY="bridge_orig"
+export OPENVLA_XYZ_SCALING="1.0"  # fallback xyz gain if request does not include openvla_xyz_scaling
+export OPENVLA_ROTATION_SCALING="1.0"  # fallback rotation gain if request does not include openvla_rotation_scaling
 # Optional: append joint states to prompt text (usually keep this disabled)
 export OPENVLA_INCLUDE_JOINT_STATES_IN_PROMPT="false"
 

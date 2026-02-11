@@ -201,6 +201,8 @@ ros2 run manipulation_perception perception_node \
 | `remote_retry_attempts` | int | 3 | Remote retry attempts |
 | `remote_fallback_on_failure` | bool | `true` | Fallback to stub when remote fails |
 | `inference_rate` | double | 10.0 | Inference frequency (Hz) |
+| `openvla_xyz_scaling` | double | 1.0 | Gain applied to OpenVLA xyz delta outputs |
+| `openvla_rotation_scaling` | double | 1.0 | Gain applied to OpenVLA roll/pitch/yaw delta outputs |
 | `device` | string | `cuda` | Compute device (cuda/cpu) |
 | `use_fp16` | bool | `true` | Use half-precision |
 

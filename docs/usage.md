@@ -152,6 +152,8 @@ Edit `config/policy_params.yaml`:
 policy:
   model_name: "openvla-7b"  # or your preferred model
   inference_rate: 10.0  # Adjust based on compute capability
+  action_scaling_xyz: 1.0  # Gain for OpenVLA xyz delta outputs
+  action_scaling_rotation: 1.0  # Gain for OpenVLA roll/pitch/yaw delta outputs
   use_fp16: true  # Enable for Jetson
   use_tensorrt: false  # Enable after optimization
 ```

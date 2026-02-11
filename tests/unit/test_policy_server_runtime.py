@@ -123,3 +123,95 @@ def test_load_openvla_uses_device_map_for_flash_attention(monkeypatch):
     assert load_kwargs["attn_implementation"] == "flash_attention_2"
     assert load_kwargs["torch_dtype"] == "fp16"
     assert load_kwargs["device_map"] == {"": "cuda"}
+
+
+def test_resolve_openvla_action_scalings_prefers_request_values(monkeypatch):
+    monkeypatch.setenv("OPENVLA_XYZ_SCALING", "0.3")
+    monkeypatch.setenv("OPENVLA_ROTATION_SCALING", "0.4")
+    xyz_scaling, rot_scaling = policy_server._resolve_openvla_action_scalings(
+        {"openvla_xyz_scaling": 0.6, "openvla_rotation_scaling": 0.7}
+    )
+    assert xyz_scaling == pytest.approx(0.6)
+    assert rot_scaling == pytest.approx(0.7)
+
+
+def test_resolve_openvla_action_scalings_use_component_env(monkeypatch):
+    monkeypatch.setenv("OPENVLA_XYZ_SCALING", "0.4")
+    monkeypatch.setenv("OPENVLA_ROTATION_SCALING", "0.8")
+    xyz_scaling, rot_scaling = policy_server._resolve_openvla_action_scalings({})
+    assert xyz_scaling == pytest.approx(0.4)
+    assert rot_scaling == pytest.approx(0.8)
+
+
+def test_resolve_openvla_action_scalings_default_to_one(monkeypatch):
+    monkeypatch.delenv("OPENVLA_XYZ_SCALING", raising=False)
+    monkeypatch.delenv("OPENVLA_ROTATION_SCALING", raising=False)
+    xyz_scaling, rot_scaling = policy_server._resolve_openvla_action_scalings({})
+    assert xyz_scaling == pytest.approx(1.0)
+    assert rot_scaling == pytest.approx(1.0)
+
+
+def test_resolve_openvla_action_scalings_invalid_values_fall_back(monkeypatch):
+    monkeypatch.delenv("OPENVLA_XYZ_SCALING", raising=False)
+    monkeypatch.delenv("OPENVLA_ROTATION_SCALING", raising=False)
+    xyz_scaling, rot_scaling = policy_server._resolve_openvla_action_scalings(
+        {"openvla_xyz_scaling": "bad", "openvla_rotation_scaling": "worse"}
+    )
+    assert xyz_scaling == pytest.approx(1.0)
+    assert rot_scaling == pytest.approx(1.0)
+
+
+def test_build_stub_response_applies_openvla_component_scalings(monkeypatch):
+    class _NoOpContextManager:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeTorchForInference:
+        @staticmethod
+        def inference_mode():
+            return _NoOpContextManager()
+
+        @staticmethod
+        def is_tensor(_):
+            return False
+
+    class _FakeProcessorForInference:
+        def __call__(self, **kwargs):
+            return {"input_ids": [1, 2, 3]}
+
+    class _FakeModelForInference:
+        def predict_action(self, **kwargs):
+            return [0.4, -0.2, 0.1, 0.2, -0.4, 0.6, 1.0]
+
+    monkeypatch.setattr(policy_server, "torch", _FakeTorchForInference())
+    monkeypatch.setattr(policy_server, "_decode_image", lambda request: object())
+    monkeypatch.setattr(
+        policy_server,
+        "_load_openvla",
+        lambda: (_FakeModelForInference(), _FakeProcessorForInference(), "cpu", "fp32"),
+    )
+
+    response = policy_server.build_stub_response(
+        {
+            "reference_frame": "piper_base_link",
+            "task": "pick up the bottle",
+            "openvla_xyz_scaling": 0.5,
+            "openvla_rotation_scaling": 0.25,
+        }
+    )
+
+    expected_qx, expected_qy, expected_qz, expected_qw = policy_server._euler_to_quaternion(
+        0.05, -0.1, 0.15
+    )
+    assert response["has_eef_target"] is True
+    assert response["eef_target_pose"]["position"]["x"] == pytest.approx(0.2)
+    assert response["eef_target_pose"]["position"]["y"] == pytest.approx(-0.1)
+    assert response["eef_target_pose"]["position"]["z"] == pytest.approx(0.05)
+    assert response["eef_target_pose"]["orientation"]["x"] == pytest.approx(expected_qx)
+    assert response["eef_target_pose"]["orientation"]["y"] == pytest.approx(expected_qy)
+    assert response["eef_target_pose"]["orientation"]["z"] == pytest.approx(expected_qz)
+    assert response["eef_target_pose"]["orientation"]["w"] == pytest.approx(expected_qw)
+    assert response["reference_frame"] == "piper_base_link"

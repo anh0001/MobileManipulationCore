@@ -72,6 +72,57 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _parse_positive_finite_float(value: Any, default: float, name: str) -> float:
+    """Parse a strictly-positive finite float with warning-based fallback."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using default %.3f", name, value, default)
+        return default
+
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        logging.warning("Invalid %s=%r; using default %.3f", name, value, default)
+        return default
+
+    return parsed
+
+
+def _resolve_openvla_action_scalings(request: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Resolve per-component OpenVLA action scaling for this request.
+
+    Precedence:
+    1. Request fields `openvla_xyz_scaling` / `openvla_rotation_scaling`
+    2. Env vars `OPENVLA_XYZ_SCALING` / `OPENVLA_ROTATION_SCALING`
+    3. Default 1.0
+    """
+    if "openvla_xyz_scaling" in request:
+        xyz_scaling = _parse_positive_finite_float(
+            request.get("openvla_xyz_scaling"), 1.0, "openvla_xyz_scaling"
+        )
+    else:
+        env_xyz = os.getenv("OPENVLA_XYZ_SCALING")
+        if env_xyz is not None:
+            xyz_scaling = _parse_positive_finite_float(env_xyz, 1.0, "OPENVLA_XYZ_SCALING")
+        else:
+            xyz_scaling = 1.0
+
+    if "openvla_rotation_scaling" in request:
+        rot_scaling = _parse_positive_finite_float(
+            request.get("openvla_rotation_scaling"), 1.0, "openvla_rotation_scaling"
+        )
+    else:
+        env_rot = os.getenv("OPENVLA_ROTATION_SCALING")
+        if env_rot is not None:
+            rot_scaling = _parse_positive_finite_float(
+                env_rot, 1.0, "OPENVLA_ROTATION_SCALING"
+            )
+        else:
+            rot_scaling = 1.0
+
+    return xyz_scaling, rot_scaling
+
+
 def _load_openvla() -> Tuple[Any, Any, str, Any]:
     """Load OpenVLA model and processor once (thread-safe)."""
     global _OPENVLA_MODEL, _OPENVLA_PROCESSOR, _OPENVLA_DEVICE, _OPENVLA_DTYPE
@@ -319,6 +370,13 @@ def build_stub_response(request: Dict[str, Any]) -> Dict[str, Any]:
     if not all(math.isfinite(v) for v in (dx, dy, dz, roll, pitch, yaw, gripper)):
         logging.warning("OpenVLA produced non-finite action values; returning no-op response.")
         return _empty_response(reference_frame)
+    xyz_scaling, rot_scaling = _resolve_openvla_action_scalings(request)
+    dx *= xyz_scaling
+    dy *= xyz_scaling
+    dz *= xyz_scaling
+    roll *= rot_scaling
+    pitch *= rot_scaling
+    yaw *= rot_scaling
     qx, qy, qz, qw = _euler_to_quaternion(roll, pitch, yaw)
 
     return {

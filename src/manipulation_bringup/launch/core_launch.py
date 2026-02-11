@@ -282,6 +282,8 @@ def generate_launch_description():
             'use_observation': True,
             'observation_topic': observation_topic,
             'task_prompt_topic': policy_cfg.get('task_prompt_topic', '/manipulation/task_prompt'),
+            'openvla_xyz_scaling': float(policy_cfg.get('action_scaling_xyz', 1.0)),
+            'openvla_rotation_scaling': float(policy_cfg.get('action_scaling_rotation', 1.0)),
         }]
     )
 
@@ -310,6 +312,8 @@ def generate_launch_description():
             'use_observation': True,
             'observation_topic': observation_topic,
             'task_prompt_topic': policy_cfg.get('task_prompt_topic', '/manipulation/task_prompt'),
+            'openvla_xyz_scaling': float(policy_cfg.get('action_scaling_xyz', 1.0)),
+            'openvla_rotation_scaling': float(policy_cfg.get('action_scaling_rotation', 1.0)),
         }]
     )
 
