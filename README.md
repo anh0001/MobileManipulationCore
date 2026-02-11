@@ -103,6 +103,11 @@ ros2 run manipulation_policy task_prompt_cli
 # > stop
 ```
 
+**OpenVLA Frame Note (Bridge-Orig):**
+- `policy_node` uses `arm_base_frame` as `reference_frame` (default: `piper_base_link`), not `camera_link`.
+- `core_launch.py` passes this from `config/robot_params.yaml` -> `robot.frames.arm_base`.
+- Keep `adapter_node.arm_base_frame` aligned with the same frame.
+
 ## Repository Structure
 
 ```

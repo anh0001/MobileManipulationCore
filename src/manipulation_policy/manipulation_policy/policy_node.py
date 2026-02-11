@@ -91,9 +91,9 @@ class PolicyNode(Node):
         self.remote_infer_url = f"{self.remote_url}/infer"
         camera_topic = self.get_parameter('camera_topic').value
         self.camera_frame = self.get_parameter('camera_frame').value
-        # OpenVLA outputs actions in the wrist camera frame (piper_camera_link).
-        # The frame follows REP-103 convention: X forward, Z up.
-        self.reference_frame = self.camera_frame if self.camera_frame else 'piper_camera_link'
+        self.arm_base_frame = self.get_parameter('arm_base_frame').value
+        # Bridge-Orig OpenVLA actions are interpreted in the robot arm base frame.
+        self.reference_frame = self.arm_base_frame if self.arm_base_frame else 'piper_base_link'
         joint_states_topic = self.get_parameter('joint_states_topic').value
         self.use_observation = self.get_parameter('use_observation').value
         self.observation_topic = self.get_parameter('observation_topic').value
@@ -485,8 +485,7 @@ class PolicyNode(Node):
             output.base_velocity_hint.angular.y = float(angular.get('y', 0.0))
             output.base_velocity_hint.angular.z = float(angular.get('z', 0.0))
 
-        # Actions from OpenVLA are expressed in the wrist camera frame (piper_camera_link),
-        # which is set to follow REP-103 convention: X forward, Z up.
+        # OpenVLA Bridge-Orig actions are interpreted in the configured arm base frame.
         output.reference_frame = str(data.get('reference_frame', self.reference_frame))
         output.confidence = float(data.get('confidence', 0.0))
         output.header.frame_id = output.reference_frame
