@@ -144,6 +144,20 @@ robot:
     # ... etc
 ```
 
+For arm execution, the default is MoveIt Servo:
+
+```yaml
+moveit:
+  arm_execution_mode: "moveit_servo"   # moveit_servo | move_group
+  servo_cartesian_topic: "/servo_node/delta_twist_cmds"
+  servo_publish_rate_hz: 30.0
+  servo_command_horizon_sec: 0.0       # <=0 derives from policy inference_rate
+  servo_max_linear_velocity: 0.10
+  servo_max_angular_velocity: 0.35
+  pause_base_during_servo: true
+  servo_start_service: "/servo_node/start_servo"
+```
+
 ### Policy Configuration
 
 Edit `config/policy_params.yaml`:
@@ -185,6 +199,11 @@ piper_sdk_version: "1.2.3"
 2. **Start manipulation stack**:
    ```bash
    ros2 launch manipulation_bringup core_launch.py
+   ```
+
+   Force legacy MoveGroup execution for regression/fallback:
+   ```bash
+   ros2 launch manipulation_bringup core_launch.py arm_execution_mode:=move_group
    ```
 
 3. **Verify nodes are running**:
@@ -239,6 +258,12 @@ Launch the base stack:
 ros2 launch robofi_bringup ranger_complete_bringup.launch.py
 ```
 
+`ranger_complete_bringup.launch.py` launches MoveIt Servo by default (`launch_moveit_servo:=true`).
+Disable Servo at the base stack level when needed:
+```bash
+ros2 launch robofi_bringup ranger_complete_bringup.launch.py launch_moveit_servo:=false
+```
+
 Then launch the manipulation stack:
 ```bash
 ros2 launch manipulation_bringup core_launch.py
@@ -252,6 +277,13 @@ ros2 launch manipulation_bringup core_launch.py
 You can also launch both stacks together (requires `robofi_bringup` to be in your ROS environment):
 ```bash
 ros2 launch manipulation_bringup ranger_integration.launch.py
+```
+
+Optional overrides:
+```bash
+ros2 launch manipulation_bringup ranger_integration.launch.py \
+  launch_moveit_servo:=true \
+  arm_execution_mode:=moveit_servo
 ```
 
 This will:

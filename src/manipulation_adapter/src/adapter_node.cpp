@@ -15,11 +15,16 @@
 #include <rclcpp/rclcpp.hpp>
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <chrono>
 #include <cmath>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -34,9 +39,11 @@
 #include <moveit_msgs/msg/position_constraint.hpp>
 #include <moveit_msgs/msg/planning_options.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Transform.h>
 
 /**
@@ -101,6 +108,14 @@ public:
     this->declare_parameter<double>("workspace_z_max", 1.0);
     this->declare_parameter<bool>("eef_target_is_delta", false);
     this->declare_parameter<std::string>("arm_base_frame", "piper_base_link");
+    this->declare_parameter<std::string>("arm_execution_mode", "moveit_servo");
+    this->declare_parameter<std::string>("servo_cartesian_topic", "/servo_node/delta_twist_cmds");
+    this->declare_parameter<double>("servo_publish_rate_hz", 30.0);
+    this->declare_parameter<double>("servo_command_horizon_sec", 2.0);
+    this->declare_parameter<double>("servo_max_linear_velocity", 0.10);
+    this->declare_parameter<double>("servo_max_angular_velocity", 0.35);
+    this->declare_parameter<bool>("pause_base_during_servo", true);
+    this->declare_parameter<std::string>("servo_start_service", "/servo_node/start_servo");
 
     // Get parameters
     base_frame_ = this->get_parameter("base_frame").as_string();
@@ -146,6 +161,38 @@ public:
     workspace_z_max_ = this->get_parameter("workspace_z_max").as_double();
     eef_target_is_delta_ = this->get_parameter("eef_target_is_delta").as_bool();
     arm_base_frame_ = this->get_parameter("arm_base_frame").as_string();
+    arm_execution_mode_ = this->get_parameter("arm_execution_mode").as_string();
+    servo_cartesian_topic_ = this->get_parameter("servo_cartesian_topic").as_string();
+    servo_publish_rate_hz_ = this->get_parameter("servo_publish_rate_hz").as_double();
+    servo_command_horizon_sec_ = this->get_parameter("servo_command_horizon_sec").as_double();
+    servo_max_linear_velocity_ = this->get_parameter("servo_max_linear_velocity").as_double();
+    servo_max_angular_velocity_ = this->get_parameter("servo_max_angular_velocity").as_double();
+    pause_base_during_servo_ = this->get_parameter("pause_base_during_servo").as_bool();
+    servo_start_service_ = this->get_parameter("servo_start_service").as_string();
+
+    std::transform(
+      arm_execution_mode_.begin(), arm_execution_mode_.end(), arm_execution_mode_.begin(),
+      [](unsigned char ch) {return static_cast<char>(std::tolower(ch));});
+    if (arm_execution_mode_ != "moveit_servo" && arm_execution_mode_ != "move_group") {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Unsupported arm_execution_mode='%s'; falling back to move_group",
+        arm_execution_mode_.c_str());
+      arm_execution_mode_ = "move_group";
+    }
+
+    if (servo_publish_rate_hz_ <= 0.0) {
+      servo_publish_rate_hz_ = 30.0;
+    }
+    if (servo_command_horizon_sec_ <= 0.0) {
+      servo_command_horizon_sec_ = 2.0;
+    }
+    if (servo_max_linear_velocity_ <= 0.0) {
+      servo_max_linear_velocity_ = 0.10;
+    }
+    if (servo_max_angular_velocity_ <= 0.0) {
+      servo_max_angular_velocity_ = 0.35;
+    }
 
     // Initialize TF
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -162,6 +209,8 @@ public:
 
     // Create publishers for hardware commands
     cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+    servo_twist_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>(
+      servo_cartesian_topic_, 10);
 
     nav_client_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(
       this, navigate_to_pose_action_);
@@ -174,11 +223,16 @@ public:
       move_group_client_ = rclcpp_action::create_client<moveit_msgs::action::MoveGroup>(
         this, move_group_action_);
     }
+    servo_start_client_ = this->create_client<std_srvs::srv::Trigger>(servo_start_service_);
 
     // Create safety timer
     safety_timer_ = this->create_wall_timer(
       std::chrono::milliseconds(static_cast<int>(safety_timeout_sec_ * 1000)),
       std::bind(&AdapterNode::safetyCheck, this));
+
+    servo_publish_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(static_cast<int>(1000.0 / servo_publish_rate_hz_)),
+      std::bind(&AdapterNode::publishServoCommand, this));
 
     RCLCPP_INFO(this->get_logger(), "Adapter node initialized");
     RCLCPP_INFO(this->get_logger(), "  Base frame: %s", base_frame_.c_str());
@@ -191,6 +245,13 @@ public:
     }
     RCLCPP_INFO(this->get_logger(), "  EEF target is delta: %s", eef_target_is_delta_ ? "true" : "false");
     RCLCPP_INFO(this->get_logger(), "  Arm base frame: %s", arm_base_frame_.c_str());
+    RCLCPP_INFO(this->get_logger(), "  Arm execution mode: %s", arm_execution_mode_.c_str());
+    if (isServoMode()) {
+      RCLCPP_INFO(this->get_logger(), "  Servo cartesian topic: %s", servo_cartesian_topic_.c_str());
+      RCLCPP_INFO(this->get_logger(), "  Servo command horizon: %.3fs", servo_command_horizon_sec_);
+      RCLCPP_INFO(this->get_logger(), "  Servo publish rate: %.1fHz", servo_publish_rate_hz_);
+      RCLCPP_INFO(this->get_logger(), "  Pause base during servo: %s", pause_base_during_servo_ ? "true" : "false");
+    }
   }
 
 private:
@@ -220,6 +281,12 @@ private:
 
     // Process base hint if available
     if (msg->has_base_hint) {
+      if (pause_base_during_servo_ && isServoCommandActive()) {
+        RCLCPP_DEBUG_THROTTLE(
+          this->get_logger(), *this->get_clock(), 2000,
+          "Skipping base velocity hint while servo arm command is active");
+        return;
+      }
       processBaseCommand(msg->base_velocity_hint);
     }
   }
@@ -245,6 +312,10 @@ private:
                 target_out.pose.position.x,
                 target_out.pose.position.y,
                 target_out.pose.position.z);
+
+    if (isServoMode()) {
+      return queueServoCommand(target_out);
+    }
 
     if (!use_moveit_) {
       RCLCPP_WARN_ONCE(this->get_logger(),
@@ -374,6 +445,220 @@ private:
     cmd_vel_pub_->publish(safe_twist);
     RCLCPP_DEBUG(this->get_logger(), "Base command: [%.2f, %.2f, %.2f]",
                  safe_twist.linear.x, safe_twist.linear.y, safe_twist.angular.z);
+  }
+
+  bool isServoMode() const
+  {
+    return arm_execution_mode_ == "moveit_servo";
+  }
+
+  bool isServoCommandActive()
+  {
+    if (!servo_command_active_.load()) {
+      return false;
+    }
+
+    std::lock_guard<std::mutex> lock(servo_mutex_);
+    return servo_command_active_.load() && this->now() <= servo_command_until_;
+  }
+
+  void requestServoStart()
+  {
+    if (!isServoMode() || servo_started_.load() || servo_start_requested_.load()) {
+      return;
+    }
+
+    if (!servo_start_client_) {
+      servo_start_client_ = this->create_client<std_srvs::srv::Trigger>(servo_start_service_);
+    }
+
+    if (!servo_start_client_->wait_for_service(std::chrono::milliseconds(100))) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Servo start service '%s' not available yet; continuing to publish commands",
+        servo_start_service_.c_str());
+      return;
+    }
+
+    servo_start_requested_.store(true);
+    auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+    servo_start_client_->async_send_request(
+      request,
+      [this](rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+        servo_start_requested_.store(false);
+        try {
+          auto response = future.get();
+          if (response && response->success) {
+            if (!servo_started_.load()) {
+              RCLCPP_INFO(
+                this->get_logger(), "MoveIt Servo started: %s", response->message.c_str());
+            }
+            servo_started_.store(true);
+          } else {
+            RCLCPP_WARN_THROTTLE(
+              this->get_logger(), *this->get_clock(), 5000,
+              "Failed to start MoveIt Servo via '%s'",
+              servo_start_service_.c_str());
+          }
+        } catch (const std::exception& ex) {
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "MoveIt Servo start call failed: %s", ex.what());
+        }
+      });
+  }
+
+  bool queueServoCommand(const geometry_msgs::msg::PoseStamped& target_in_arm_base)
+  {
+    geometry_msgs::msg::TransformStamped current_ee_tf;
+    try {
+      current_ee_tf = tf_buffer_->lookupTransform(
+        arm_base_frame_, ee_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_WARN(this->get_logger(),
+                  "TF lookup for current EEF in arm base '%s' failed: %s",
+                  arm_base_frame_.c_str(), ex.what());
+      return false;
+    }
+
+    const double horizon_sec = std::max(1e-3, servo_command_horizon_sec_);
+
+    geometry_msgs::msg::Twist target_twist;
+    target_twist.linear.x =
+      (target_in_arm_base.pose.position.x - current_ee_tf.transform.translation.x) / horizon_sec;
+    target_twist.linear.y =
+      (target_in_arm_base.pose.position.y - current_ee_tf.transform.translation.y) / horizon_sec;
+    target_twist.linear.z =
+      (target_in_arm_base.pose.position.z - current_ee_tf.transform.translation.z) / horizon_sec;
+
+    tf2::Quaternion q_current;
+    tf2::fromMsg(current_ee_tf.transform.rotation, q_current);
+    if (q_current.length2() < 1e-12) {
+      q_current.setValue(0.0, 0.0, 0.0, 1.0);
+    } else {
+      q_current.normalize();
+    }
+
+    tf2::Quaternion q_target;
+    tf2::fromMsg(target_in_arm_base.pose.orientation, q_target);
+    if (q_target.length2() < 1e-12) {
+      q_target.setValue(0.0, 0.0, 0.0, 1.0);
+    } else {
+      q_target.normalize();
+    }
+
+    tf2::Quaternion q_delta = q_target * q_current.inverse();
+    q_delta.normalize();
+
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    tf2::Matrix3x3(q_delta).getRPY(roll, pitch, yaw);
+
+    target_twist.angular.x = roll / horizon_sec;
+    target_twist.angular.y = pitch / horizon_sec;
+    target_twist.angular.z = yaw / horizon_sec;
+
+    auto clampVectorMagnitude = [](double& x, double& y, double& z, double max_magnitude) {
+      if (max_magnitude <= 0.0) {
+        return;
+      }
+      const double magnitude = std::sqrt(x * x + y * y + z * z);
+      if (magnitude <= max_magnitude || magnitude < 1e-12) {
+        return;
+      }
+      const double scale = max_magnitude / magnitude;
+      x *= scale;
+      y *= scale;
+      z *= scale;
+    };
+
+    clampVectorMagnitude(
+      target_twist.linear.x, target_twist.linear.y, target_twist.linear.z,
+      servo_max_linear_velocity_);
+    clampVectorMagnitude(
+      target_twist.angular.x, target_twist.angular.y, target_twist.angular.z,
+      servo_max_angular_velocity_);
+
+    {
+      std::lock_guard<std::mutex> lock(servo_mutex_);
+      latest_servo_twist_ = target_twist;
+      servo_command_until_ = this->now() + rclcpp::Duration::from_seconds(horizon_sec);
+      servo_command_active_.store(true);
+      servo_zero_sent_.store(false);
+    }
+
+    requestServoStart();
+    return true;
+  }
+
+  void publishServoCommand()
+  {
+    if (!isServoMode()) {
+      return;
+    }
+
+    geometry_msgs::msg::Twist twist_to_publish;
+    bool should_publish = false;
+
+    {
+      std::lock_guard<std::mutex> lock(servo_mutex_);
+      if (servo_command_active_.load()) {
+        if (this->now() <= servo_command_until_) {
+          twist_to_publish = latest_servo_twist_;
+          should_publish = true;
+        } else {
+          servo_command_active_.store(false);
+          if (!servo_zero_sent_.load()) {
+            twist_to_publish = geometry_msgs::msg::Twist();
+            servo_zero_sent_.store(true);
+            should_publish = true;
+          }
+        }
+      }
+    }
+
+    if (!should_publish) {
+      return;
+    }
+
+    geometry_msgs::msg::TwistStamped twist_stamped;
+    twist_stamped.header.stamp = this->now();
+    twist_stamped.header.frame_id = arm_base_frame_;
+    twist_stamped.twist = twist_to_publish;
+    servo_twist_pub_->publish(twist_stamped);
+  }
+
+  void publishServoZeroTwist()
+  {
+    if (!isServoMode()) {
+      return;
+    }
+    geometry_msgs::msg::TwistStamped twist_stamped;
+    twist_stamped.header.stamp = this->now();
+    twist_stamped.header.frame_id = arm_base_frame_;
+    servo_twist_pub_->publish(twist_stamped);
+  }
+
+  void stopServoCommand()
+  {
+    if (!isServoMode()) {
+      return;
+    }
+
+    bool should_publish_zero = false;
+    {
+      std::lock_guard<std::mutex> lock(servo_mutex_);
+      if (servo_command_active_.load() || !servo_zero_sent_.load()) {
+        should_publish_zero = true;
+      }
+      servo_command_active_.store(false);
+      servo_zero_sent_.store(true);
+    }
+
+    if (should_publish_zero) {
+      publishServoZeroTwist();
+    }
   }
 
   moveit_msgs::msg::Constraints buildPoseGoalConstraints(
@@ -628,6 +913,7 @@ private:
       cmd_vel_pub_->publish(zero_twist);
       if (!safety_stop_active_) {
         cancelActiveGoals();
+        stopServoCommand();
         safety_stop_active_ = true;
       }
       return;
@@ -787,6 +1073,14 @@ private:
   double workspace_z_max_;
   bool eef_target_is_delta_;
   std::string arm_base_frame_;
+  std::string arm_execution_mode_;
+  std::string servo_cartesian_topic_;
+  double servo_publish_rate_hz_;
+  double servo_command_horizon_sec_;
+  double servo_max_linear_velocity_;
+  double servo_max_angular_velocity_;
+  bool pause_base_during_servo_;
+  std::string servo_start_service_;
 
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -796,11 +1090,14 @@ private:
   rclcpp::Subscription<manipulation_msgs::msg::PolicyOutput>::SharedPtr policy_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr servo_twist_pub_;
   rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr nav_client_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr arm_client_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr gripper_client_;
   rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SharedPtr move_group_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_start_client_;
   rclcpp::TimerBase::SharedPtr safety_timer_;
+  rclcpp::TimerBase::SharedPtr servo_publish_timer_;
 
   // State
   rclcpp::Time last_policy_time_{0, 0, RCL_ROS_TIME};
@@ -810,11 +1107,18 @@ private:
   std::atomic<bool> arm_goal_active_{false};
   std::atomic<bool> gripper_goal_active_{false};
   std::mutex goal_mutex_;
+  std::mutex servo_mutex_;
   rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr moveit_goal_handle_;
   rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr
     arm_goal_handle_;
   rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr
     gripper_goal_handle_;
+  geometry_msgs::msg::Twist latest_servo_twist_;
+  rclcpp::Time servo_command_until_{0, 0, RCL_ROS_TIME};
+  std::atomic<bool> servo_command_active_{false};
+  std::atomic<bool> servo_zero_sent_{true};
+  std::atomic<bool> servo_started_{false};
+  std::atomic<bool> servo_start_requested_{false};
   bool safety_stop_active_{false};
 };
 

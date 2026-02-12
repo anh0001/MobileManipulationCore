@@ -94,6 +94,7 @@ gripper:
 # MoveIt parameters for the PiPER arm
 moveit:
   enabled: true
+  arm_execution_mode: "moveit_servo"  # Options: moveit_servo, move_group
   move_group_action: "/move_action"
   move_group_name: "piper_arm"
   eef_link: "piper_link6"
@@ -104,6 +105,13 @@ moveit:
   accel_scaling: 0.5
   position_tolerance: 0.01
   orientation_tolerance: 0.1
+  servo_cartesian_topic: "/servo_node/delta_twist_cmds"
+  servo_publish_rate_hz: 30.0
+  servo_command_horizon_sec: 0.0  # <=0 derives from policy inference rate
+  servo_max_linear_velocity: 0.10
+  servo_max_angular_velocity: 0.35
+  pause_base_during_servo: true
+  servo_start_service: "/servo_node/start_servo"
 
 # Workspace limits for end-effector reachability check
 workspace:

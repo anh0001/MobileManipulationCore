@@ -42,9 +42,23 @@ def generate_launch_description():
         description='URL of remote policy server',
     )
 
+    launch_moveit_servo_arg = DeclareLaunchArgument(
+        'launch_moveit_servo',
+        default_value='true',
+        description='Launch MoveIt Servo in ranger_complete_bringup',
+    )
+
+    arm_execution_mode_arg = DeclareLaunchArgument(
+        'arm_execution_mode',
+        default_value='moveit_servo',
+        description='Arm execution mode for manipulation adapter (moveit_servo or move_group)',
+    )
+
     launch_base = LaunchConfiguration('launch_base')
     use_remote_policy = LaunchConfiguration('use_remote_policy')
     remote_url = LaunchConfiguration('remote_url')
+    launch_moveit_servo = LaunchConfiguration('launch_moveit_servo')
+    arm_execution_mode = LaunchConfiguration('arm_execution_mode')
 
     base_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -55,6 +69,9 @@ def generate_launch_description():
             ])
         ]),
         condition=IfCondition(launch_base),
+        launch_arguments={
+            'launch_moveit_servo': launch_moveit_servo,
+        }.items(),
     )
 
     manipulation_launch = IncludeLaunchDescription(
@@ -68,6 +85,7 @@ def generate_launch_description():
         launch_arguments={
             'use_remote_policy': use_remote_policy,
             'remote_url': remote_url,
+            'arm_execution_mode': arm_execution_mode,
         }.items(),
     )
 
@@ -75,6 +93,8 @@ def generate_launch_description():
         launch_base_arg,
         use_remote_policy_arg,
         remote_url_arg,
+        launch_moveit_servo_arg,
+        arm_execution_mode_arg,
         base_launch,
         manipulation_launch,
     ])

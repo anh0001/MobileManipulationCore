@@ -137,6 +137,14 @@ Provided by `adapter_node` (future implementation).
 - **QoS:** Reliable, depth 10
 - **Rates:** Configurable, typically 5-10 Hz
 
+#### /servo_node/delta_twist_cmds
+- **Type:** `geometry_msgs/msg/TwistStamped`
+- **Description:** Cartesian velocity commands into MoveIt Servo (when `arm_execution_mode=moveit_servo`)
+- **Publishers:** `adapter_node`
+- **Subscribers:** `moveit_servo`
+- **QoS:** Reliable, depth 10
+- **Rates:** 30 Hz by default (configurable)
+
 ---
 
 ## Action Servers/Clients
@@ -259,6 +267,14 @@ ros2 run manipulation_policy policy_node \
 | `workspace_y_max` | double | 0.5 | Workspace boundary (m) |
 | `workspace_z_min` | double | 0.0 | Workspace boundary (m) |
 | `workspace_z_max` | double | 1.0 | Workspace boundary (m) |
+| `arm_execution_mode` | string | `moveit_servo` | Arm execution path (`moveit_servo` or `move_group`) |
+| `servo_cartesian_topic` | string | `/servo_node/delta_twist_cmds` | MoveIt Servo Cartesian input topic |
+| `servo_publish_rate_hz` | double | 30.0 | Servo command publish rate |
+| `servo_command_horizon_sec` | double | 2.0 | Time horizon used to convert pose deltas to twists |
+| `servo_max_linear_velocity` | double | 0.10 | Linear velocity clamp for Servo commands |
+| `servo_max_angular_velocity` | double | 0.35 | Angular velocity clamp for Servo commands |
+| `pause_base_during_servo` | bool | true | Suppress base hints while arm Servo command is active |
+| `servo_start_service` | string | `/servo_node/start_servo` | Trigger service used to start MoveIt Servo |
 
 **Example:**
 ```bash

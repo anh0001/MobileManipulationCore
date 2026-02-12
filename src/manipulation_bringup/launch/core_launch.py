@@ -158,6 +158,17 @@ def generate_launch_description():
     worst_case_remote_cycle_sec = remote_timeout_sec * max(1, remote_retry_attempts)
     effective_safety_timeout_sec = max(effective_safety_timeout_sec, worst_case_remote_cycle_sec + 1.0)
 
+    default_arm_execution_mode = str(
+        moveit_cfg.get('arm_execution_mode', 'moveit_servo')
+    ).strip() or 'moveit_servo'
+    configured_servo_horizon_sec = float(moveit_cfg.get('servo_command_horizon_sec', 0.0))
+    if configured_servo_horizon_sec > 0.0:
+        effective_servo_horizon_sec = configured_servo_horizon_sec
+    elif inference_rate_hz > 0.0:
+        effective_servo_horizon_sec = 1.0 / inference_rate_hz
+    else:
+        effective_servo_horizon_sec = 2.0
+
     bridge_virtual_enabled = bool(bridge_virtual_cfg.get('enabled', False))
     bridge_parent_camera_frame = str(
         bridge_virtual_cfg.get('parent_camera_frame', robot_frames.get('camera_link', ''))
@@ -216,10 +227,17 @@ def generate_launch_description():
         description='Camera topic for visual input'
     )
 
+    arm_execution_mode_arg = DeclareLaunchArgument(
+        'arm_execution_mode',
+        default_value=default_arm_execution_mode,
+        description='Arm execution mode for adapter_node: moveit_servo or move_group',
+    )
+
     # Get launch configurations
     use_remote_policy = LaunchConfiguration('use_remote_policy')
     remote_url = LaunchConfiguration('remote_url')
     camera_topic = LaunchConfiguration('camera_topic')
+    arm_execution_mode = LaunchConfiguration('arm_execution_mode')
     joint_states_topic = robot_topics.get('joint_states', '/joint_states')
 
     # Perception node
@@ -404,6 +422,24 @@ def generate_launch_description():
             'workspace_z_max': float(workspace_cfg.get('z_max', 1.0)),
             'eef_target_is_delta': bool(action_cfg.get('eef_pose_is_delta', False)),
             'arm_base_frame': robot_frames.get('arm_base', 'piper_base_link'),
+            'arm_execution_mode': arm_execution_mode,
+            'servo_cartesian_topic': moveit_cfg.get(
+                'servo_cartesian_topic', '/servo_node/delta_twist_cmds'
+            ),
+            'servo_publish_rate_hz': float(moveit_cfg.get('servo_publish_rate_hz', 30.0)),
+            'servo_command_horizon_sec': float(effective_servo_horizon_sec),
+            'servo_max_linear_velocity': float(
+                moveit_cfg.get('servo_max_linear_velocity', 0.10)
+            ),
+            'servo_max_angular_velocity': float(
+                moveit_cfg.get('servo_max_angular_velocity', 0.35)
+            ),
+            'pause_base_during_servo': bool(
+                moveit_cfg.get('pause_base_during_servo', True)
+            ),
+            'servo_start_service': moveit_cfg.get(
+                'servo_start_service', '/servo_node/start_servo'
+            ),
         }]
     )
 
@@ -412,6 +448,7 @@ def generate_launch_description():
         use_remote_policy_arg,
         remote_url_arg,
         camera_topic_arg,
+        arm_execution_mode_arg,
 
         # Nodes
         perception_node,

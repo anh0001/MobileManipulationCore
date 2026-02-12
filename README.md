@@ -110,6 +110,7 @@ ros2 run manipulation_policy task_prompt_cli
 - `policy_node` uses `arm_base_frame` as `reference_frame` (default: `piper_base_link`), not `camera_link`.
 - `core_launch.py` passes this from `config/robot_params.yaml` -> `robot.frames.arm_base`.
 - Keep `adapter_node.arm_base_frame` aligned with the same frame.
+- Arm execution is runtime-selectable via `arm_execution_mode` (`moveit_servo` default, `move_group` fallback).
 - Optional Bridge-V2 virtual frames can be enabled in `config/robot_params.yaml` (`bridge_v2_virtual_frames.enabled`).
   This publishes `bridge_v2_camera_virtual` attached to `piper_camera_link` and a derived
   `bridge_v2_base_virtual`; policy outputs then use `bridge_v2_base_virtual` as `reference_frame`.
@@ -150,7 +151,7 @@ MobileManipulationCore/
 **Outputs (to hardware controllers):**
 - `/cmd_vel` - Base velocity commands
 - `/navigate_to_pose` - Navigation goals (Nav2 action)
-- Arm control via `FollowJointTrajectory` action
+- Arm control via MoveIt Servo (`/servo_node/delta_twist_cmds`) or `FollowJointTrajectory`/MoveGroup fallback
 
 See [API Reference](docs/api_reference.md) for complete interface documentation.
 
