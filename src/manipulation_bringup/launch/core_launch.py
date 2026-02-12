@@ -49,6 +49,18 @@ def generate_launch_description():
         )
         return fallback
 
+    def normalize_bounds(value, default):
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return [default[0], default[1]]
+        try:
+            lower = float(value[0])
+            upper = float(value[1])
+        except (TypeError, ValueError):
+            return [default[0], default[1]]
+        if not math.isfinite(lower) or not math.isfinite(upper) or lower > upper:
+            return [default[0], default[1]]
+        return [lower, upper]
+
     def normalize_quaternion(qx, qy, qz, qw):
         norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
         if norm < 1e-12:
@@ -112,6 +124,20 @@ def generate_launch_description():
     remote_cfg = policy_cfg_full.get('remote', {})
     safety_cfg = policy_cfg_full.get('safety', {})
     observation_cfg = policy_cfg_full.get('observation', {})
+    action_bounds_cfg = policy_cfg.get('action_bounds', {})
+    openvla_clip_actions = bool(policy_cfg.get('clip_actions', False))
+    openvla_position_bounds = normalize_bounds(
+        action_bounds_cfg.get('position', [-1.0, 1.0]),
+        (-1.0, 1.0),
+    )
+    openvla_rotation_bounds = normalize_bounds(
+        action_bounds_cfg.get('rotation', [-math.pi, math.pi]),
+        (-math.pi, math.pi),
+    )
+    openvla_gripper_bounds = normalize_bounds(
+        action_bounds_cfg.get('gripper', [0.0, 1.0]),
+        (0.0, 1.0),
+    )
 
     image_size = policy_cfg.get('image_size', [224, 224])
     image_width = image_size[0] if isinstance(image_size, (list, tuple)) and len(image_size) > 0 else 224
@@ -284,6 +310,10 @@ def generate_launch_description():
             'task_prompt_topic': policy_cfg.get('task_prompt_topic', '/manipulation/task_prompt'),
             'openvla_xyz_scaling': float(policy_cfg.get('action_scaling_xyz', 1.0)),
             'openvla_rotation_scaling': float(policy_cfg.get('action_scaling_rotation', 1.0)),
+            'openvla_clip_actions': openvla_clip_actions,
+            'openvla_position_bounds': openvla_position_bounds,
+            'openvla_rotation_bounds': openvla_rotation_bounds,
+            'openvla_gripper_bounds': openvla_gripper_bounds,
         }]
     )
 
@@ -314,6 +344,10 @@ def generate_launch_description():
             'task_prompt_topic': policy_cfg.get('task_prompt_topic', '/manipulation/task_prompt'),
             'openvla_xyz_scaling': float(policy_cfg.get('action_scaling_xyz', 1.0)),
             'openvla_rotation_scaling': float(policy_cfg.get('action_scaling_rotation', 1.0)),
+            'openvla_clip_actions': openvla_clip_actions,
+            'openvla_position_bounds': openvla_position_bounds,
+            'openvla_rotation_bounds': openvla_rotation_bounds,
+            'openvla_gripper_bounds': openvla_gripper_bounds,
         }]
     )
 

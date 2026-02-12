@@ -13,6 +13,10 @@ The policy node sends JSON to `POST /infer` with these fields:
 - `reference_frame` (string, optional)
 - `openvla_xyz_scaling` (float, optional; gain for OpenVLA xyz deltas, default `1.0`)
 - `openvla_rotation_scaling` (float, optional; gain for OpenVLA roll/pitch/yaw deltas, default `1.0`)
+- `openvla_clip_actions` (bool, optional; clamp scaled OpenVLA outputs, default `false`)
+- `openvla_position_bounds` (float[2], optional; clamp bounds for xyz deltas)
+- `openvla_rotation_bounds` (float[2], optional; clamp bounds for roll/pitch/yaw deltas)
+- `openvla_gripper_bounds` (float[2], optional; clamp bounds for raw gripper output before normalization)
 - `joint_states` (object)
 - `joint_states.name` (string array)
 - `joint_states.position` (float array)
@@ -224,9 +228,13 @@ The implementation supports:
 - GPU/CPU device selection via `OPENVLA_DEVICE` environment variable
 - Custom model selection via `OPENVLA_MODEL_ID` (default: `openvla/openvla-7b`)
 - Flash Attention 2 or fallback attention via `OPENVLA_ATTENTION_IMPL`
-- Action unnormalization via `OPENVLA_UNNORM_KEY` (default: `bridge_orig`)
+- Optional action unnormalization via `OPENVLA_UNNORM_KEY` (unset by default in this repo)
 - Action gains via request fields `openvla_xyz_scaling` / `openvla_rotation_scaling`
 - Env fallbacks `OPENVLA_XYZ_SCALING` / `OPENVLA_ROTATION_SCALING`
+- Optional output clamping via request fields `openvla_clip_actions`, `openvla_position_bounds`,
+  `openvla_rotation_bounds`, `openvla_gripper_bounds`
+- Env fallbacks `OPENVLA_CLIP_ACTIONS`, `OPENVLA_POSITION_BOUNDS`,
+  `OPENVLA_ROTATION_BOUNDS`, `OPENVLA_GRIPPER_BOUNDS`
 - Optional joint-state prompt context via `OPENVLA_INCLUDE_JOINT_STATES_IN_PROMPT` (default: `false`)
 
 ## Run the Remote Server
@@ -244,9 +252,14 @@ cd ~/MobileManipulationCore
 export OPENVLA_MODEL_ID="openvla/openvla-7b"  # or openvla/openvla-1b
 export OPENVLA_DEVICE="cuda"  # or cuda:0, cuda:1, etc.
 export OPENVLA_ATTENTION_IMPL="flash_attention_2"
-export OPENVLA_UNNORM_KEY="bridge_orig"
+# Optional: only set this if your model checkpoint expects a specific unnorm key
+# export OPENVLA_UNNORM_KEY="your_unnorm_key"
 export OPENVLA_XYZ_SCALING="1.0"  # fallback xyz gain if request does not include openvla_xyz_scaling
 export OPENVLA_ROTATION_SCALING="1.0"  # fallback rotation gain if request does not include openvla_rotation_scaling
+export OPENVLA_CLIP_ACTIONS="false"  # fallback clamp toggle if request does not include openvla_clip_actions
+export OPENVLA_POSITION_BOUNDS="-1.0,1.0"  # fallback clamp bounds for xyz deltas
+export OPENVLA_ROTATION_BOUNDS="-3.141592653589793,3.141592653589793"  # fallback clamp bounds for roll/pitch/yaw deltas
+export OPENVLA_GRIPPER_BOUNDS="0.0,1.0"  # fallback clamp bounds for raw gripper output
 # Optional: append joint states to prompt text (usually keep this disabled)
 export OPENVLA_INCLUDE_JOINT_STATES_IN_PROMPT="false"
 

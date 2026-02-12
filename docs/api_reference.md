@@ -203,6 +203,10 @@ ros2 run manipulation_perception perception_node \
 | `inference_rate` | double | 10.0 | Inference frequency (Hz) |
 | `openvla_xyz_scaling` | double | 1.0 | Gain applied to OpenVLA xyz delta outputs |
 | `openvla_rotation_scaling` | double | 1.0 | Gain applied to OpenVLA roll/pitch/yaw delta outputs |
+| `openvla_clip_actions` | bool | `false` | Clamp scaled OpenVLA outputs before conversion |
+| `openvla_position_bounds` | double[] | `[-1.0, 1.0]` | Clamp bounds for xyz deltas when clamping is enabled |
+| `openvla_rotation_bounds` | double[] | `[-3.141592653589793, 3.141592653589793]` | Clamp bounds for roll/pitch/yaw deltas when clamping is enabled |
+| `openvla_gripper_bounds` | double[] | `[0.0, 1.0]` | Clamp bounds for raw OpenVLA gripper output when clamping is enabled |
 | `device` | string | `cuda` | Compute device (cuda/cpu) |
 | `use_fp16` | bool | `true` | Use half-precision |
 

@@ -73,6 +73,10 @@ class PolicyNode(Node):
         self.declare_parameter('max_steps', 50)
         self.declare_parameter('openvla_xyz_scaling', 1.0)
         self.declare_parameter('openvla_rotation_scaling', 1.0)
+        self.declare_parameter('openvla_clip_actions', False)
+        self.declare_parameter('openvla_position_bounds', [-1.0, 1.0])
+        self.declare_parameter('openvla_rotation_bounds', [-3.141592653589793, 3.141592653589793])
+        self.declare_parameter('openvla_gripper_bounds', [0.0, 1.0])
 
         # Get parameters
         self.model_name = self.get_parameter('model_name').value
@@ -116,6 +120,22 @@ class PolicyNode(Node):
         self.openvla_rotation_scaling = self._validated_positive_scaling(
             self.get_parameter('openvla_rotation_scaling').value,
             'openvla_rotation_scaling',
+        )
+        self.openvla_clip_actions = bool(self.get_parameter('openvla_clip_actions').value)
+        self.openvla_position_bounds = self._validated_bounds(
+            self.get_parameter('openvla_position_bounds').value,
+            (-1.0, 1.0),
+            'openvla_position_bounds',
+        )
+        self.openvla_rotation_bounds = self._validated_bounds(
+            self.get_parameter('openvla_rotation_bounds').value,
+            (-math.pi, math.pi),
+            'openvla_rotation_bounds',
+        )
+        self.openvla_gripper_bounds = self._validated_bounds(
+            self.get_parameter('openvla_gripper_bounds').value,
+            (0.0, 1.0),
+            'openvla_gripper_bounds',
         )
 
         # Initialize CV bridge
@@ -217,6 +237,12 @@ class PolicyNode(Node):
             val = (val + 1.0) * 0.5
         return max(0.0, min(1.0, val))
 
+    @staticmethod
+    def _clamp(value, bounds):
+        """Clamp a scalar to inclusive [lower, upper] bounds."""
+        lower, upper = bounds
+        return max(lower, min(upper, value))
+
     def _validated_positive_scaling(self, value, param_name):
         """Validate a scaling parameter. Falls back to 1.0 when invalid."""
         try:
@@ -234,6 +260,34 @@ class PolicyNode(Node):
             return 1.0
 
         return scale
+
+    def _validated_bounds(self, value, default_bounds, param_name):
+        """Validate [min, max] bounds and return a tuple fallback when invalid."""
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            self.get_logger().warn(
+                f'{param_name} must be a two-element numeric array; '
+                f'falling back to [{default_bounds[0]}, {default_bounds[1]}]'
+            )
+            return default_bounds
+
+        try:
+            lower = float(value[0])
+            upper = float(value[1])
+        except (TypeError, ValueError):
+            self.get_logger().warn(
+                f'{param_name} must be a two-element numeric array; '
+                f'falling back to [{default_bounds[0]}, {default_bounds[1]}]'
+            )
+            return default_bounds
+
+        if not math.isfinite(lower) or not math.isfinite(upper) or lower > upper:
+            self.get_logger().warn(
+                f'{param_name} must be finite and satisfy min <= max; '
+                f'falling back to [{default_bounds[0]}, {default_bounds[1]}]'
+            )
+            return default_bounds
+
+        return (lower, upper)
 
     def _coerce_action_vector(self, value):
         """Convert a candidate action payload to a 7D float list if possible."""
@@ -420,6 +474,19 @@ class PolicyNode(Node):
             'task': self.current_task_prompt,
             'openvla_xyz_scaling': self.openvla_xyz_scaling,
             'openvla_rotation_scaling': self.openvla_rotation_scaling,
+            'openvla_clip_actions': self.openvla_clip_actions,
+            'openvla_position_bounds': [
+                self.openvla_position_bounds[0],
+                self.openvla_position_bounds[1],
+            ],
+            'openvla_rotation_bounds': [
+                self.openvla_rotation_bounds[0],
+                self.openvla_rotation_bounds[1],
+            ],
+            'openvla_gripper_bounds': [
+                self.openvla_gripper_bounds[0],
+                self.openvla_gripper_bounds[1],
+            ],
             'joint_states': {
                 'name': list(joint_states.name),
                 'position': list(joint_states.position),
@@ -537,6 +604,14 @@ class PolicyNode(Node):
                 roll *= self.openvla_rotation_scaling
                 pitch *= self.openvla_rotation_scaling
                 yaw *= self.openvla_rotation_scaling
+                if self.openvla_clip_actions:
+                    dx = self._clamp(dx, self.openvla_position_bounds)
+                    dy = self._clamp(dy, self.openvla_position_bounds)
+                    dz = self._clamp(dz, self.openvla_position_bounds)
+                    roll = self._clamp(roll, self.openvla_rotation_bounds)
+                    pitch = self._clamp(pitch, self.openvla_rotation_bounds)
+                    yaw = self._clamp(yaw, self.openvla_rotation_bounds)
+                    gripper = self._clamp(gripper, self.openvla_gripper_bounds)
                 qx, qy, qz, qw = self._euler_to_quaternion(roll, pitch, yaw)
 
                 output.has_eef_target = True

@@ -161,6 +161,41 @@ def test_resolve_openvla_action_scalings_invalid_values_fall_back(monkeypatch):
     assert rot_scaling == pytest.approx(1.0)
 
 
+def test_resolve_openvla_action_clamps_prefers_request_values(monkeypatch):
+    monkeypatch.setenv("OPENVLA_CLIP_ACTIONS", "false")
+    monkeypatch.setenv("OPENVLA_POSITION_BOUNDS", "-0.9,0.9")
+    monkeypatch.setenv("OPENVLA_ROTATION_BOUNDS", "-0.8,0.8")
+    monkeypatch.setenv("OPENVLA_GRIPPER_BOUNDS", "0.1,0.9")
+    clip_actions, position_bounds, rotation_bounds, gripper_bounds = (
+        policy_server._resolve_openvla_action_clamps(
+            {
+                "openvla_clip_actions": True,
+                "openvla_position_bounds": [-0.3, 0.3],
+                "openvla_rotation_bounds": [-0.2, 0.2],
+                "openvla_gripper_bounds": [0.0, 1.0],
+            }
+        )
+    )
+    assert clip_actions is True
+    assert position_bounds == pytest.approx((-0.3, 0.3))
+    assert rotation_bounds == pytest.approx((-0.2, 0.2))
+    assert gripper_bounds == pytest.approx((0.0, 1.0))
+
+
+def test_resolve_openvla_action_clamps_use_env(monkeypatch):
+    monkeypatch.setenv("OPENVLA_CLIP_ACTIONS", "true")
+    monkeypatch.setenv("OPENVLA_POSITION_BOUNDS", "-0.6,0.6")
+    monkeypatch.setenv("OPENVLA_ROTATION_BOUNDS", "-0.4,0.4")
+    monkeypatch.setenv("OPENVLA_GRIPPER_BOUNDS", "0.2,0.8")
+    clip_actions, position_bounds, rotation_bounds, gripper_bounds = (
+        policy_server._resolve_openvla_action_clamps({})
+    )
+    assert clip_actions is True
+    assert position_bounds == pytest.approx((-0.6, 0.6))
+    assert rotation_bounds == pytest.approx((-0.4, 0.4))
+    assert gripper_bounds == pytest.approx((0.2, 0.8))
+
+
 def test_build_stub_response_applies_openvla_component_scalings(monkeypatch):
     class _NoOpContextManager:
         def __enter__(self):
@@ -215,3 +250,154 @@ def test_build_stub_response_applies_openvla_component_scalings(monkeypatch):
     assert response["eef_target_pose"]["orientation"]["z"] == pytest.approx(expected_qz)
     assert response["eef_target_pose"]["orientation"]["w"] == pytest.approx(expected_qw)
     assert response["reference_frame"] == "piper_base_link"
+
+
+def test_build_stub_response_applies_openvla_component_clamps(monkeypatch):
+    class _NoOpContextManager:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeTorchForInference:
+        @staticmethod
+        def inference_mode():
+            return _NoOpContextManager()
+
+        @staticmethod
+        def is_tensor(_):
+            return False
+
+    class _FakeProcessorForInference:
+        def __call__(self, **kwargs):
+            return {"input_ids": [1, 2, 3]}
+
+    class _FakeModelForInference:
+        def predict_action(self, **kwargs):
+            return [0.9, -0.8, 0.7, 0.6, -0.5, 0.4, 1.3]
+
+    monkeypatch.setattr(policy_server, "torch", _FakeTorchForInference())
+    monkeypatch.setattr(policy_server, "_decode_image", lambda request: object())
+    monkeypatch.setattr(
+        policy_server,
+        "_load_openvla",
+        lambda: (_FakeModelForInference(), _FakeProcessorForInference(), "cpu", "fp32"),
+    )
+
+    response = policy_server.build_stub_response(
+        {
+            "reference_frame": "piper_base_link",
+            "task": "pick up the bottle",
+            "openvla_clip_actions": True,
+            "openvla_position_bounds": [-0.2, 0.2],
+            "openvla_rotation_bounds": [-0.1, 0.1],
+            "openvla_gripper_bounds": [0.0, 1.0],
+        }
+    )
+
+    expected_qx, expected_qy, expected_qz, expected_qw = policy_server._euler_to_quaternion(
+        0.1, -0.1, 0.1
+    )
+    assert response["has_eef_target"] is True
+    assert response["eef_target_pose"]["position"]["x"] == pytest.approx(0.2)
+    assert response["eef_target_pose"]["position"]["y"] == pytest.approx(-0.2)
+    assert response["eef_target_pose"]["position"]["z"] == pytest.approx(0.2)
+    assert response["eef_target_pose"]["orientation"]["x"] == pytest.approx(expected_qx)
+    assert response["eef_target_pose"]["orientation"]["y"] == pytest.approx(expected_qy)
+    assert response["eef_target_pose"]["orientation"]["z"] == pytest.approx(expected_qz)
+    assert response["eef_target_pose"]["orientation"]["w"] == pytest.approx(expected_qw)
+    assert response["gripper_command"] == pytest.approx(1.0)
+    assert response["reference_frame"] == "piper_base_link"
+
+
+def test_build_stub_response_does_not_pass_unnorm_key_by_default(monkeypatch):
+    class _NoOpContextManager:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeTorchForInference:
+        @staticmethod
+        def inference_mode():
+            return _NoOpContextManager()
+
+        @staticmethod
+        def is_tensor(_):
+            return False
+
+    class _FakeProcessorForInference:
+        def __call__(self, **kwargs):
+            return {"input_ids": [1, 2, 3]}
+
+    class _FakeModelForInference:
+        def __init__(self):
+            self.predict_kwargs = None
+
+        def predict_action(self, **kwargs):
+            self.predict_kwargs = kwargs
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    fake_model = _FakeModelForInference()
+    monkeypatch.delenv("OPENVLA_UNNORM_KEY", raising=False)
+    monkeypatch.setattr(policy_server, "torch", _FakeTorchForInference())
+    monkeypatch.setattr(policy_server, "_decode_image", lambda request: object())
+    monkeypatch.setattr(
+        policy_server,
+        "_load_openvla",
+        lambda: (fake_model, _FakeProcessorForInference(), "cpu", "fp32"),
+    )
+
+    policy_server.build_stub_response({"task": "pick up the bottle"})
+
+    assert fake_model.predict_kwargs is not None
+    assert "unnorm_key" not in fake_model.predict_kwargs
+    assert fake_model.predict_kwargs["do_sample"] is False
+
+
+def test_build_stub_response_passes_unnorm_key_when_env_set(monkeypatch):
+    class _NoOpContextManager:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeTorchForInference:
+        @staticmethod
+        def inference_mode():
+            return _NoOpContextManager()
+
+        @staticmethod
+        def is_tensor(_):
+            return False
+
+    class _FakeProcessorForInference:
+        def __call__(self, **kwargs):
+            return {"input_ids": [1, 2, 3]}
+
+    class _FakeModelForInference:
+        def __init__(self):
+            self.predict_kwargs = None
+
+        def predict_action(self, **kwargs):
+            self.predict_kwargs = kwargs
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    fake_model = _FakeModelForInference()
+    monkeypatch.setenv("OPENVLA_UNNORM_KEY", " custom_key ")
+    monkeypatch.setattr(policy_server, "torch", _FakeTorchForInference())
+    monkeypatch.setattr(policy_server, "_decode_image", lambda request: object())
+    monkeypatch.setattr(
+        policy_server,
+        "_load_openvla",
+        lambda: (fake_model, _FakeProcessorForInference(), "cpu", "fp32"),
+    )
+
+    policy_server.build_stub_response({"task": "pick up the bottle"})
+
+    assert fake_model.predict_kwargs is not None
+    assert fake_model.predict_kwargs["unnorm_key"] == "custom_key"
+    assert fake_model.predict_kwargs["do_sample"] is False

@@ -87,6 +87,64 @@ def _parse_positive_finite_float(value: Any, default: float, name: str) -> float
     return parsed
 
 
+def _parse_bool(value: Any, default: bool, name: str) -> bool:
+    """Parse a boolean-like value with warning-based fallback."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "on"):
+            return True
+        if lowered in ("0", "false", "no", "off"):
+            return False
+
+    logging.warning("Invalid %s=%r; using default %s", name, value, default)
+    return default
+
+
+def _parse_bounds(value: Any, default: Tuple[float, float], name: str) -> Tuple[float, float]:
+    """Parse clamp bounds represented as [min, max], {'min':, 'max':}, or 'min,max'."""
+    if value is None:
+        return default
+
+    candidate = None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        candidate = value
+    elif isinstance(value, dict) and "min" in value and "max" in value:
+        candidate = (value.get("min"), value.get("max"))
+    elif isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+        if len(parts) == 2:
+            candidate = parts
+
+    if candidate is None:
+        logging.warning("Invalid %s=%r; using default [%s, %s]", name, value, default[0], default[1])
+        return default
+
+    try:
+        lower = float(candidate[0])
+        upper = float(candidate[1])
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using default [%s, %s]", name, value, default[0], default[1])
+        return default
+
+    if not math.isfinite(lower) or not math.isfinite(upper) or lower > upper:
+        logging.warning("Invalid %s=%r; using default [%s, %s]", name, value, default[0], default[1])
+        return default
+
+    return lower, upper
+
+
+def _clamp(value: float, bounds: Tuple[float, float]) -> float:
+    """Clamp a value to inclusive [lower, upper] bounds."""
+    lower, upper = bounds
+    return max(lower, min(upper, value))
+
+
 def _resolve_openvla_action_scalings(request: Dict[str, Any]) -> Tuple[float, float]:
     """
     Resolve per-component OpenVLA action scaling for this request.
@@ -121,6 +179,60 @@ def _resolve_openvla_action_scalings(request: Dict[str, Any]) -> Tuple[float, fl
             rot_scaling = 1.0
 
     return xyz_scaling, rot_scaling
+
+
+def _resolve_openvla_action_clamps(
+    request: Dict[str, Any],
+) -> Tuple[bool, Tuple[float, float], Tuple[float, float], Tuple[float, float]]:
+    """
+    Resolve OpenVLA action clamp behavior for this request.
+
+    Precedence:
+    1. Request fields (`openvla_*`)
+    2. Env vars (`OPENVLA_*`)
+    3. Defaults
+    """
+    if "openvla_clip_actions" in request:
+        clip_actions = _parse_bool(
+            request.get("openvla_clip_actions"), False, "openvla_clip_actions"
+        )
+    else:
+        clip_actions = _parse_bool(
+            os.getenv("OPENVLA_CLIP_ACTIONS"), False, "OPENVLA_CLIP_ACTIONS"
+        )
+
+    if "openvla_position_bounds" in request:
+        position_bounds = _parse_bounds(
+            request.get("openvla_position_bounds"), (-1.0, 1.0), "openvla_position_bounds"
+        )
+    else:
+        position_bounds = _parse_bounds(
+            os.getenv("OPENVLA_POSITION_BOUNDS"), (-1.0, 1.0), "OPENVLA_POSITION_BOUNDS"
+        )
+
+    if "openvla_rotation_bounds" in request:
+        rotation_bounds = _parse_bounds(
+            request.get("openvla_rotation_bounds"),
+            (-math.pi, math.pi),
+            "openvla_rotation_bounds",
+        )
+    else:
+        rotation_bounds = _parse_bounds(
+            os.getenv("OPENVLA_ROTATION_BOUNDS"),
+            (-math.pi, math.pi),
+            "OPENVLA_ROTATION_BOUNDS",
+        )
+
+    if "openvla_gripper_bounds" in request:
+        gripper_bounds = _parse_bounds(
+            request.get("openvla_gripper_bounds"), (0.0, 1.0), "openvla_gripper_bounds"
+        )
+    else:
+        gripper_bounds = _parse_bounds(
+            os.getenv("OPENVLA_GRIPPER_BOUNDS"), (0.0, 1.0), "OPENVLA_GRIPPER_BOUNDS"
+        )
+
+    return clip_actions, position_bounds, rotation_bounds, gripper_bounds
 
 
 def _load_openvla() -> Tuple[Any, Any, str, Any]:
@@ -357,9 +469,16 @@ def build_stub_response(request: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 inputs[key] = value.to(device=device)
 
-    unnorm_key = os.getenv("OPENVLA_UNNORM_KEY", "bridge_orig")
+    predict_kwargs: Dict[str, Any] = dict(inputs)
+    predict_kwargs["do_sample"] = False
+    unnorm_key = os.getenv("OPENVLA_UNNORM_KEY")
+    if unnorm_key is not None:
+        unnorm_key = unnorm_key.strip()
+    if unnorm_key:
+        predict_kwargs["unnorm_key"] = unnorm_key
+
     with torch.inference_mode():
-        action = model.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
+        action = model.predict_action(**predict_kwargs)
 
     action_values = list(_action_to_list(action))
     if len(action_values) < 7:
@@ -371,12 +490,24 @@ def build_stub_response(request: Dict[str, Any]) -> Dict[str, Any]:
         logging.warning("OpenVLA produced non-finite action values; returning no-op response.")
         return _empty_response(reference_frame)
     xyz_scaling, rot_scaling = _resolve_openvla_action_scalings(request)
+    clip_actions, position_bounds, rotation_bounds, gripper_bounds = _resolve_openvla_action_clamps(
+        request
+    )
     dx *= xyz_scaling
     dy *= xyz_scaling
     dz *= xyz_scaling
     roll *= rot_scaling
     pitch *= rot_scaling
     yaw *= rot_scaling
+    if clip_actions:
+        dx = _clamp(dx, position_bounds)
+        dy = _clamp(dy, position_bounds)
+        dz = _clamp(dz, position_bounds)
+        roll = _clamp(roll, rotation_bounds)
+        pitch = _clamp(pitch, rotation_bounds)
+        yaw = _clamp(yaw, rotation_bounds)
+        gripper = _clamp(gripper, gripper_bounds)
+
     qx, qy, qz, qw = _euler_to_quaternion(roll, pitch, yaw)
 
     return {

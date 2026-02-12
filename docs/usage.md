@@ -154,6 +154,11 @@ policy:
   inference_rate: 10.0  # Adjust based on compute capability
   action_scaling_xyz: 1.0  # Gain for OpenVLA xyz delta outputs
   action_scaling_rotation: 1.0  # Gain for OpenVLA roll/pitch/yaw delta outputs
+  clip_actions: true  # Clamp scaled OpenVLA outputs before execution
+  action_bounds:
+    position: [-0.10, 0.10]  # Clamp xyz deltas (m)
+    rotation: [-0.35, 0.35]  # Clamp roll/pitch/yaw deltas (rad)
+    gripper: [0.0, 1.0]  # Clamp raw OpenVLA gripper output
   use_fp16: true  # Enable for Jetson
   use_tensorrt: false  # Enable after optimization
 ```
