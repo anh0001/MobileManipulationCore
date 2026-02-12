@@ -22,9 +22,12 @@ This stack enables intelligent mobile manipulation by combining:
 ## Architecture
 
 ```
-Sensors → Perception → Policy (VLA) → Adapter → Base + Arm Controllers
-            ↓            ↓              ↓
-         Observation  Action     Low-level Commands
+Prompt Input ───────────→ Policy (VLA)
+Sensors → Perception ───→      ↓       → Adapter → Base + Arm Controllers
+            ↓              Observation    ↓
+         Observation                    Action
+                                         ↓
+                                  Low-level Commands
 ```
 
 The system follows a modular pipeline:
