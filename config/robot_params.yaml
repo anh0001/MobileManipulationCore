@@ -30,7 +30,7 @@ robot:
     gripper_follow_joint_trajectory: "/piper_gripper_controller/follow_joint_trajectory"
 
 bridge_v2_virtual_frames:
-  enabled: true
+  enabled: false
   # Keep this on piper_camera_link to emulate Bridge-V2 camera conditioning from wrist camera data.
   parent_camera_frame: "piper_camera_link"
   camera_virtual_frame: "bridge_v2_camera_virtual"
