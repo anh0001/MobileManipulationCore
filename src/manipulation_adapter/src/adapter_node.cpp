@@ -116,6 +116,8 @@ public:
     this->declare_parameter<double>("servo_max_angular_velocity", 0.35);
     this->declare_parameter<bool>("pause_base_during_servo", true);
     this->declare_parameter<std::string>("servo_start_service", "/servo_node/start_servo");
+    this->declare_parameter<bool>("wait_for_servo_ready", true);
+    this->declare_parameter<double>("servo_ready_timeout_sec", 20.0);
 
     // Get parameters
     base_frame_ = this->get_parameter("base_frame").as_string();
@@ -169,6 +171,8 @@ public:
     servo_max_angular_velocity_ = this->get_parameter("servo_max_angular_velocity").as_double();
     pause_base_during_servo_ = this->get_parameter("pause_base_during_servo").as_bool();
     servo_start_service_ = this->get_parameter("servo_start_service").as_string();
+    wait_for_servo_ready_ = this->get_parameter("wait_for_servo_ready").as_bool();
+    servo_ready_timeout_sec_ = this->get_parameter("servo_ready_timeout_sec").as_double();
 
     std::transform(
       arm_execution_mode_.begin(), arm_execution_mode_.end(), arm_execution_mode_.begin(),
@@ -192,6 +196,9 @@ public:
     }
     if (servo_max_angular_velocity_ <= 0.0) {
       servo_max_angular_velocity_ = 0.35;
+    }
+    if (servo_ready_timeout_sec_ < 0.0) {
+      servo_ready_timeout_sec_ = 0.0;
     }
 
     // Initialize TF
@@ -253,7 +260,12 @@ public:
       RCLCPP_INFO(this->get_logger(), "  Servo command horizon: %.3fs", servo_command_horizon_sec_);
       RCLCPP_INFO(this->get_logger(), "  Servo publish rate: %.1fHz", servo_publish_rate_hz_);
       RCLCPP_INFO(this->get_logger(), "  Pause base during servo: %s", pause_base_during_servo_ ? "true" : "false");
+      RCLCPP_INFO(this->get_logger(), "  Wait for Servo ready: %s", wait_for_servo_ready_ ? "true" : "false");
+      RCLCPP_INFO(this->get_logger(), "  Servo ready timeout: %.1fs", servo_ready_timeout_sec_);
     }
+
+    // Initialize safety timestamp to avoid large "no policy output" elapsed time at startup.
+    last_policy_time_ = this->now();
   }
 
 private:
@@ -476,6 +488,34 @@ private:
     return has_already && (has_running || has_started);
   }
 
+  bool isServoReadyForCommands()
+  {
+    if (!isServoMode() || !wait_for_servo_ready_ || servo_started_.load()) {
+      return true;
+    }
+
+    bool expected = false;
+    if (servo_wait_started_.compare_exchange_strong(expected, true)) {
+      servo_wait_start_steady_ = std::chrono::steady_clock::now();
+    }
+
+    const double elapsed_sec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - servo_wait_start_steady_).count();
+    if (servo_ready_timeout_sec_ > 0.0 && elapsed_sec > servo_ready_timeout_sec_) {
+      RCLCPP_ERROR_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Timed out waiting for MoveIt Servo readiness (%.1fs > %.1fs). "
+        "Dropping servo command until ready.",
+        elapsed_sec, servo_ready_timeout_sec_);
+    } else {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Waiting for MoveIt Servo readiness before sending commands (elapsed %.1fs).",
+        elapsed_sec);
+    }
+    return false;
+  }
+
   void requestServoStart()
   {
     if (!isServoMode() || servo_started_.load() || servo_start_requested_.load()) {
@@ -512,6 +552,7 @@ private:
                 this->get_logger(), "MoveIt Servo started: %s", response->message.c_str());
             }
             servo_started_.store(true);
+            servo_wait_started_.store(false);
           } else {
             RCLCPP_WARN_THROTTLE(
               this->get_logger(), *this->get_clock(), 5000,
@@ -528,6 +569,11 @@ private:
 
   bool queueServoCommand(const geometry_msgs::msg::PoseStamped& target_in_arm_base)
   {
+    requestServoStart();
+    if (!isServoReadyForCommands()) {
+      return false;
+    }
+
     geometry_msgs::msg::TransformStamped current_ee_tf;
     try {
       current_ee_tf = tf_buffer_->lookupTransform(
@@ -606,7 +652,6 @@ private:
       servo_zero_sent_.store(false);
     }
 
-    requestServoStart();
     return true;
   }
 
@@ -614,6 +659,12 @@ private:
   {
     if (!isServoMode()) {
       return;
+    }
+
+    // Proactively request Servo start so readiness logs appear even before the
+    // first policy output is received.
+    if (wait_for_servo_ready_ && !servo_started_.load()) {
+      requestServoStart();
     }
 
     geometry_msgs::msg::Twist twist_to_publish;
@@ -1099,6 +1150,8 @@ private:
   double servo_max_angular_velocity_;
   bool pause_base_during_servo_;
   std::string servo_start_service_;
+  bool wait_for_servo_ready_;
+  double servo_ready_timeout_sec_;
 
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -1137,6 +1190,9 @@ private:
   std::atomic<bool> servo_zero_sent_{true};
   std::atomic<bool> servo_started_{false};
   std::atomic<bool> servo_start_requested_{false};
+  std::atomic<bool> servo_wait_started_{false};
+  std::chrono::steady_clock::time_point servo_wait_start_steady_{
+    std::chrono::steady_clock::time_point::min()};
   bool safety_stop_active_{false};
 };
 

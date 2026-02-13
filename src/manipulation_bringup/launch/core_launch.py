@@ -440,6 +440,12 @@ def generate_launch_description():
             'servo_start_service': moveit_cfg.get(
                 'servo_start_service', '/servo_node/start_servo'
             ),
+            'wait_for_servo_ready': bool(
+                moveit_cfg.get('wait_for_servo_ready', True)
+            ),
+            'servo_ready_timeout_sec': float(
+                moveit_cfg.get('servo_ready_timeout_sec', 20.0)
+            ),
         }]
     )
 
