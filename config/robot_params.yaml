@@ -114,6 +114,18 @@ moveit:
   servo_start_service: "/servo_node/start_servo"
   wait_for_servo_ready: true
   servo_ready_timeout_sec: 12.0
+  move_to_ready_on_startup: true
+  ready_pose_joint_names:
+    - "piper_joint1"
+    - "piper_joint2"
+    - "piper_joint3"
+    - "piper_joint4"
+    - "piper_joint5"
+    - "piper_joint6"
+  ready_pose_joint_positions: [0.0, 1.2, -0.2, 0.0, -0.8, 0.0]
+  ready_pose_start_delay_sec: 1.0
+  ready_pose_retry_period_sec: 1.0
+  ready_pose_max_attempts: 3
 
 # Workspace limits for end-effector reachability check
 workspace:

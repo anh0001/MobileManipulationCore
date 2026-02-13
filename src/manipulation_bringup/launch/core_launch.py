@@ -397,6 +397,33 @@ def generate_launch_description():
             'moveit_accel_scaling': float(moveit_cfg.get('accel_scaling', 0.5)),
             'moveit_position_tolerance': float(moveit_cfg.get('position_tolerance', 0.01)),
             'moveit_orientation_tolerance': float(moveit_cfg.get('orientation_tolerance', 0.1)),
+            'move_to_ready_on_startup': bool(
+                moveit_cfg.get('move_to_ready_on_startup', True)
+            ),
+            'ready_pose_joint_names': moveit_cfg.get(
+                'ready_pose_joint_names',
+                [
+                    'piper_joint1',
+                    'piper_joint2',
+                    'piper_joint3',
+                    'piper_joint4',
+                    'piper_joint5',
+                    'piper_joint6',
+                ],
+            ),
+            'ready_pose_joint_positions': moveit_cfg.get(
+                'ready_pose_joint_positions',
+                [0.0, 1.2, -0.2, 0.0, -0.8, 0.0],
+            ),
+            'ready_pose_start_delay_sec': float(
+                moveit_cfg.get('ready_pose_start_delay_sec', 1.0)
+            ),
+            'ready_pose_retry_period_sec': float(
+                moveit_cfg.get('ready_pose_retry_period_sec', 1.0)
+            ),
+            'ready_pose_max_attempts': int(
+                moveit_cfg.get('ready_pose_max_attempts', 3)
+            ),
             'arm_joint_names': arm_cfg.get('joint_names', []),
             'arm_command_duration_sec': float(arm_cfg.get('command_duration_sec', 1.5)),
             'gripper_joint_name': gripper_cfg.get('joint_name', 'piper_joint7'),

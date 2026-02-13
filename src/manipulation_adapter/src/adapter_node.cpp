@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <geometry_msgs/msg/twist.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -35,6 +36,7 @@
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <moveit_msgs/action/move_group.hpp>
 #include <moveit_msgs/msg/constraints.hpp>
+#include <moveit_msgs/msg/joint_constraint.hpp>
 #include <moveit_msgs/msg/orientation_constraint.hpp>
 #include <moveit_msgs/msg/position_constraint.hpp>
 #include <moveit_msgs/msg/planning_options.hpp>
@@ -81,6 +83,18 @@ public:
     this->declare_parameter<double>("moveit_accel_scaling", 0.5);
     this->declare_parameter<double>("moveit_position_tolerance", 0.01);
     this->declare_parameter<double>("moveit_orientation_tolerance", 0.1);
+    this->declare_parameter<bool>("move_to_ready_on_startup", false);
+    this->declare_parameter<std::vector<std::string>>(
+      "ready_pose_joint_names",
+      std::vector<std::string>{
+        "piper_joint1", "piper_joint2", "piper_joint3",
+        "piper_joint4", "piper_joint5", "piper_joint6"});
+    this->declare_parameter<std::vector<double>>(
+      "ready_pose_joint_positions",
+      std::vector<double>{0.0, 1.2, -0.2, 0.0, -0.8, 0.0});
+    this->declare_parameter<double>("ready_pose_start_delay_sec", 1.0);
+    this->declare_parameter<double>("ready_pose_retry_period_sec", 1.0);
+    this->declare_parameter<int>("ready_pose_max_attempts", 3);
     this->declare_parameter<std::vector<std::string>>("arm_joint_names", std::vector<std::string>{});
     this->declare_parameter<double>("arm_command_duration_sec", 1.5);
     this->declare_parameter<std::string>(
@@ -138,6 +152,12 @@ public:
     moveit_position_tolerance_ = this->get_parameter("moveit_position_tolerance").as_double();
     moveit_orientation_tolerance_ =
       this->get_parameter("moveit_orientation_tolerance").as_double();
+    move_to_ready_on_startup_ = this->get_parameter("move_to_ready_on_startup").as_bool();
+    ready_pose_joint_names_ = this->get_parameter("ready_pose_joint_names").as_string_array();
+    ready_pose_joint_positions_ = this->get_parameter("ready_pose_joint_positions").as_double_array();
+    ready_pose_start_delay_sec_ = this->get_parameter("ready_pose_start_delay_sec").as_double();
+    ready_pose_retry_period_sec_ = this->get_parameter("ready_pose_retry_period_sec").as_double();
+    ready_pose_max_attempts_ = this->get_parameter("ready_pose_max_attempts").as_int();
     arm_joint_names_ = this->get_parameter("arm_joint_names").as_string_array();
     arm_command_duration_sec_ = this->get_parameter("arm_command_duration_sec").as_double();
     gripper_follow_joint_trajectory_action_ =
@@ -200,6 +220,30 @@ public:
     if (servo_ready_timeout_sec_ < 0.0) {
       servo_ready_timeout_sec_ = 0.0;
     }
+    if (ready_pose_start_delay_sec_ < 0.0) {
+      ready_pose_start_delay_sec_ = 0.0;
+    }
+    if (ready_pose_retry_period_sec_ <= 0.0) {
+      ready_pose_retry_period_sec_ = 1.0;
+    }
+    if (ready_pose_max_attempts_ < 1) {
+      ready_pose_max_attempts_ = 1;
+    }
+    if (move_to_ready_on_startup_ &&
+        ready_pose_joint_names_.size() != ready_pose_joint_positions_.size()) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "ready_pose_joint_names (%zu) and ready_pose_joint_positions (%zu) length mismatch. "
+        "Disabling startup ready pose.",
+        ready_pose_joint_names_.size(), ready_pose_joint_positions_.size());
+      move_to_ready_on_startup_ = false;
+    }
+    if (move_to_ready_on_startup_ && ready_pose_joint_names_.empty()) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Startup ready pose enabled but no ready_pose_joint_names provided. Disabling startup ready pose.");
+      move_to_ready_on_startup_ = false;
+    }
 
     // Initialize TF
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -226,7 +270,7 @@ public:
     gripper_client_ =
       rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
         this, gripper_follow_joint_trajectory_action_);
-    if (use_moveit_ && !isServoMode()) {
+    if (use_moveit_ && (!isServoMode() || move_to_ready_on_startup_)) {
       move_group_client_ = rclcpp_action::create_client<moveit_msgs::action::MoveGroup>(
         this, move_group_action_);
     }
@@ -242,6 +286,27 @@ public:
         std::chrono::milliseconds(static_cast<int>(1000.0 / servo_publish_rate_hz_)),
         std::bind(&AdapterNode::publishServoCommand, this));
     }
+    if (move_to_ready_on_startup_) {
+      if (!use_moveit_) {
+        RCLCPP_ERROR(
+          this->get_logger(),
+          "Startup ready pose requires MoveIt action support. Disabling startup ready pose.");
+        move_to_ready_on_startup_ = false;
+      } else {
+        startup_ready_pose_completed_.store(false);
+        ready_pose_start_time_steady_ =
+          std::chrono::steady_clock::now() + std::chrono::duration_cast<
+          std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(ready_pose_start_delay_sec_));
+        auto retry_period = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::duration<double>(ready_pose_retry_period_sec_));
+        if (retry_period < std::chrono::milliseconds(1)) {
+          retry_period = std::chrono::milliseconds(1);
+        }
+        ready_pose_timer_ = this->create_wall_timer(
+          retry_period, std::bind(&AdapterNode::startupReadyPoseTimerCallback, this));
+      }
+    }
 
     RCLCPP_INFO(this->get_logger(), "Adapter node initialized");
     RCLCPP_INFO(this->get_logger(), "  Base frame: %s", base_frame_.c_str());
@@ -255,6 +320,15 @@ public:
     RCLCPP_INFO(this->get_logger(), "  EEF target is delta: %s", eef_target_is_delta_ ? "true" : "false");
     RCLCPP_INFO(this->get_logger(), "  Arm base frame: %s", arm_base_frame_.c_str());
     RCLCPP_INFO(this->get_logger(), "  Arm execution mode: %s", arm_execution_mode_.c_str());
+    RCLCPP_INFO(this->get_logger(), "  Startup ready pose enabled: %s",
+                move_to_ready_on_startup_ ? "true" : "false");
+    if (move_to_ready_on_startup_) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "  Startup ready pose: %zu joints, start delay %.2fs, retry period %.2fs, max attempts %d",
+        ready_pose_joint_names_.size(), ready_pose_start_delay_sec_,
+        ready_pose_retry_period_sec_, ready_pose_max_attempts_);
+    }
     if (isServoMode()) {
       RCLCPP_INFO(this->get_logger(), "  Servo cartesian topic: %s", servo_cartesian_topic_.c_str());
       RCLCPP_INFO(this->get_logger(), "  Servo command horizon: %.3fs", servo_command_horizon_sec_);
@@ -272,6 +346,13 @@ private:
   void policyCallback(const manipulation_msgs::msg::PolicyOutput::SharedPtr msg)
   {
     last_policy_time_ = this->now();
+
+    if (move_to_ready_on_startup_ && !startup_ready_pose_completed_.load()) {
+      RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Dropping policy output while startup ready pose is pending");
+      return;
+    }
 
     RCLCPP_DEBUG(this->get_logger(), "Received policy output");
 
@@ -776,6 +857,165 @@ private:
     return constraints;
   }
 
+  moveit_msgs::msg::Constraints buildJointGoalConstraints(
+    const std::vector<std::string>& joint_names,
+    const std::vector<double>& joint_positions) const
+  {
+    moveit_msgs::msg::Constraints constraints;
+    constraints.name = "startup_ready_pose";
+    const double joint_tolerance = std::max(1e-4, moveit_position_tolerance_);
+
+    for (size_t i = 0; i < joint_names.size(); ++i) {
+      moveit_msgs::msg::JointConstraint joint_constraint;
+      joint_constraint.joint_name = joint_names[i];
+      joint_constraint.position = joint_positions[i];
+      joint_constraint.tolerance_above = joint_tolerance;
+      joint_constraint.tolerance_below = joint_tolerance;
+      joint_constraint.weight = 1.0;
+      constraints.joint_constraints.push_back(joint_constraint);
+    }
+
+    return constraints;
+  }
+
+  void startupReadyPoseTimerCallback()
+  {
+    if (!move_to_ready_on_startup_ || startup_ready_pose_completed_.load()) {
+      if (ready_pose_timer_) {
+        ready_pose_timer_->cancel();
+      }
+      return;
+    }
+
+    if (std::chrono::steady_clock::now() < ready_pose_start_time_steady_) {
+      return;
+    }
+
+    if (startup_ready_pose_goal_active_.load()) {
+      return;
+    }
+
+    if (startup_ready_pose_attempts_ >= ready_pose_max_attempts_) {
+      startup_ready_pose_completed_.store(true);
+      if (ready_pose_timer_) {
+        ready_pose_timer_->cancel();
+      }
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Failed to move to startup ready pose after %d attempts. "
+        "Continuing without startup ready move.",
+        ready_pose_max_attempts_);
+      return;
+    }
+
+    (void)moveToReadyPose();
+  }
+
+  bool moveToReadyPose()
+  {
+    if (!move_to_ready_on_startup_ || startup_ready_pose_completed_.load()) {
+      return false;
+    }
+
+    if (!ensureMoveGroupClientReady()) {
+      return false;
+    }
+
+    if (moveit_goal_active_.load()) {
+      RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "MoveIt goal already active; deferring startup ready pose");
+      return false;
+    }
+
+    const int attempt_number = startup_ready_pose_attempts_ + 1;
+    startup_ready_pose_attempts_ = attempt_number;
+
+    moveit_msgs::action::MoveGroup::Goal goal;
+    goal.request.group_name = move_group_name_;
+    goal.request.num_planning_attempts = moveit_planning_attempts_;
+    goal.request.allowed_planning_time = moveit_planning_time_;
+    goal.request.max_velocity_scaling_factor = moveit_velocity_scaling_;
+    goal.request.max_acceleration_scaling_factor = moveit_accel_scaling_;
+    goal.request.goal_constraints.push_back(
+      buildJointGoalConstraints(ready_pose_joint_names_, ready_pose_joint_positions_));
+    goal.request.start_state.is_diff = true;
+
+    goal.planning_options.plan_only = false;
+    goal.planning_options.look_around = false;
+    goal.planning_options.replan = false;
+    goal.planning_options.planning_scene_diff.is_diff = true;
+    goal.planning_options.planning_scene_diff.robot_state.is_diff = true;
+
+    auto send_goal_options =
+      rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SendGoalOptions();
+
+    send_goal_options.goal_response_callback =
+      [this, attempt_number](
+      rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle) {
+        if (!goal_handle) {
+          RCLCPP_WARN(
+            this->get_logger(),
+            "Startup ready pose goal rejected on attempt %d/%d",
+            attempt_number, ready_pose_max_attempts_);
+          moveit_goal_active_.store(false);
+          startup_ready_pose_goal_active_.store(false);
+          std::lock_guard<std::mutex> lock(goal_mutex_);
+          moveit_goal_handle_.reset();
+          return;
+        }
+        {
+          std::lock_guard<std::mutex> lock(goal_mutex_);
+          moveit_goal_handle_ = goal_handle;
+        }
+        moveit_goal_active_.store(true);
+        startup_ready_pose_goal_active_.store(true);
+      };
+
+    send_goal_options.result_callback =
+      [this, attempt_number](const auto& result) {
+        moveit_goal_active_.store(false);
+        startup_ready_pose_goal_active_.store(false);
+        {
+          std::lock_guard<std::mutex> lock(goal_mutex_);
+          moveit_goal_handle_.reset();
+        }
+        if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+          startup_ready_pose_completed_.store(true);
+          if (ready_pose_timer_) {
+            ready_pose_timer_->cancel();
+          }
+          RCLCPP_INFO(this->get_logger(), "Startup ready pose reached");
+          return;
+        }
+
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Startup ready pose failed with code %d on attempt %d/%d",
+          static_cast<int>(result.code), attempt_number, ready_pose_max_attempts_);
+        if (attempt_number >= ready_pose_max_attempts_) {
+          startup_ready_pose_completed_.store(true);
+          if (ready_pose_timer_) {
+            ready_pose_timer_->cancel();
+          }
+          RCLCPP_ERROR(
+            this->get_logger(),
+            "Failed to move to startup ready pose after %d attempts. "
+            "Continuing without startup ready move.",
+            ready_pose_max_attempts_);
+        }
+      };
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Sending startup ready pose goal via MoveIt (%d/%d)",
+      attempt_number, ready_pose_max_attempts_);
+    moveit_goal_active_.store(true);
+    startup_ready_pose_goal_active_.store(true);
+    move_group_client_->async_send_goal(goal, send_goal_options);
+    return true;
+  }
+
   bool ensureMoveGroupClientReady()
   {
     if (!move_group_client_) {
@@ -970,6 +1210,15 @@ private:
   void safetyCheck()
   {
     auto now = this->now();
+
+    if (move_to_ready_on_startup_ && !startup_ready_pose_completed_.load() &&
+        startup_ready_pose_goal_active_.load()) {
+      // Keep startup MoveIt goal alive while policy output is intentionally gated.
+      last_policy_time_ = now;
+      safety_stop_active_ = false;
+      return;
+    }
+
     auto time_since_last_policy = (now - last_policy_time_).seconds();
 
     if (time_since_last_policy > safety_timeout_sec_) {
@@ -1120,6 +1369,12 @@ private:
   double moveit_accel_scaling_;
   double moveit_position_tolerance_;
   double moveit_orientation_tolerance_;
+  bool move_to_ready_on_startup_;
+  std::vector<std::string> ready_pose_joint_names_;
+  std::vector<double> ready_pose_joint_positions_;
+  double ready_pose_start_delay_sec_;
+  double ready_pose_retry_period_sec_;
+  int ready_pose_max_attempts_;
   std::vector<std::string> arm_joint_names_;
   double arm_command_duration_sec_;
   std::string gripper_joint_name_;
@@ -1169,6 +1424,7 @@ private:
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_start_client_;
   rclcpp::TimerBase::SharedPtr safety_timer_;
   rclcpp::TimerBase::SharedPtr servo_publish_timer_;
+  rclcpp::TimerBase::SharedPtr ready_pose_timer_;
 
   // State
   rclcpp::Time last_policy_time_{0, 0, RCL_ROS_TIME};
@@ -1177,6 +1433,9 @@ private:
   std::atomic<bool> moveit_goal_active_{false};
   std::atomic<bool> arm_goal_active_{false};
   std::atomic<bool> gripper_goal_active_{false};
+  std::atomic<bool> startup_ready_pose_completed_{true};
+  std::atomic<bool> startup_ready_pose_goal_active_{false};
+  int startup_ready_pose_attempts_{0};
   std::mutex goal_mutex_;
   std::mutex servo_mutex_;
   rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr moveit_goal_handle_;
@@ -1191,6 +1450,8 @@ private:
   std::atomic<bool> servo_started_{false};
   std::atomic<bool> servo_start_requested_{false};
   std::atomic<bool> servo_wait_started_{false};
+  std::chrono::steady_clock::time_point ready_pose_start_time_steady_{
+    std::chrono::steady_clock::time_point::min()};
   std::chrono::steady_clock::time_point servo_wait_start_steady_{
     std::chrono::steady_clock::time_point::min()};
   bool safety_stop_active_{false};
