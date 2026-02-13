@@ -4,7 +4,7 @@
         {
             "label": "Run OpenVLA Policy Server",
             "type": "shell",
-            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && export OPENVLA_MODEL_ID=\"openvla/openvla-7b\" && export OPENVLA_DEVICE=\"cuda\" && export OPENVLA_ATTENTION_IMPL=\"flash_attention_2\" && export OPENVLA_UNNORM_KEY=\"bridge_orig\" && python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 30542",
+            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && export OPENVLA_MODEL_ID=\"openvla/openvla-7b\" && export OPENVLA_DEVICE=\"cuda\" && export OPENVLA_ATTENTION_IMPL=\"flash_attention_2\" && python3 -m manipulation_policy.policy_server --host 0.0.0.0 --port 30542",
             "isBackground": true,
             "problemMatcher": [],
             "presentation": {
