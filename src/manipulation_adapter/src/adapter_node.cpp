@@ -219,7 +219,7 @@ public:
     gripper_client_ =
       rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
         this, gripper_follow_joint_trajectory_action_);
-    if (use_moveit_) {
+    if (use_moveit_ && !isServoMode()) {
       move_group_client_ = rclcpp_action::create_client<moveit_msgs::action::MoveGroup>(
         this, move_group_action_);
     }
@@ -230,9 +230,11 @@ public:
       std::chrono::milliseconds(static_cast<int>(safety_timeout_sec_ * 1000)),
       std::bind(&AdapterNode::safetyCheck, this));
 
-    servo_publish_timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(static_cast<int>(1000.0 / servo_publish_rate_hz_)),
-      std::bind(&AdapterNode::publishServoCommand, this));
+    if (isServoMode()) {
+      servo_publish_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(static_cast<int>(1000.0 / servo_publish_rate_hz_)),
+        std::bind(&AdapterNode::publishServoCommand, this));
+    }
 
     RCLCPP_INFO(this->get_logger(), "Adapter node initialized");
     RCLCPP_INFO(this->get_logger(), "  Base frame: %s", base_frame_.c_str());
@@ -462,6 +464,18 @@ private:
     return servo_command_active_.load() && this->now() <= servo_command_until_;
   }
 
+  static bool isServoAlreadyRunningMessage(const std::string& message)
+  {
+    std::string lowered = message;
+    std::transform(
+      lowered.begin(), lowered.end(), lowered.begin(),
+      [](unsigned char ch) {return static_cast<char>(std::tolower(ch));});
+    const bool has_already = lowered.find("already") != std::string::npos;
+    const bool has_running = lowered.find("running") != std::string::npos;
+    const bool has_started = lowered.find("started") != std::string::npos;
+    return has_already && (has_running || has_started);
+  }
+
   void requestServoStart()
   {
     if (!isServoMode() || servo_started_.load() || servo_start_requested_.load()) {
@@ -472,7 +486,9 @@ private:
       servo_start_client_ = this->create_client<std_srvs::srv::Trigger>(servo_start_service_);
     }
 
-    if (!servo_start_client_->wait_for_service(std::chrono::milliseconds(100))) {
+    // Keep policy callback non-blocking; just skip this cycle if service graph
+    // hasn't reported readiness yet.
+    if (!servo_start_client_->service_is_ready()) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 5000,
         "Servo start service '%s' not available yet; continuing to publish commands",
@@ -488,7 +504,9 @@ private:
         servo_start_requested_.store(false);
         try {
           auto response = future.get();
-          if (response && response->success) {
+          const bool started = response && (
+            response->success || isServoAlreadyRunningMessage(response->message));
+          if (started) {
             if (!servo_started_.load()) {
               RCLCPP_INFO(
                 this->get_logger(), "MoveIt Servo started: %s", response->message.c_str());
