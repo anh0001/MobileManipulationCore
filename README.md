@@ -24,19 +24,27 @@ This stack enables intelligent mobile manipulation by combining:
 ## Architecture
 
 ```
-Prompt Input ───────────→ Policy (VLA)
-Sensors → Perception ───→      ↓       → Adapter → Base + Arm Controllers
-            ↓              Observation    ↓
-         Observation                    Action
-                                         ↓
-                                  Low-level Commands
+                                  control_mode:=vla
+Prompt Input ───────┐
+                    v
+Sensors/TF ──→ Perception ──→ Observation ──→ Policy (VLA) ──┐
+                                                              │
+                                  control_mode:=visual_servo  v
+RGB + CameraInfo + Detections ──→ Visual Servo Node ───────→ PolicyOutput
+                                                              │
+                                                              v
+                                                           Adapter
+                                                              v
+                                                   Base + Arm Controllers
 ```
 
 The system follows a modular pipeline:
 1. **Sensors & State**: Camera, depth, joint states, TF from base stack
-2. **Perception**: Processes raw data into structured observations
-3. **Policy**: Generates high-level actions using VLA models
-4. **Adapter**: Maps actions to feasible base+arm commands with safety checks
+2. **Perception**: Processes raw data into structured `Observation` for VLA mode
+3. **Control Generation (runtime switch via `control_mode`)**:
+   - `vla`: task prompt + observation -> policy inference
+   - `visual_servo`: image stream + `Detection2DArray` target detections -> visual-servo control
+4. **Adapter**: Consumes unified `PolicyOutput` and maps to feasible base+arm commands with safety checks
 5. **Execution**: Commands sent via standard ROS 2 topics/actions
 
 ## Quick Start
