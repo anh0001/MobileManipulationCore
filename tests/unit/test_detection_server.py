@@ -8,9 +8,9 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "src" / "manipulation_policy"))
+sys.path.insert(0, str(REPO_ROOT / "src" / "manipulation_detection"))
 
-from manipulation_policy import detection_server  # noqa: E402
+from manipulation_detection import detection_server  # noqa: E402
 
 
 def test_resolve_prompt_uses_request_and_appends_period(monkeypatch):

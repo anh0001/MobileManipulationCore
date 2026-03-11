@@ -312,7 +312,7 @@ ros2 run manipulation_policy policy_node \
 
 **Example:**
 ```bash
-ros2 run manipulation_policy remote_detection_client \
+ros2 run manipulation_detection remote_detection_client \
   --ros-args \
   -p remote_url:=http://192.168.1.100:30543 \
   -p default_prompt:=bottle

@@ -29,13 +29,17 @@ Prompt Input ───────┐
                     v
 Sensors/TF ──→ Perception ──→ Observation ──→ Policy (VLA) ──┐
                                                               │
-                                  control_mode:=visual_servo  v
-RGB + CameraInfo + Detections ──→ Visual Servo Node ───────→ PolicyOutput
-                                                              │
-                                                              v
-                                                           Adapter
-                                                              v
-                                                   Base + Arm Controllers
+                        control_mode:=visual_servo            v
+RGB + CameraInfo ──→ Detection Client (manipulation_detection) ──→ /manipulation/target_detections
+Target Prompt ───────────────────────────────────────────────────→ /visual_servo/target_prompt
+                                                                        │
+                                                                        v
+                                                    Visual Servo Node ─→ PolicyOutput
+                                                                        │
+                                                                        v
+                                                                     Adapter
+                                                                        v
+                                                             Base + Arm Controllers
 ```
 
 The system follows a modular pipeline:
@@ -43,7 +47,7 @@ The system follows a modular pipeline:
 2. **Perception**: Processes raw data into structured `Observation` for VLA mode
 3. **Control Generation (runtime switch via `control_mode`)**:
    - `vla`: task prompt + observation -> policy inference
-   - `visual_servo`: image stream + `Detection2DArray` target detections -> visual-servo control
+   - `visual_servo`: `manipulation_detection` builds `Detection2DArray` from RGB/prompt and feeds visual-servo control
 4. **Adapter**: Consumes unified `PolicyOutput` and maps to feasible base+arm commands with safety checks
 5. **Execution**: Commands sent via standard ROS 2 topics/actions
 
@@ -99,7 +103,7 @@ ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
 **Remote Grounding DINO Server (for Visual Servo detections):**
 ```bash
 # On remote GPU machine
-python3 -m manipulation_policy.detection_server --host 0.0.0.0 --port 30543
+python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543
 ```
 
 > **Note:** In visual-servo mode, `remote_detection_client` sends JPEG-compressed frames to the remote detector and republishes detections on `/manipulation/target_detections` (`vision_msgs/msg/Detection2DArray`). Runtime detection prompt topic is `/visual_servo/target_prompt`.
@@ -150,6 +154,7 @@ MobileManipulationCore/
 ├── src/                          # ROS 2 packages
 │   ├── manipulation_perception/  # Sensor processing
 │   ├── manipulation_policy/      # ML policy inference
+│   ├── manipulation_detection/   # Remote detection bridge/server for visual servo
 │   ├── manipulation_adapter/     # Action-to-command mapping
 │   ├── manipulation_visual_servo/  # Visual servo control node
 │   ├── manipulation_msgs/        # Custom message definitions
@@ -225,13 +230,13 @@ colcon test --packages-select manipulation_visual_servo manipulation_bringup
 colcon test-result --verbose
 
 # Start remote detector server (on remote GPU machine)
-python3 -m manipulation_policy.detection_server --host 0.0.0.0 --port 30543
+python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543
 
 # Launch full stack in visual servo mode
 ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
 
 # In another terminal, verify visual-servo outputs
-ros2 run manipulation_policy detection_prompt_cli
+ros2 run manipulation_detection detection_prompt_cli
 ros2 topic hz /manipulation/target_detections
 ros2 topic echo /visual_servo/state
 ros2 topic hz /manipulation/policy_output

@@ -10,6 +10,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>manipulation_perception</exec_depend>
+  <exec_depend>manipulation_detection</exec_depend>
   <exec_depend>manipulation_policy</exec_depend>
   <exec_depend>manipulation_adapter</exec_depend>
   <exec_depend>manipulation_msgs</exec_depend>

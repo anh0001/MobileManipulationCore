@@ -64,7 +64,7 @@
         {
             "label": "Run Grounding DINO Detection Server",
             "type": "shell",
-            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && python3 -m manipulation_policy.detection_server --host 0.0.0.0 --port 30543",
+            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543",
             "isBackground": true,
             "problemMatcher": [],
             "presentation": {
@@ -82,7 +82,7 @@
         {
             "label": "Stop Grounding DINO Detection Server",
             "type": "shell",
-            "command": "pkill -f 'manipulation_policy.detection_server' && echo 'Detection server stopped' || echo 'No detection server process found'",
+            "command": "pkill -f 'manipulation_detection.detection_server' && echo 'Detection server stopped' || echo 'No detection server process found'",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -212,7 +212,7 @@
         {
             "label": "Build Visual Servo Packages",
             "type": "shell",
-            "command": "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-up-to manipulation_visual_servo manipulation_bringup manipulation_policy",
+            "command": "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-up-to manipulation_visual_servo manipulation_bringup manipulation_detection",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -228,7 +228,7 @@
         {
             "label": "Test Visual Servo Packages",
             "type": "shell",
-            "command": "source /opt/ros/humble/setup.bash && source install/setup.bash && colcon test --packages-select manipulation_visual_servo manipulation_bringup manipulation_policy && colcon test-result --verbose",
+            "command": "source /opt/ros/humble/setup.bash && source install/setup.bash && colcon test --packages-select manipulation_visual_servo manipulation_bringup manipulation_detection && colcon test-result --verbose",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -263,6 +263,24 @@
             "label": "Run Visual Servo Debug Node",
             "type": "shell",
             "command": "source install/setup.bash && ros2 launch manipulation_visual_servo visual_servo_debug.launch.py",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": false,
+                "group": "visual-servo"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Run Detection Client (Standalone)",
+            "type": "shell",
+            "command": "source install/setup.bash && ros2 run manipulation_detection remote_detection_client --ros-args -p image_topic:=/piper/wrist_camera/piper_d405/color/image_rect_raw -p detection_topic:=/manipulation/target_detections -p prompt_topic:=/visual_servo/target_prompt -p remote_url:=${input:detectionUrl}",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -399,7 +417,7 @@
         {
             "label": "Detection Prompt CLI",
             "type": "shell",
-            "command": "source install/setup.bash && ros2 run manipulation_policy detection_prompt_cli",
+            "command": "source install/setup.bash && ros2 run manipulation_detection detection_prompt_cli",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,

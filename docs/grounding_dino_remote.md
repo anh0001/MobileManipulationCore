@@ -54,10 +54,15 @@ Edit `config/detection_params.yaml`:
 
 ## Remote Server Setup
 
-On the remote GPU machine (with `manipulation_policy` installed):
+On the remote GPU machine (with `manipulation_detection` installed):
 
 ```bash
-python3 -m manipulation_policy.detection_server --host 0.0.0.0 --port 30543
+# one-time package install
+cd ~/MobileManipulationCore/src/manipulation_detection
+pip install -e .
+
+# run server
+python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543
 ```
 
 Optional environment variables:
@@ -84,7 +89,7 @@ On Jetson:
 ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
 
 # Publish runtime prompt updates
-ros2 run manipulation_policy detection_prompt_cli
+ros2 run manipulation_detection detection_prompt_cli
 ```
 
 Monitor:

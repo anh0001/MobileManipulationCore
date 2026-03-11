@@ -46,7 +46,7 @@ def generate_launch_description():
         cmd=[
             "python3",
             "-m",
-            "manipulation_policy.detection_server",
+            "manipulation_detection.detection_server",
             "--host",
             host,
             "--port",

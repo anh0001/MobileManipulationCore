@@ -511,7 +511,7 @@ def generate_launch_description():
     )
 
     remote_detection_client_node = Node(
-        package='manipulation_policy',
+        package='manipulation_detection',
         executable='remote_detection_client',
         name='remote_detection_client',
         output='screen',

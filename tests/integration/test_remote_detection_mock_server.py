@@ -15,9 +15,9 @@ from std_msgs.msg import Header
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "src" / "manipulation_policy"))
+sys.path.insert(0, str(REPO_ROOT / "src" / "manipulation_detection"))
 
-from manipulation_policy import remote_detection_client  # noqa: E402
+from manipulation_detection import remote_detection_client  # noqa: E402
 
 
 class _MockDetectHandler(BaseHTTPRequestHandler):
