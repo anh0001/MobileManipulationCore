@@ -21,7 +21,6 @@ setup(
     maintainer_email='robo@example.com',
     description='Policy model client/inference using VLA models (OpenVLA, LeRobot)',
     license='Apache-2.0',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'policy_node = manipulation_policy.policy_node:main',

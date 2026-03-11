@@ -19,6 +19,26 @@ find_package(image_transport REQUIRED)
 find_package(manipulation_msgs REQUIRED)
 find_package(VISP REQUIRED COMPONENTS visp_core visp_visual_features visp_vs visp_me visp_detection)
 
+set(_opencv_video_candidates
+  /lib/${CMAKE_LIBRARY_ARCHITECTURE}/libopencv_video.so.4.5d
+  /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/libopencv_video.so.4.5d
+  /lib/aarch64-linux-gnu/libopencv_video.so.4.5d
+  /usr/lib/aarch64-linux-gnu/libopencv_video.so.4.5d
+  /lib/x86_64-linux-gnu/libopencv_video.so.4.5d
+  /usr/lib/x86_64-linux-gnu/libopencv_video.so.4.5d
+)
+
+foreach(_opencv_video_candidate IN LISTS _opencv_video_candidates)
+  if(EXISTS "${_opencv_video_candidate}")
+    set(OPENCV_VIDEO_ROS_LIBRARY "${_opencv_video_candidate}")
+    break()
+  endif()
+endforeach()
+
+if(NOT OPENCV_VIDEO_ROS_LIBRARY)
+  message(FATAL_ERROR "Could not find ROS-compatible OpenCV video library (4.5d)")
+endif()
+
 add_executable(visual_servo_node
   src/visual_servo_node.cpp
 )
@@ -31,6 +51,7 @@ target_include_directories(visual_servo_node PUBLIC
 
 target_link_libraries(visual_servo_node
   ${VISP_LIBRARIES}
+  ${OPENCV_VIDEO_ROS_LIBRARY}
 )
 
 ament_target_dependencies(visual_servo_node

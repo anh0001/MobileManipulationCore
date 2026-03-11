@@ -526,11 +526,29 @@ void VisualServoNode::handle_lost()
 
 bool VisualServoNode::init_tracker(const cv::Mat & frame, const cv::Rect2d & roi)
 {
-  // Use CSRT tracker for good accuracy within ROI
-  cv_tracker_ = cv::TrackerCSRT::create();
+  // The default OpenCV video module in this workspace provides MIL tracker.
+  if (tracker_type_ != "mil" && tracker_type_ != "MIL") {
+    RCLCPP_WARN_ONCE(
+      this->get_logger(),
+      "Requested tracker_type='%s', but this build only supports OpenCV MIL tracker; using MIL",
+      tracker_type_.c_str());
+  }
+  cv_tracker_ = cv::TrackerMIL::create();
+
+  const cv::Rect roi_int(
+    cvRound(roi.x),
+    cvRound(roi.y),
+    cvRound(roi.width),
+    cvRound(roi.height));
+  if (roi_int.width <= 0 || roi_int.height <= 0) {
+    RCLCPP_WARN(this->get_logger(), "Tracker init skipped: invalid ROI [%.1f, %.1f, %.1f, %.1f]",
+      roi.x, roi.y, roi.width, roi.height);
+    tracker_initialized_ = false;
+    return false;
+  }
 
   try {
-    cv_tracker_->init(frame, roi);
+    cv_tracker_->init(frame, roi_int);
     tracker_initialized_ = true;
     tracking_confidence_ = 1.0f;
     RCLCPP_DEBUG(this->get_logger(), "Tracker initialized on ROI [%.0f, %.0f, %.0f, %.0f]",
@@ -550,15 +568,25 @@ bool VisualServoNode::update_tracker(const cv::Mat & frame, cv::Rect2d & tracked
   }
 
   try {
-    bool ok = cv_tracker_->update(frame, tracked_roi);
+    cv::Rect tracked_roi_int(
+      cvRound(tracked_roi_.x),
+      cvRound(tracked_roi_.y),
+      cvRound(tracked_roi_.width),
+      cvRound(tracked_roi_.height));
+    bool ok = cv_tracker_->update(frame, tracked_roi_int);
     if (ok) {
+      tracked_roi = cv::Rect2d(
+        static_cast<double>(tracked_roi_int.x),
+        static_cast<double>(tracked_roi_int.y),
+        static_cast<double>(tracked_roi_int.width),
+        static_cast<double>(tracked_roi_int.height));
       // Validate ROI is within image bounds
       if (tracked_roi.x >= 0 && tracked_roi.y >= 0 &&
         tracked_roi.x + tracked_roi.width <= frame.cols &&
         tracked_roi.y + tracked_roi.height <= frame.rows &&
         tracked_roi.width > 5 && tracked_roi.height > 5)
       {
-        tracking_confidence_ = 0.8f;  // CSRT doesn't provide confidence, use fixed value
+        tracking_confidence_ = 0.8f;  // OpenCV MIL tracker doesn't expose confidence.
         return true;
       }
     }
