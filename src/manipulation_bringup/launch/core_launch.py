@@ -260,6 +260,8 @@ def generate_launch_description():
     vs_cfg = vs_cfg_full.get('visual_servo', {})
     vs_control_cfg = vs_cfg.get('control', {})
     vs_debug_cfg = vs_cfg.get('debug', {})
+    detection_cfg_full = load_yaml(resolve_config_path('detection_params.yaml'))
+    detection_cfg = detection_cfg_full.get('detection', {})
 
     # Perception node
     perception_node = Node(
@@ -504,6 +506,54 @@ def generate_launch_description():
     )
 
     # Visual servo node - only in visual_servo mode
+    visual_servo_detection_topic = str(
+        vs_cfg.get('detection_topic', detection_cfg.get('detection_topic', '/manipulation/target_detections'))
+    )
+
+    remote_detection_client_node = Node(
+        package='manipulation_policy',
+        executable='remote_detection_client',
+        name='remote_detection_client',
+        output='screen',
+        condition=is_visual_servo_mode,
+        parameters=[{
+            'image_topic': str(
+                detection_cfg.get(
+                    'image_topic',
+                    robot_topics.get(
+                        'camera_rgb',
+                        '/piper/wrist_camera/piper_d405/color/image_rect_raw',
+                    ),
+                )
+            ),
+            'detection_topic': visual_servo_detection_topic,
+            'prompt_topic': str(
+                detection_cfg.get('prompt_topic', '/visual_servo/target_prompt')
+            ),
+            'remote_url': str(
+                detection_cfg.get('remote_url', 'http://localhost:30543')
+            ),
+            'request_rate_hz': float(detection_cfg.get('request_rate_hz', 4.0)),
+            'request_timeout_sec': float(detection_cfg.get('request_timeout_sec', 0.30)),
+            'retry_attempts': int(detection_cfg.get('retry_attempts', 0)),
+            'max_result_staleness_sec': float(
+                detection_cfg.get('max_result_staleness_sec', 0.40)
+            ),
+            'jpeg_quality': int(detection_cfg.get('jpeg_quality', 70)),
+            'max_image_long_side_px': int(
+                detection_cfg.get('max_image_long_side_px', 640)
+            ),
+            'default_prompt': str(detection_cfg.get('default_prompt', '')),
+            'box_threshold': float(detection_cfg.get('box_threshold', 0.35)),
+            'text_threshold': float(detection_cfg.get('text_threshold', 0.25)),
+            'min_score': float(detection_cfg.get('min_score', 0.35)),
+            'max_detections': int(detection_cfg.get('max_detections', 5)),
+            'metrics_log_interval_sec': float(
+                detection_cfg.get('metrics_log_interval_sec', 5.0)
+            ),
+        }],
+    )
+
     visual_servo_node = Node(
         package='manipulation_visual_servo',
         executable='visual_servo_node',
@@ -517,8 +567,7 @@ def generate_launch_description():
                 '/piper/wrist_camera/piper_d405/color/camera_info'),
             'depth_topic': robot_topics.get('camera_depth',
                 '/piper/wrist_camera/piper_d405/depth/image_rect_raw'),
-            'detection_topic': str(vs_cfg.get('detection_topic',
-                '/manipulation/target_detections')),
+            'detection_topic': visual_servo_detection_topic,
             'output_topic': '/manipulation/policy_output',
             'use_depth': bool(vs_cfg.get('use_depth', False)),
             'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
@@ -582,5 +631,6 @@ def generate_launch_description():
         policy_node_remote,
 
         # Visual servo mode nodes (conditional)
+        remote_detection_client_node,
         visual_servo_node,
     ])

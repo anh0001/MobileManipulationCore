@@ -1,0 +1,42 @@
+# Visual servoing parameters used by manipulation_bringup/core_launch.py.
+
+visual_servo:
+  detection_topic: "/manipulation/target_detections"
+  rgb_topic: "/piper/wrist_camera/piper_d405/color/image_rect_raw"
+  camera_info_topic: "/piper/wrist_camera/piper_d405/color/camera_info"
+  depth_topic: "/piper/wrist_camera/piper_d405/depth/image_rect_raw"
+  output_topic: "/manipulation/policy_output"
+
+  use_depth: false
+  control_rate_hz: 20.0
+
+  # Keep empty when runtime prompt-based remote detection is used.
+  target_class: ""
+  min_detection_confidence: 0.4
+  min_tracking_confidence: 0.5
+
+  tracker_type: "klt"
+  klt_max_features: 200
+  klt_quality_level: 0.01
+  klt_min_distance: 5.0
+  klt_window_size: 10
+  klt_pyramid_levels: 3
+
+  lost_target_timeout_sec: 0.3
+  acquire_timeout_sec: 5.0
+  image_center_tolerance_px: 8.0
+  reference_frame: "piper_base_link"
+
+  control:
+    lambda_xy: 0.3
+    lambda_z: 0.1
+    lambda_rz: 0.1
+    max_linear_velocity: 0.08
+    max_angular_velocity: 0.30
+    ramp_up_steps: 5
+
+  debug:
+    publish_overlay: true
+    overlay_topic: "/visual_servo/debug_image"
+    publish_state: true
+    state_topic: "/visual_servo/state"

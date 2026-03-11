@@ -26,6 +26,9 @@ setup(
             'policy_node = manipulation_policy.policy_node:main',
             'policy_server = manipulation_policy.policy_server:main',
             'task_prompt_cli = manipulation_policy.task_prompt_cli:main',
+            'remote_detection_client = manipulation_policy.remote_detection_client:main',
+            'detection_server = manipulation_policy.detection_server:main',
+            'detection_prompt_cli = manipulation_policy.detection_prompt_cli:main',
         ],
     },
 )

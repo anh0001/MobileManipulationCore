@@ -96,7 +96,13 @@ ros2 launch manipulation_bringup core_launch.py
 ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
 ```
 
-> **Note:** Visual-servo mode expects detections on `/manipulation/target_detections` (type `vision_msgs/msg/Detection2DArray`) and publishes `manipulation_msgs/msg/PolicyOutput` on `/manipulation/policy_output`.
+**Remote Grounding DINO Server (for Visual Servo detections):**
+```bash
+# On remote GPU machine
+python3 -m manipulation_policy.detection_server --host 0.0.0.0 --port 30543
+```
+
+> **Note:** In visual-servo mode, `remote_detection_client` sends JPEG-compressed frames to the remote detector and republishes detections on `/manipulation/target_detections` (`vision_msgs/msg/Detection2DArray`). Runtime detection prompt topic is `/visual_servo/target_prompt`.
 
 **Visual Servo Node Only (Debug/Bench):**
 ```bash
@@ -161,6 +167,7 @@ MobileManipulationCore/
 - [Design Document](docs/design.md) - Detailed architecture and design decisions
 - [Usage Guide](docs/usage.md) - How to run, configure, and extend the stack
 - [API Reference](docs/api_reference.md) - ROS interfaces (topics/services/actions)
+- [Grounding DINO Remote Guide](docs/grounding_dino_remote.md) - Remote detector setup, contracts, and tuning
 
 ## ROS 2 Interface
 
@@ -217,10 +224,15 @@ colcon build --symlink-install --packages-up-to manipulation_visual_servo manipu
 colcon test --packages-select manipulation_visual_servo manipulation_bringup
 colcon test-result --verbose
 
+# Start remote detector server (on remote GPU machine)
+python3 -m manipulation_policy.detection_server --host 0.0.0.0 --port 30543
+
 # Launch full stack in visual servo mode
 ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
 
 # In another terminal, verify visual-servo outputs
+ros2 run manipulation_policy detection_prompt_cli
+ros2 topic hz /manipulation/target_detections
 ros2 topic echo /visual_servo/state
 ros2 topic hz /manipulation/policy_output
 ```

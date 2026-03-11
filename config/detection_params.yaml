@@ -1,0 +1,30 @@
+# Remote detection client/server parameters for visual-servo mode.
+
+detection:
+  # Jetson-side client topics
+  image_topic: "/piper/wrist_camera/piper_d405/color/image_rect_raw"
+  detection_topic: "/manipulation/target_detections"
+  prompt_topic: "/visual_servo/target_prompt"
+
+  # Remote detector endpoint (Grounding DINO server)
+  remote_url: "http://100.112.100.20:30543"
+
+  # Client request controls
+  request_rate_hz: 4.0
+  request_timeout_sec: 0.30
+  retry_attempts: 0
+  max_result_staleness_sec: 0.40
+
+  # Image payload optimization
+  jpeg_quality: 70
+  max_image_long_side_px: 640
+
+  # Prompt and filtering
+  default_prompt: "bottle"
+  box_threshold: 0.35
+  text_threshold: 0.25
+  min_score: 0.35
+  max_detections: 5
+
+  # Logging/metrics
+  metrics_log_interval_sec: 5.0

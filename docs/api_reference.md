@@ -105,6 +105,12 @@ Provided by `adapter_node` (future implementation).
 - **Subscribers:** `perception_node`, `adapter_node`
 - **QoS:** Reliable, depth 10
 
+#### /visual_servo/target_prompt
+- **Type:** `std_msgs/msg/String`
+- **Description:** Runtime Grounding DINO prompt text for remote detector
+- **Subscribers:** `remote_detection_client`
+- **QoS:** Reliable, depth 10
+
 #### /tf and /tf_static
 - **Type:** `tf2_msgs/msg/TFMessage`
 - **Description:** Transform tree
@@ -132,10 +138,17 @@ Provided by `adapter_node` (future implementation).
 #### /manipulation/policy_output
 - **Type:** `manipulation_msgs/msg/PolicyOutput`
 - **Description:** High-level actions from policy
-- **Publishers:** `policy_node`
+- **Publishers:** `policy_node`, `visual_servo_node`
 - **Subscribers:** `adapter_node`
 - **QoS:** Reliable, depth 10
 - **Rates:** Configurable, typically 5-10 Hz
+
+#### /manipulation/target_detections
+- **Type:** `vision_msgs/msg/Detection2DArray`
+- **Description:** 2D target detections for visual-servo acquire/re-seed
+- **Publishers:** `remote_detection_client` (Jetson-side bridge)
+- **Subscribers:** `visual_servo_node`
+- **QoS:** Reliable, depth 10
 
 #### /servo_node/delta_twist_cmds
 - **Type:** `geometry_msgs/msg/TwistStamped`
@@ -276,12 +289,33 @@ ros2 run manipulation_policy policy_node \
 | `pause_base_during_servo` | bool | true | Suppress base hints while arm Servo command is active |
 | `servo_start_service` | string | `/servo_node/start_servo` | Trigger service used to start MoveIt Servo |
 
+### remote_detection_client
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `image_topic` | string | `/camera/color/image_raw` | RGB image topic consumed by detector bridge |
+| `detection_topic` | string | `/manipulation/target_detections` | Output `Detection2DArray` topic |
+| `prompt_topic` | string | `/visual_servo/target_prompt` | Runtime detector prompt topic |
+| `remote_url` | string | `http://localhost:30543` | Remote detector server base URL |
+| `request_rate_hz` | double | 4.0 | Max remote detection request rate |
+| `request_timeout_sec` | double | 0.30 | HTTP timeout per request |
+| `retry_attempts` | int | 0 | Retry count after initial request failure |
+| `max_result_staleness_sec` | double | 0.40 | Drop result if older than this at publish time |
+| `jpeg_quality` | int | 70 | JPEG encoding quality for network payload |
+| `max_image_long_side_px` | int | 640 | Downscale max image long side before encoding |
+| `default_prompt` | string | `` | Prompt used before runtime prompt is set |
+| `box_threshold` | double | 0.35 | Grounding DINO box threshold override |
+| `text_threshold` | double | 0.25 | Grounding DINO text threshold override |
+| `min_score` | double | 0.35 | Minimum score accepted when publishing ROS detections |
+| `max_detections` | int | 5 | Maximum detections published per frame |
+| `metrics_log_interval_sec` | double | 5.0 | Periodic metrics log interval |
+
 **Example:**
 ```bash
-ros2 run manipulation_adapter adapter_node \
+ros2 run manipulation_policy remote_detection_client \
   --ros-args \
-  -p max_base_velocity:=0.3 \
-  -p safety_timeout_sec:=1.5
+  -p remote_url:=http://192.168.1.100:30543 \
+  -p default_prompt:=bottle
 ```
 
 ---

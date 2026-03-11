@@ -62,6 +62,50 @@
             }
         },
         {
+            "label": "Run Grounding DINO Detection Server",
+            "type": "shell",
+            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && python3 -m manipulation_policy.detection_server --host 0.0.0.0 --port 30543",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Stop Grounding DINO Detection Server",
+            "type": "shell",
+            "command": "pkill -f 'manipulation_policy.detection_server' && echo 'Detection server stopped' || echo 'No detection server process found'",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+        {
+            "label": "Test Detection Health Endpoint",
+            "type": "shell",
+            "command": "curl ${input:detectionUrl}/health",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+        {
             "label": "Run OpenVLA Policy Server (Background)",
             "type": "shell",
             "command": "setsid bash ${env:HOME}/launch_policy_server.sh & POLICY_PID=$!; disown $POLICY_PID; echo \"Policy server started in background. PID: ${POLICY_PID} Log: ${env:HOME}/policy_server.log\"",
@@ -166,6 +210,38 @@
             }
         },
         {
+            "label": "Build Visual Servo Packages",
+            "type": "shell",
+            "command": "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-up-to manipulation_visual_servo manipulation_bringup manipulation_policy",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Test Visual Servo Packages",
+            "type": "shell",
+            "command": "source /opt/ros/humble/setup.bash && source install/setup.bash && colcon test --packages-select manipulation_visual_servo manipulation_bringup manipulation_policy && colcon test-result --verbose",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
             "label": "Run Core (Visual Servo Mode)",
             "type": "shell",
             "command": "source install/setup.bash && ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo",
@@ -202,6 +278,15 @@
             }
         },
         {
+            "label": "Run Core + Detection Prompt CLI",
+            "dependsOn": [
+                "Run Core (Visual Servo Mode)",
+                "Detection Prompt CLI"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        },
+        {
             "label": "Visual Servo: Echo State",
             "type": "shell",
             "command": "source install/setup.bash && ros2 topic echo /visual_servo/state",
@@ -223,6 +308,42 @@
             "label": "Visual Servo: Policy Output Rate",
             "type": "shell",
             "command": "source install/setup.bash && ros2 topic hz /manipulation/policy_output",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": false,
+                "group": "visual-servo"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Visual Servo: Echo Target Detections",
+            "type": "shell",
+            "command": "source install/setup.bash && ros2 topic echo /manipulation/target_detections",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": false,
+                "group": "visual-servo"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "Visual Servo: Target Detections Rate",
+            "type": "shell",
+            "command": "source install/setup.bash && ros2 topic hz /manipulation/target_detections",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -276,6 +397,24 @@
             }
         },
         {
+            "label": "Detection Prompt CLI",
+            "type": "shell",
+            "command": "source install/setup.bash && ros2 run manipulation_policy detection_prompt_cli",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true,
+                "group": "visual-servo"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
             "label": "Build and Run Remote Policy Setup",
             "dependsOn": [
                 "Build Workspace"
@@ -290,6 +429,12 @@
             "type": "promptString",
             "description": "Remote policy server URL (e.g., http://100.112.100.20:30542)",
             "default": "http://100.112.100.20:30542"
+        },
+        {
+            "id": "detectionUrl",
+            "type": "promptString",
+            "description": "Remote detection server URL (e.g., http://100.112.100.20:30543)",
+            "default": "http://100.112.100.20:30543"
         }
     ]
 }

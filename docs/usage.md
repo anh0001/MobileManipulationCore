@@ -293,8 +293,8 @@ This will:
 
 ### With Remote Policy Server
 
-For OpenVLA-specific remote deployment instructions (server setup, inference wiring, and test commands),
-see `docs/openvla_remote.md`.
+For OpenVLA remote policy setup, see `docs/openvla_remote.md`.
+For visual-servo remote Grounding DINO setup, see `docs/grounding_dino_remote.md`.
 
 1. **On GPU server**, set up environment:
    ```bash
