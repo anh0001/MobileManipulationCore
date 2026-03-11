@@ -108,7 +108,7 @@
         {
             "label": "Run Grounding DINO Detection Server (Background)",
             "type": "shell",
-            "command": "setsid bash ${workspaceFolder}/scripts/launch_detection_server.sh & DETECTION_PID=$!; disown $DETECTION_PID; echo \"Detection server started in background. PID: ${DETECTION_PID} Log: ${env:HOME}/detection_server.log\"",
+            "command": "setsid bash ${workspaceFolder}/scripts/launch_detection_server.sh </dev/null >/dev/null 2>&1 & DETECTION_PID=$!; disown $DETECTION_PID; sleep 2; echo \"Detection server started in background. PID: ${DETECTION_PID} Log: ${env:HOME}/detection_server.log\"; echo 'Waiting for server to be ready...'; for i in $(seq 1 30); do if curl -s http://localhost:30543/health >/dev/null 2>&1; then echo 'Server is UP and responding!'; curl -s http://localhost:30543/health; exit 0; fi; sleep 2; done; echo 'Server may still be loading model. Check log: tail -f ~/detection_server.log'",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
