@@ -143,7 +143,7 @@ def _load_detector():
         else:
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        dtype = torch.float16 if device.startswith("cuda") else torch.float32
+        dtype = torch.float32
 
         processor = AutoProcessor.from_pretrained(model_id)
         model = AutoModelForZeroShotObjectDetection.from_pretrained(
@@ -202,7 +202,7 @@ def run_detection(request: Dict[str, Any]) -> Dict[str, Any]:
     target_size = [(image.size[1], image.size[0])]
     start = time.monotonic()
     inputs = processor(images=image, text=prompt, return_tensors="pt")
-    inputs = {name: value.to(device=device, dtype=model.dtype if value.is_floating_point() else None) for name, value in inputs.items()}
+    inputs = {name: value.to(device) for name, value in inputs.items()}
 
     with torch.inference_mode():
         outputs = model(**inputs)
