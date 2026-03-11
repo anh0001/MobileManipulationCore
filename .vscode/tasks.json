@@ -93,6 +93,35 @@
             }
         },
         {
+            "label": "Stop Grounding DINO Detection Server (Background)",
+            "type": "shell",
+            "command": "pkill -f 'manipulation_detection.detection_server' && echo 'Detection server stopped' || echo 'No detection server process found'",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+        {
+            "label": "Run Grounding DINO Detection Server (Background)",
+            "type": "shell",
+            "command": "setsid bash ${workspaceFolder}/scripts/launch_detection_server.sh & DETECTION_PID=$!; disown $DETECTION_PID; echo \"Detection server started in background. PID: ${DETECTION_PID} Log: ${env:HOME}/detection_server.log\"",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
             "label": "Test Detection Health Endpoint",
             "type": "shell",
             "command": "curl ${input:detectionUrl}/health",
@@ -108,7 +137,7 @@
         {
             "label": "Run OpenVLA Policy Server (Background)",
             "type": "shell",
-            "command": "setsid bash ${env:HOME}/launch_policy_server.sh & POLICY_PID=$!; disown $POLICY_PID; echo \"Policy server started in background. PID: ${POLICY_PID} Log: ${env:HOME}/policy_server.log\"",
+            "command": "setsid bash ${workspaceFolder}/scripts/launch_policy_server.sh & POLICY_PID=$!; disown $POLICY_PID; echo \"Policy server started in background. PID: ${POLICY_PID} Log: ${env:HOME}/policy_server.log\"",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
