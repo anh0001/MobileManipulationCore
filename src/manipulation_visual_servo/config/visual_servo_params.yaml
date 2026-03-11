@@ -1,0 +1,56 @@
+# Visual servoing parameters for manipulation_visual_servo
+# This config is independent of robot_params.yaml and policy_params.yaml.
+# Hardware topics/frames are passed in via launch arguments from robot_params.yaml.
+
+visual_servo:
+  # Topic configuration (overridden by launch arguments from robot_params.yaml)
+  detection_topic: "/manipulation/target_detections"
+  rgb_topic: "/piper/wrist_camera/piper_d405/color/image_rect_raw"
+  camera_info_topic: "/piper/wrist_camera/piper_d405/color/camera_info"
+  depth_topic: "/piper/wrist_camera/piper_d405/depth/image_rect_raw"
+  output_topic: "/manipulation/policy_output"
+
+  # Depth usage (deferred in V1)
+  use_depth: false
+
+  # Rate control
+  control_rate_hz: 20.0
+
+  # Target acquisition
+  target_class: ""                    # Empty = use first/highest-confidence detection
+  min_detection_confidence: 0.4
+  min_tracking_confidence: 0.5
+
+  # Tracker parameters
+  tracker_type: "klt"                 # klt or blob
+  klt_max_features: 200
+  klt_quality_level: 0.01
+  klt_min_distance: 5.0
+  klt_window_size: 10
+  klt_pyramid_levels: 3
+
+  # State machine timeouts
+  lost_target_timeout_sec: 0.3
+  acquire_timeout_sec: 5.0
+
+  # Image-space convergence
+  image_center_tolerance_px: 8.0
+
+  # Reference frame for output PolicyOutput
+  reference_frame: "piper_base_link"
+
+  # IBVS control law gains
+  control:
+    lambda_xy: 0.3                    # Gain for lateral (x, y) image-space error
+    lambda_z: 0.1                     # Gain for depth/scale (forward/backward)
+    lambda_rz: 0.1                    # Gain for rotation about optical axis
+    max_linear_velocity: 0.08         # m/s per axis, clamp on output twist
+    max_angular_velocity: 0.30        # rad/s per axis, clamp on output twist
+    ramp_up_steps: 5                  # Gradual ramp-up from zero to full gain
+
+  # Debug output
+  debug:
+    publish_overlay: true
+    overlay_topic: "/visual_servo/debug_image"
+    publish_state: true
+    state_topic: "/visual_servo/state"

@@ -26,7 +26,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.actions import Node
 
@@ -233,12 +233,33 @@ def generate_launch_description():
         description='Arm execution mode for adapter_node: moveit_servo or move_group',
     )
 
+    control_mode_arg = DeclareLaunchArgument(
+        'control_mode',
+        default_value='vla',
+        description='High-level control mode: vla or visual_servo',
+    )
+
     # Get launch configurations
     use_remote_policy = LaunchConfiguration('use_remote_policy')
     remote_url = LaunchConfiguration('remote_url')
     camera_topic = LaunchConfiguration('camera_topic')
     arm_execution_mode = LaunchConfiguration('arm_execution_mode')
+    control_mode = LaunchConfiguration('control_mode')
     joint_states_topic = robot_topics.get('joint_states', '/joint_states')
+
+    # Conditions for control mode selection
+    is_vla_mode = IfCondition(
+        PythonExpression(["'", control_mode, "' == 'vla'"])
+    )
+    is_visual_servo_mode = IfCondition(
+        PythonExpression(["'", control_mode, "' == 'visual_servo'"])
+    )
+
+    # Load visual servo config
+    vs_cfg_full = load_yaml(resolve_config_path('visual_servo_params.yaml'))
+    vs_cfg = vs_cfg_full.get('visual_servo', {})
+    vs_control_cfg = vs_cfg.get('control', {})
+    vs_debug_cfg = vs_cfg.get('debug', {})
 
     # Perception node
     perception_node = Node(
@@ -300,13 +321,16 @@ def generate_launch_description():
             )
         )
 
-    # Policy node (local)
+    # Policy node (local) - only in VLA mode
     policy_node_local = Node(
         package='manipulation_policy',
         executable='policy_node',
         name='policy_node',
         output='screen',
-        condition=UnlessCondition(use_remote_policy),
+        condition=IfCondition(PythonExpression([
+            "'", control_mode, "' == 'vla' and '",
+            use_remote_policy, "' != 'true'"
+        ])),
         parameters=[{
             'model_name': policy_cfg.get('model_name', 'openvla-7b'),
             'model_path': policy_cfg.get('model_path', ''),
@@ -335,13 +359,16 @@ def generate_launch_description():
         }]
     )
 
-    # Policy node (remote client)
+    # Policy node (remote client) - only in VLA mode
     policy_node_remote = Node(
         package='manipulation_policy',
         executable='policy_node',
         name='policy_node',
         output='screen',
-        condition=IfCondition(use_remote_policy),
+        condition=IfCondition(PythonExpression([
+            "'", control_mode, "' == 'vla' and '",
+            use_remote_policy, "' == 'true'"
+        ])),
         parameters=[{
             'use_remote': True,
             'remote_url': remote_url,
@@ -476,17 +503,84 @@ def generate_launch_description():
         }]
     )
 
+    # Visual servo node - only in visual_servo mode
+    visual_servo_node = Node(
+        package='manipulation_visual_servo',
+        executable='visual_servo_node',
+        name='visual_servo_node',
+        output='screen',
+        condition=is_visual_servo_mode,
+        parameters=[{
+            'rgb_topic': robot_topics.get('camera_rgb',
+                '/piper/wrist_camera/piper_d405/color/image_rect_raw'),
+            'camera_info_topic': robot_topics.get('camera_info',
+                '/piper/wrist_camera/piper_d405/color/camera_info'),
+            'depth_topic': robot_topics.get('camera_depth',
+                '/piper/wrist_camera/piper_d405/depth/image_rect_raw'),
+            'detection_topic': str(vs_cfg.get('detection_topic',
+                '/manipulation/target_detections')),
+            'output_topic': '/manipulation/policy_output',
+            'use_depth': bool(vs_cfg.get('use_depth', False)),
+            'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
+            'target_class': str(vs_cfg.get('target_class', '')),
+            'min_detection_confidence': float(
+                vs_cfg.get('min_detection_confidence', 0.4)),
+            'min_tracking_confidence': float(
+                vs_cfg.get('min_tracking_confidence', 0.5)),
+            'lost_target_timeout_sec': float(
+                vs_cfg.get('lost_target_timeout_sec', 0.3)),
+            'acquire_timeout_sec': float(
+                vs_cfg.get('acquire_timeout_sec', 5.0)),
+            'image_center_tolerance_px': float(
+                vs_cfg.get('image_center_tolerance_px', 8.0)),
+            'reference_frame': robot_frames.get('arm_base', 'piper_base_link'),
+            'camera_optical_frame': robot_frames.get('camera_optical',
+                'piper_camera_optical_frame'),
+            'ee_frame': robot_frames.get('ee_link', 'piper_link6'),
+            'arm_base_frame': robot_frames.get('arm_base', 'piper_base_link'),
+            'tracker_type': str(vs_cfg.get('tracker_type', 'klt')),
+            'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
+            'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),
+            'klt_min_distance': float(vs_cfg.get('klt_min_distance', 5.0)),
+            'klt_window_size': int(vs_cfg.get('klt_window_size', 10)),
+            'klt_pyramid_levels': int(vs_cfg.get('klt_pyramid_levels', 3)),
+            'control.lambda_xy': float(vs_control_cfg.get('lambda_xy', 0.3)),
+            'control.lambda_z': float(vs_control_cfg.get('lambda_z', 0.1)),
+            'control.lambda_rz': float(vs_control_cfg.get('lambda_rz', 0.1)),
+            'control.max_linear_velocity': float(
+                vs_control_cfg.get('max_linear_velocity', 0.08)),
+            'control.max_angular_velocity': float(
+                vs_control_cfg.get('max_angular_velocity', 0.30)),
+            'control.ramp_up_steps': int(
+                vs_control_cfg.get('ramp_up_steps', 5)),
+            'debug.publish_overlay': bool(
+                vs_debug_cfg.get('publish_overlay', True)),
+            'debug.overlay_topic': str(
+                vs_debug_cfg.get('overlay_topic', '/visual_servo/debug_image')),
+            'debug.publish_state': bool(
+                vs_debug_cfg.get('publish_state', True)),
+            'debug.state_topic': str(
+                vs_debug_cfg.get('state_topic', '/visual_servo/state')),
+        }]
+    )
+
     return LaunchDescription([
         # Arguments
         use_remote_policy_arg,
         remote_url_arg,
         camera_topic_arg,
         arm_execution_mode_arg,
+        control_mode_arg,
 
-        # Nodes
+        # Nodes (always launched)
         perception_node,
         *bridge_virtual_nodes,
+        adapter_node,
+
+        # VLA mode nodes (conditional)
         policy_node_local,
         policy_node_remote,
-        adapter_node,
+
+        # Visual servo mode nodes (conditional)
+        visual_servo_node,
     ])

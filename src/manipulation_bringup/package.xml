@@ -13,6 +13,7 @@
   <exec_depend>manipulation_policy</exec_depend>
   <exec_depend>manipulation_adapter</exec_depend>
   <exec_depend>manipulation_msgs</exec_depend>
+  <exec_depend>manipulation_visual_servo</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
