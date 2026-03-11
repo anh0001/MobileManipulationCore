@@ -7,6 +7,7 @@ MobileManipulationCore is the core "brain" for mobile manipulation, providing hi
 This stack enables intelligent mobile manipulation by combining:
 - **Perception**: Sensor processing and observation generation for policy models
 - **Policy**: ML-based decision making using models like OpenVLA/LeRobot
+- **Visual Servo**: Feature-based closed-loop control path for target centering/alignment
 - **Adapter**: Safe coordination of arm and base movements with TF-aware planning
 - **Integration**: Clean ROS 2 interfaces for hardware-agnostic deployment
 
@@ -15,6 +16,7 @@ This stack enables intelligent mobile manipulation by combining:
 - 🤖 **Generalist Policy Integration**: Built-in support for OpenVLA and HuggingFace LeRobot models
 - 🔧 **Hardware Agnostic**: Standard ROS 2 interfaces work with any compatible mobile manipulator
 - 🎯 **TF-Aware Adaptation**: Intelligent coordination of base and arm using transform trees
+- 🎮 **Dual Control Modes**: Switch between `vla` and `visual_servo` in `core_launch.py`
 - 🚀 **Flexible Deployment**: Run fully on-device (Jetson) or with remote GPU inference
 - 🔒 **Production Ready**: Testing, Docker deployment, and security features
 - 📦 **Monorepo Design**: All packages in one place for easy development
@@ -76,9 +78,21 @@ source install/setup.bash
 ros2 launch manipulation_bringup sim_launch.py
 ```
 
-**Real Robot (Jetson-only):**
+**Real Robot (VLA Mode, default):**
 ```bash
 ros2 launch manipulation_bringup core_launch.py
+```
+
+**Real Robot (Visual Servo Mode):**
+```bash
+ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
+```
+
+> **Note:** Visual-servo mode expects detections on `/manipulation/target_detections` (type `vision_msgs/msg/Detection2DArray`) and publishes `manipulation_msgs/msg/PolicyOutput` on `/manipulation/policy_output`.
+
+**Visual Servo Node Only (Debug/Bench):**
+```bash
+ros2 launch manipulation_visual_servo visual_servo_debug.launch.py
 ```
 
 **Split Deployment (Jetson + Remote Server):**
@@ -123,6 +137,7 @@ MobileManipulationCore/
 │   ├── manipulation_perception/  # Sensor processing
 │   ├── manipulation_policy/      # ML policy inference
 │   ├── manipulation_adapter/     # Action-to-command mapping
+│   ├── manipulation_visual_servo/  # Visual servo control node
 │   ├── manipulation_msgs/        # Custom message definitions
 │   └── manipulation_bringup/     # Launch files
 ├── scripts/                      # Installation and setup scripts
@@ -182,6 +197,24 @@ colcon test
 
 # View test results
 colcon test-result --verbose
+```
+
+### Visual Servo Smoke Test
+
+```bash
+# Build relevant packages
+colcon build --symlink-install --packages-up-to manipulation_visual_servo manipulation_bringup
+
+# Run package tests (lint + package-level tests)
+colcon test --packages-select manipulation_visual_servo manipulation_bringup
+colcon test-result --verbose
+
+# Launch full stack in visual servo mode
+ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
+
+# In another terminal, verify visual-servo outputs
+ros2 topic echo /visual_servo/state
+ros2 topic hz /manipulation/policy_output
 ```
 
 ## License
