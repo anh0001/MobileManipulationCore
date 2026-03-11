@@ -64,7 +64,7 @@
         {
             "label": "Run Grounding DINO Detection Server",
             "type": "shell",
-            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543",
+            "command": "eval \"$(${HOME}/miniconda3/bin/conda shell.bash hook)\" && conda activate mobile_manipulation_vla && PYTHONPATH=${workspaceFolder}/build/manipulation_detection:$PYTHONPATH python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543",
             "isBackground": true,
             "problemMatcher": [],
             "presentation": {
