@@ -11,8 +11,8 @@ detection:
 
   # Client request controls
   request_rate_hz: 4.0
-  request_timeout_sec: 0.30
-  retry_attempts: 0
+  request_timeout_sec: 1.0
+  retry_attempts: 1
   max_result_staleness_sec: 0.40
 
   # Image payload optimization

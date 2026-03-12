@@ -25,20 +25,10 @@
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <cv_bridge/cv_bridge.h>
-#include <image_transport/image_transport.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
 #include <manipulation_msgs/msg/policy_output.hpp>
-
-#include <visp3/core/vpCameraParameters.h>
-#include <visp3/core/vpImage.h>
-#include <visp3/core/vpImagePoint.h>
-#include <visp3/core/vpRect.h>
-#include <visp3/me/vpMeEllipse.h>
-#include <visp3/visual_features/vpFeaturePoint.h>
-#include <visp3/vs/vpServo.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -105,7 +95,7 @@ private:
 
   // Publishers
   rclcpp::Publisher<manipulation_msgs::msg::PolicyOutput>::SharedPtr policy_output_pub_;
-  image_transport::Publisher debug_image_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
 
   // Timer
@@ -122,7 +112,6 @@ private:
 
   // Camera intrinsics
   bool camera_info_received_{false};
-  vpCameraParameters cam_params_;
   int image_width_{0};
   int image_height_{0};
 

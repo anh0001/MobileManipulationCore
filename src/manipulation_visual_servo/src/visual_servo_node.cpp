@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <sensor_msgs/image_encodings.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <opencv2/video/tracking.hpp>
 
@@ -146,7 +147,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   }
 
   if (publish_overlay_) {
-    debug_image_pub_ = image_transport::create_publisher(this, overlay_topic_);
+    debug_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(overlay_topic_, 10);
   }
 
   // Control timer
@@ -173,14 +174,35 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
 {
   try {
-    auto cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
+    cv::Mat converted;
+    if (msg->encoding == sensor_msgs::image_encodings::BGR8) {
+      const cv::Mat view(
+        static_cast<int>(msg->height),
+        static_cast<int>(msg->width),
+        CV_8UC3,
+        const_cast<unsigned char *>(msg->data.data()),
+        static_cast<size_t>(msg->step));
+      converted = view.clone();
+    } else if (msg->encoding == sensor_msgs::image_encodings::RGB8) {
+      const cv::Mat view(
+        static_cast<int>(msg->height),
+        static_cast<int>(msg->width),
+        CV_8UC3,
+        const_cast<unsigned char *>(msg->data.data()),
+        static_cast<size_t>(msg->step));
+      cv::cvtColor(view, converted, cv::COLOR_RGB2BGR);
+    } else {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "Unsupported image encoding: %s (expected bgr8/rgb8)", msg->encoding.c_str());
+      return;
+    }
     std::lock_guard<std::mutex> lock(image_mutex_);
-    latest_frame_ = cv_ptr->image.clone();
+    latest_frame_ = converted;
     latest_frame_stamp_ = msg->header.stamp;
     frame_available_ = true;
-  } catch (const cv_bridge::Exception & e) {
+  } catch (const std::exception & e) {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-      "cv_bridge conversion failed: %s", e.what());
+      "Image conversion failed: %s", e.what());
   }
 }
 
@@ -196,7 +218,6 @@ void VisualServoNode::camera_info_callback(
     double py = msg->k[4];  // fy
     double u0 = msg->k[2];  // cx
     double v0 = msg->k[5];  // cy
-    cam_params_.initPersProjWithoutDistortion(px, py, u0, v0);
     image_width_ = static_cast<int>(msg->width);
     image_height_ = static_cast<int>(msg->height);
     camera_info_received_ = true;
@@ -813,9 +834,20 @@ void VisualServoNode::publish_debug_overlay(
     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
 
   // Publish
-  auto msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", overlay).toImageMsg();
-  msg->header.stamp = this->now();
-  debug_image_pub_.publish(msg);
+  if (!debug_image_pub_) {
+    return;
+  }
+
+  sensor_msgs::msg::Image msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = camera_optical_frame_;
+  msg.height = static_cast<uint32_t>(overlay.rows);
+  msg.width = static_cast<uint32_t>(overlay.cols);
+  msg.encoding = sensor_msgs::image_encodings::BGR8;
+  msg.is_bigendian = false;
+  msg.step = static_cast<sensor_msgs::msg::Image::_step_type>(overlay.step);
+  msg.data.assign(overlay.datastart, overlay.dataend);
+  debug_image_pub_->publish(msg);
 }
 
 void VisualServoNode::publish_state()
