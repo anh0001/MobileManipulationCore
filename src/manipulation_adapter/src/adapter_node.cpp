@@ -403,7 +403,7 @@ private:
       return false;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Processing EEF target at [%.2f, %.2f, %.2f]",
+    RCLCPP_INFO(this->get_logger(), "Processing EEF target at [%.4f, %.4f, %.4f]",
                 target_out.pose.position.x,
                 target_out.pose.position.y,
                 target_out.pose.position.z);

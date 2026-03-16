@@ -155,6 +155,7 @@ private:
 
   bool use_depth_;
   double control_rate_hz_;
+  double output_delta_horizon_sec_;
   double min_detection_confidence_;
   double min_tracking_confidence_;
   double lost_target_timeout_sec_;

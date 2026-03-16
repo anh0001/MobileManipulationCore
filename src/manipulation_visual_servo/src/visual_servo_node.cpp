@@ -50,6 +50,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("output_topic", "/manipulation/policy_output");
   this->declare_parameter("use_depth", false);
   this->declare_parameter("control_rate_hz", 20.0);
+  this->declare_parameter("output_delta_horizon_sec", 0.0);
   this->declare_parameter("target_class", "");
   this->declare_parameter("min_detection_confidence", 0.4);
   this->declare_parameter("min_tracking_confidence", 0.5);
@@ -91,6 +92,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   output_topic_ = this->get_parameter("output_topic").as_string();
   use_depth_ = this->get_parameter("use_depth").as_bool();
   control_rate_hz_ = this->get_parameter("control_rate_hz").as_double();
+  output_delta_horizon_sec_ = this->get_parameter("output_delta_horizon_sec").as_double();
   target_class_ = this->get_parameter("target_class").as_string();
   min_detection_confidence_ = this->get_parameter("min_detection_confidence").as_double();
   min_tracking_confidence_ = this->get_parameter("min_tracking_confidence").as_double();
@@ -163,8 +165,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     "VisualServoNode initialized: rgb=%s, detections=%s, output=%s, rate=%.1f Hz",
     rgb_topic_.c_str(), detection_topic_.c_str(), output_topic_.c_str(), control_rate_hz_);
   RCLCPP_INFO(this->get_logger(),
-    "Control gains: lambda_xy=%.3f, lambda_z=%.3f, max_lin=%.3f, max_ang=%.3f",
-    lambda_xy_, lambda_z_, max_linear_velocity_, max_angular_velocity_);
+    "Control gains: lambda_xy=%.3f, lambda_z=%.3f, max_lin=%.3f, max_ang=%.3f, delta_horizon=%.3f",
+    lambda_xy_, lambda_z_, max_linear_velocity_, max_angular_velocity_,
+    output_delta_horizon_sec_ > 0.0 ? output_delta_horizon_sec_ : 1.0 / control_rate_hz_);
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +411,26 @@ void VisualServoNode::handle_track()
     frame = latest_frame_.clone();
   }
 
+  {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    if (detection_available_) {
+      cv::Rect2d det_roi = latest_detection_roi_;
+      detection_available_ = false;
+
+      det_roi.x = std::max(0.0, det_roi.x);
+      det_roi.y = std::max(0.0, det_roi.y);
+      det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
+      det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
+
+      if (det_roi.width >= 10.0 && det_roi.height >= 10.0 && init_tracker(frame, det_roi)) {
+        tracked_roi_ = det_roi;
+        last_track_time_ = this->now();
+        transition_to(ServoState::SERVO);
+        return;
+      }
+    }
+  }
+
   cv::Rect2d new_roi;
   bool ok = update_tracker(frame, new_roi);
 
@@ -429,43 +452,48 @@ void VisualServoNode::handle_track()
 void VisualServoNode::handle_servo()
 {
   cv::Mat frame;
-  rclcpp::Time frame_stamp;
   {
     std::lock_guard<std::mutex> lock(image_mutex_);
     if (!frame_available_) {
       return;
     }
     frame = latest_frame_.clone();
-    frame_stamp = latest_frame_stamp_;
   }
 
-  // Update tracker
-  cv::Rect2d new_roi;
-  bool ok = update_tracker(frame, new_roi);
-
-  if (!ok || tracking_confidence_ < min_tracking_confidence_) {
-    double since_track = (this->now() - last_track_time_).seconds();
-    if (since_track > lost_target_timeout_sec_) {
-      transition_to(ServoState::LOST);
-    }
-    return;
-  }
-
-  tracked_roi_ = new_roi;
-  last_track_time_ = this->now();
-
-  // Check for new detections to re-seed tracker if available
+  bool have_fresh_detection = false;
   {
     std::lock_guard<std::mutex> lock(detection_mutex_);
     if (detection_available_) {
-      // Re-seed tracker from new detection for drift correction
-      cv::Rect2d det_roi = latest_detection_roi_;
       detection_available_ = false;
+      cv::Rect2d det_roi = latest_detection_roi_;
 
-      // Always re-seed from detection — DINO detections are more reliable than MIL tracker
-      init_tracker(frame, det_roi);
-      tracked_roi_ = det_roi;
+      det_roi.x = std::max(0.0, det_roi.x);
+      det_roi.y = std::max(0.0, det_roi.y);
+      det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
+      det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
+
+      if (det_roi.width >= 10.0 && det_roi.height >= 10.0 && init_tracker(frame, det_roi)) {
+        tracked_roi_ = det_roi;
+        last_track_time_ = this->now();
+        have_fresh_detection = true;
+      }
     }
+  }
+
+  if (!have_fresh_detection) {
+    cv::Rect2d new_roi;
+    bool ok = update_tracker(frame, new_roi);
+
+    if (!ok || tracking_confidence_ < min_tracking_confidence_) {
+      double since_track = (this->now() - last_track_time_).seconds();
+      if (since_track > lost_target_timeout_sec_) {
+        transition_to(ServoState::LOST);
+      }
+      return;
+    }
+
+    tracked_roi_ = new_roi;
+    last_track_time_ = this->now();
   }
 
   // Compute current feature values (centroid + area)
@@ -767,8 +795,11 @@ void VisualServoNode::publish_policy_output(
   }
 
   // Convert to EEF delta pose for PolicyOutput
-  double dt = 1.0 / control_rate_hz_;
-  auto eef_delta = twist_to_eef_delta(output_twist, dt);
+  double delta_horizon_sec = output_delta_horizon_sec_;
+  if (delta_horizon_sec <= 0.0) {
+    delta_horizon_sec = 1.0 / control_rate_hz_;
+  }
+  auto eef_delta = twist_to_eef_delta(output_twist, delta_horizon_sec);
 
   manipulation_msgs::msg::PolicyOutput msg;
   msg.header.stamp = this->now();

@@ -571,6 +571,7 @@ def generate_launch_description():
             'output_topic': '/manipulation/policy_output',
             'use_depth': bool(vs_cfg.get('use_depth', False)),
             'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
+            'output_delta_horizon_sec': float(effective_servo_horizon_sec),
             'target_class': str(vs_cfg.get('target_class', '')),
             'min_detection_confidence': float(
                 vs_cfg.get('min_detection_confidence', 0.4)),

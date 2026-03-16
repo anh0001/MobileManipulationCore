@@ -86,6 +86,7 @@ def generate_launch_description():
                 'reference_frame': LaunchConfiguration('reference_frame'),
                 'camera_optical_frame': LaunchConfiguration('camera_optical_frame'),
                 'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
+                'output_delta_horizon_sec': float(vs_cfg.get('output_delta_horizon_sec', 0.0)),
                 'use_depth': bool(vs_cfg.get('use_depth', False)),
                 'target_class': str(vs_cfg.get('target_class', '')),
                 'min_detection_confidence': float(

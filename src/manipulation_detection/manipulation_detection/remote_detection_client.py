@@ -97,7 +97,7 @@ def _build_detection_message(
     min_score: float,
     max_detections: int,
 ) -> Detection2DArray:
-    """Convert normalized detection dictionaries to Detection2DArray."""
+    """Convert pixel-space detection dictionaries to Detection2DArray."""
     msg = Detection2DArray()
     msg.header = header
 
@@ -129,6 +129,39 @@ def _build_detection_message(
         msg.detections.append(det)
 
     return msg
+
+
+def _rescale_detections_to_source_image(
+    detections: List[Dict[str, Any]],
+    source_width: int,
+    source_height: int,
+    detector_width: int,
+    detector_height: int,
+) -> List[Dict[str, Any]]:
+    """Map detector pixel coordinates back to the source image pixel coordinates."""
+    if (
+        source_width <= 0
+        or source_height <= 0
+        or detector_width <= 0
+        or detector_height <= 0
+    ):
+        return detections
+
+    if source_width == detector_width and source_height == detector_height:
+        return detections
+
+    scale_x = float(source_width) / float(detector_width)
+    scale_y = float(source_height) / float(detector_height)
+
+    scaled: List[Dict[str, Any]] = []
+    for item in detections:
+        transformed = dict(item)
+        transformed["cx"] = _safe_float(item.get("cx"), 0.0) * scale_x
+        transformed["cy"] = _safe_float(item.get("cy"), 0.0) * scale_y
+        transformed["w"] = _safe_float(item.get("w"), 0.0) * scale_x
+        transformed["h"] = _safe_float(item.get("h"), 0.0) * scale_y
+        scaled.append(transformed)
+    return scaled
 
 
 def _post_json(
@@ -305,7 +338,8 @@ class RemoteDetectionClientNode(Node):
         started = time.monotonic()
         try:
             cv_image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding="bgr8")
-            image_b64, width, height = _encode_image_payload(
+            source_height, source_width = cv_image.shape[:2]
+            image_b64, detector_width, detector_height = _encode_image_payload(
                 cv_image,
                 jpeg_quality=self.jpeg_quality,
                 max_long_side_px=self.max_image_long_side_px,
@@ -314,8 +348,8 @@ class RemoteDetectionClientNode(Node):
             payload = {
                 "image": image_b64,
                 "image_encoding": "jpeg",
-                "image_width": width,
-                "image_height": height,
+                "image_width": detector_width,
+                "image_height": detector_height,
                 "prompt": prompt,
                 "stamp": {
                     "sec": int(image_msg.header.stamp.sec),
@@ -348,6 +382,14 @@ class RemoteDetectionClientNode(Node):
                 self.total_failures += 1
                 self.get_logger().warn("Remote detector response has invalid 'detections' field.")
                 return
+
+            detections = _rescale_detections_to_source_image(
+                detections=detections,
+                source_width=source_width,
+                source_height=source_height,
+                detector_width=detector_width,
+                detector_height=detector_height,
+            )
 
             age_sec = (self.get_clock().now() - image_receive_time).nanoseconds / 1e9
             if age_sec > self.max_result_staleness_sec:
