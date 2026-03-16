@@ -277,7 +277,7 @@
         {
             "label": "Run Detection Client (Standalone)",
             "type": "shell",
-            "command": "source install/setup.bash && ros2 run manipulation_detection remote_detection_client --ros-args -p image_topic:=/piper/wrist_camera/piper_d405/color/image_rect_raw -p detection_topic:=/manipulation/target_detections -p prompt_topic:=/visual_servo/target_prompt -p remote_url:=${input:detectionUrl}",
+            "command": "source install/setup.bash && ros2 run manipulation_detection remote_detection_client --ros-args -p image_topic:=/piper/wrist_camera/piper_d405/color/image_rect_raw -p detection_topic:=/manipulation/target_detections -p prompt_topic:=/visual_servo/target_prompt -p remote_url:=${input:detectionUrl} -p request_timeout_sec:=2.0 -p max_result_staleness_sec:=2.0 -p request_rate_hz:=1.0",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,

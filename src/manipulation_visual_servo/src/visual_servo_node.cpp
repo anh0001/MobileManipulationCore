@@ -462,18 +462,9 @@ void VisualServoNode::handle_servo()
       cv::Rect2d det_roi = latest_detection_roi_;
       detection_available_ = false;
 
-      // Only re-seed if detection is reasonably close to tracked position
-      double dx = std::abs((det_roi.x + det_roi.width / 2.0) -
-        (tracked_roi_.x + tracked_roi_.width / 2.0));
-      double dy = std::abs((det_roi.y + det_roi.height / 2.0) -
-        (tracked_roi_.y + tracked_roi_.height / 2.0));
-      double diag = std::sqrt(tracked_roi_.width * tracked_roi_.width +
-        tracked_roi_.height * tracked_roi_.height);
-
-      if (dx < diag && dy < diag) {
-        init_tracker(frame, det_roi);
-        tracked_roi_ = det_roi;
-      }
+      // Always re-seed from detection — DINO detections are more reliable than MIL tracker
+      init_tracker(frame, det_roi);
+      tracked_roi_ = det_roi;
     }
   }
 

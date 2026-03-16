@@ -10,10 +10,10 @@ detection:
   remote_url: "http://100.112.100.20:30543"
 
   # Client request controls
-  request_rate_hz: 4.0
-  request_timeout_sec: 1.0
-  retry_attempts: 1
-  max_result_staleness_sec: 0.40
+  request_rate_hz: 1.0
+  request_timeout_sec: 2.0
+  retry_attempts: 0
+  max_result_staleness_sec: 2.0
 
   # Image payload optimization
   jpeg_quality: 70
