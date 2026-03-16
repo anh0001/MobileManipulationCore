@@ -16,13 +16,28 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <utility>
 
+#include <opencv2/video/tracking.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <opencv2/video/tracking.hpp>
+
+#include "manipulation_visual_servo/visual_servo_utils.hpp"
 
 namespace manipulation_visual_servo
 {
+
+namespace
+{
+
+template<typename T>
+T clamp_value(T value, T lower, T upper)
+{
+  return std::max(lower, std::min(upper, value));
+}
+
+}  // namespace
 
 std::string state_to_string(ServoState state)
 {
@@ -30,7 +45,12 @@ std::string state_to_string(ServoState state)
     case ServoState::IDLE: return "IDLE";
     case ServoState::ACQUIRE: return "ACQUIRE";
     case ServoState::TRACK: return "TRACK";
-    case ServoState::SERVO: return "SERVO";
+    case ServoState::ALIGN_XY: return "ALIGN_XY";
+    case ServoState::OPEN_GRIPPER: return "OPEN_GRIPPER";
+    case ServoState::APPROACH_DEPTH: return "APPROACH_DEPTH";
+    case ServoState::CLOSE_GRIPPER: return "CLOSE_GRIPPER";
+    case ServoState::LIFT: return "LIFT";
+    case ServoState::DONE: return "DONE";
     case ServoState::LOST: return "LOST";
     default: return "UNKNOWN";
   }
@@ -39,16 +59,13 @@ std::string state_to_string(ServoState state)
 VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 : Node("visual_servo_node", options)
 {
-  // Declare parameters with defaults from visual_servo_params.yaml
-  this->declare_parameter("rgb_topic",
-    "/piper/wrist_camera/piper_d405/color/image_rect_raw");
+  this->declare_parameter("rgb_topic", "/piper/wrist_camera/piper_d405/color/image_rect_raw");
   this->declare_parameter("camera_info_topic",
     "/piper/wrist_camera/piper_d405/color/camera_info");
-  this->declare_parameter("depth_topic",
-    "/piper/wrist_camera/piper_d405/depth/image_rect_raw");
+  this->declare_parameter("depth_topic", "/piper/wrist_camera/piper_d405/depth/image_rect_raw");
   this->declare_parameter("detection_topic", "/manipulation/target_detections");
   this->declare_parameter("output_topic", "/manipulation/policy_output");
-  this->declare_parameter("use_depth", false);
+  this->declare_parameter("use_depth", true);
   this->declare_parameter("control_rate_hz", 20.0);
   this->declare_parameter("output_delta_horizon_sec", 0.0);
   this->declare_parameter("target_class", "");
@@ -61,8 +78,18 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("camera_optical_frame", "piper_camera_optical_frame");
   this->declare_parameter("ee_frame", "piper_link6");
   this->declare_parameter("arm_base_frame", "piper_base_link");
+  this->declare_parameter("grasp_standoff_m", 0.16);
+  this->declare_parameter("grasp_depth_tolerance_m", 0.015);
+  this->declare_parameter("depth_roi_half_size_px", 8);
+  this->declare_parameter("min_valid_depth_pixels", 12);
+  this->declare_parameter("depth_stale_timeout_sec", 0.25);
+  this->declare_parameter("centering_stable_cycles", 3);
+  this->declare_parameter("grasp_settle_sec", 0.75);
+  this->declare_parameter("lift_distance_m", 0.08);
+  this->declare_parameter("max_approach_distance_m", 0.50);
+  this->declare_parameter("open_gripper_command", 1.0);
+  this->declare_parameter("close_gripper_command", 0.0);
 
-  // Tracker parameters
   this->declare_parameter("tracker_type", "klt");
   this->declare_parameter("klt_max_features", 200);
   this->declare_parameter("klt_quality_level", 0.01);
@@ -70,7 +97,6 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("klt_window_size", 10);
   this->declare_parameter("klt_pyramid_levels", 3);
 
-  // Control gains
   this->declare_parameter("control.lambda_xy", 0.3);
   this->declare_parameter("control.lambda_z", 0.1);
   this->declare_parameter("control.lambda_rz", 0.1);
@@ -78,13 +104,11 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("control.max_angular_velocity", 0.30);
   this->declare_parameter("control.ramp_up_steps", 5);
 
-  // Debug parameters
   this->declare_parameter("debug.publish_overlay", true);
   this->declare_parameter("debug.overlay_topic", "/visual_servo/debug_image");
   this->declare_parameter("debug.publish_state", true);
   this->declare_parameter("debug.state_topic", "/visual_servo/state");
 
-  // Read parameters
   rgb_topic_ = this->get_parameter("rgb_topic").as_string();
   camera_info_topic_ = this->get_parameter("camera_info_topic").as_string();
   depth_topic_ = this->get_parameter("depth_topic").as_string();
@@ -103,6 +127,17 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   camera_optical_frame_ = this->get_parameter("camera_optical_frame").as_string();
   ee_frame_ = this->get_parameter("ee_frame").as_string();
   arm_base_frame_ = this->get_parameter("arm_base_frame").as_string();
+  grasp_standoff_m_ = this->get_parameter("grasp_standoff_m").as_double();
+  grasp_depth_tolerance_m_ = this->get_parameter("grasp_depth_tolerance_m").as_double();
+  depth_roi_half_size_px_ = this->get_parameter("depth_roi_half_size_px").as_int();
+  min_valid_depth_pixels_ = this->get_parameter("min_valid_depth_pixels").as_int();
+  depth_stale_timeout_sec_ = this->get_parameter("depth_stale_timeout_sec").as_double();
+  centering_stable_cycles_ = this->get_parameter("centering_stable_cycles").as_int();
+  grasp_settle_sec_ = this->get_parameter("grasp_settle_sec").as_double();
+  lift_distance_m_ = this->get_parameter("lift_distance_m").as_double();
+  max_approach_distance_m_ = this->get_parameter("max_approach_distance_m").as_double();
+  open_gripper_command_ = this->get_parameter("open_gripper_command").as_double();
+  close_gripper_command_ = this->get_parameter("close_gripper_command").as_double();
 
   tracker_type_ = this->get_parameter("tracker_type").as_string();
   klt_max_features_ = this->get_parameter("klt_max_features").as_int();
@@ -123,14 +158,18 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   publish_state_flag_ = this->get_parameter("debug.publish_state").as_bool();
   state_topic_ = this->get_parameter("debug.state_topic").as_string();
 
-  // TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-  // Subscribers
   rgb_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     rgb_topic_, rclcpp::SensorDataQoS(),
     std::bind(&VisualServoNode::image_callback, this, std::placeholders::_1));
+
+  if (use_depth_) {
+    depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+      depth_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&VisualServoNode::depth_callback, this, std::placeholders::_1));
+  }
 
   camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
     camera_info_topic_, rclcpp::SensorDataQoS(),
@@ -140,7 +179,6 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     detection_topic_, 10,
     std::bind(&VisualServoNode::detection_callback, this, std::placeholders::_1));
 
-  // Publishers
   policy_output_pub_ = this->create_publisher<manipulation_msgs::msg::PolicyOutput>(
     output_topic_, 10);
 
@@ -152,8 +190,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     debug_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(overlay_topic_, 10);
   }
 
-  // Control timer
-  auto period = std::chrono::duration<double>(1.0 / control_rate_hz_);
+  auto period = std::chrono::duration<double>(1.0 / std::max(1.0, control_rate_hz_));
   control_timer_ = this->create_wall_timer(
     std::chrono::duration_cast<std::chrono::nanoseconds>(period),
     std::bind(&VisualServoNode::control_timer_callback, this));
@@ -162,17 +199,14 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   last_track_time_ = this->now();
 
   RCLCPP_INFO(this->get_logger(),
-    "VisualServoNode initialized: rgb=%s, detections=%s, output=%s, rate=%.1f Hz",
-    rgb_topic_.c_str(), detection_topic_.c_str(), output_topic_.c_str(), control_rate_hz_);
+    "VisualServoNode initialized: rgb=%s depth=%s detections=%s output=%s rate=%.1f Hz",
+    rgb_topic_.c_str(), depth_topic_.c_str(), detection_topic_.c_str(), output_topic_.c_str(),
+    control_rate_hz_);
   RCLCPP_INFO(this->get_logger(),
-    "Control gains: lambda_xy=%.3f, lambda_z=%.3f, max_lin=%.3f, max_ang=%.3f, delta_horizon=%.3f",
-    lambda_xy_, lambda_z_, max_linear_velocity_, max_angular_velocity_,
-    output_delta_horizon_sec_ > 0.0 ? output_delta_horizon_sec_ : 1.0 / control_rate_hz_);
+    "Pick config: use_depth=%s standoff=%.3f tol=%.3f lift=%.3f max_approach=%.3f",
+    use_depth_ ? "true" : "false", grasp_standoff_m_, grasp_depth_tolerance_m_,
+    lift_distance_m_, max_approach_distance_m_);
 }
-
-// ---------------------------------------------------------------------------
-// Callbacks
-// ---------------------------------------------------------------------------
 
 void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
 {
@@ -184,7 +218,7 @@ void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedP
         static_cast<int>(msg->width),
         CV_8UC3,
         const_cast<unsigned char *>(msg->data.data()),
-        static_cast<size_t>(msg->step));
+        static_cast<std::size_t>(msg->step));
       converted = view.clone();
     } else if (msg->encoding == sensor_msgs::image_encodings::RGB8) {
       const cv::Mat view(
@@ -192,13 +226,14 @@ void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedP
         static_cast<int>(msg->width),
         CV_8UC3,
         const_cast<unsigned char *>(msg->data.data()),
-        static_cast<size_t>(msg->step));
+        static_cast<std::size_t>(msg->step));
       cv::cvtColor(view, converted, cv::COLOR_RGB2BGR);
     } else {
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
         "Unsupported image encoding: %s (expected bgr8/rgb8)", msg->encoding.c_str());
       return;
     }
+
     std::lock_guard<std::mutex> lock(image_mutex_);
     latest_frame_ = converted;
     latest_frame_stamp_ = msg->header.stamp;
@@ -209,6 +244,31 @@ void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedP
   }
 }
 
+void VisualServoNode::depth_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
+{
+  cv::Mat depth_image;
+  std::string error_message;
+  if (!decode_depth_image(*msg, depth_image, &error_message)) {
+    if (!depth_encoding_warned_) {
+      RCLCPP_WARN(this->get_logger(),
+        "Depth frame rejected from %s: %s", depth_topic_.c_str(), error_message.c_str());
+      depth_encoding_warned_ = true;
+    } else {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+        "Depth frame rejected from %s: %s", depth_topic_.c_str(), error_message.c_str());
+    }
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(depth_mutex_);
+    latest_depth_frame_ = depth_image;
+    latest_depth_stamp_ = msg->header.stamp;
+    depth_available_ = true;
+  }
+  depth_encoding_warned_ = false;
+}
+
 void VisualServoNode::camera_info_callback(
   const sensor_msgs::msg::CameraInfo::ConstSharedPtr & msg)
 {
@@ -217,15 +277,13 @@ void VisualServoNode::camera_info_callback(
   }
 
   if (msg->k[0] > 0.0 && msg->k[4] > 0.0) {
-    double px = msg->k[0];  // fx
-    double py = msg->k[4];  // fy
-    double u0 = msg->k[2];  // cx
-    double v0 = msg->k[5];  // cy
+    const double px = msg->k[0];
+    const double py = msg->k[4];
+    const double u0 = msg->k[2];
+    const double v0 = msg->k[5];
     image_width_ = static_cast<int>(msg->width);
     image_height_ = static_cast<int>(msg->height);
     camera_info_received_ = true;
-
-    // Set desired feature point to image center
     desired_x_ = u0;
     desired_y_ = v0;
 
@@ -242,14 +300,12 @@ void VisualServoNode::detection_callback(
     return;
   }
 
-  // Find best matching detection
   const vision_msgs::msg::Detection2D * best = nullptr;
-  float best_score = 0.0f;
+  float best_score = 0.0F;
 
   for (const auto & det : msg->detections) {
-    float score = 0.0f;
+    float score = 0.0F;
     std::string class_id;
-
     if (!det.results.empty()) {
       score = static_cast<float>(det.results[0].hypothesis.score);
       class_id = det.results[0].hypothesis.class_id;
@@ -258,12 +314,9 @@ void VisualServoNode::detection_callback(
     if (score < min_detection_confidence_) {
       continue;
     }
-
-    // Filter by target class if specified
     if (!target_class_.empty() && class_id != target_class_) {
       continue;
     }
-
     if (score > best_score) {
       best_score = score;
       best = &det;
@@ -274,11 +327,10 @@ void VisualServoNode::detection_callback(
     return;
   }
 
-  // Convert detection bbox to cv::Rect2d
-  double cx = best->bbox.center.position.x;
-  double cy = best->bbox.center.position.y;
-  double w = best->bbox.size_x;
-  double h = best->bbox.size_y;
+  const double cx = best->bbox.center.position.x;
+  const double cy = best->bbox.center.position.y;
+  const double w = best->bbox.size_x;
+  const double h = best->bbox.size_y;
 
   std::lock_guard<std::mutex> lock(detection_mutex_);
   latest_detection_roi_ = cv::Rect2d(cx - w / 2.0, cy - h / 2.0, w, h);
@@ -287,10 +339,6 @@ void VisualServoNode::detection_callback(
   detection_available_ = true;
   latest_detection_stamp_ = msg->header.stamp;
 }
-
-// ---------------------------------------------------------------------------
-// Control timer
-// ---------------------------------------------------------------------------
 
 void VisualServoNode::control_timer_callback()
 {
@@ -304,8 +352,23 @@ void VisualServoNode::control_timer_callback()
     case ServoState::TRACK:
       handle_track();
       break;
-    case ServoState::SERVO:
-      handle_servo();
+    case ServoState::ALIGN_XY:
+      handle_align_xy();
+      break;
+    case ServoState::OPEN_GRIPPER:
+      handle_open_gripper();
+      break;
+    case ServoState::APPROACH_DEPTH:
+      handle_approach_depth();
+      break;
+    case ServoState::CLOSE_GRIPPER:
+      handle_close_gripper();
+      break;
+    case ServoState::LIFT:
+      handle_lift();
+      break;
+    case ServoState::DONE:
+      handle_done();
       break;
     case ServoState::LOST:
       handle_lost();
@@ -317,68 +380,59 @@ void VisualServoNode::control_timer_callback()
   }
 }
 
-// ---------------------------------------------------------------------------
-// State machine
-// ---------------------------------------------------------------------------
-
 void VisualServoNode::transition_to(ServoState new_state)
 {
   if (new_state == state_) {
     return;
   }
+
   RCLCPP_INFO(this->get_logger(), "State transition: %s -> %s",
     state_to_string(state_).c_str(), state_to_string(new_state).c_str());
   state_ = new_state;
   state_entry_time_ = this->now();
   ramp_step_ = 0;
-}
 
-void VisualServoNode::handle_idle()
-{
-  // Wait for camera_info before doing anything
-  if (!camera_info_received_) {
-    return;
-  }
-
-  // Check if we have a detection to acquire
-  {
-    std::lock_guard<std::mutex> lock(detection_mutex_);
-    if (detection_available_) {
-      transition_to(ServoState::ACQUIRE);
-    }
+  if (new_state == ServoState::ACQUIRE) {
+    reset_pick_progress();
+  } else if (new_state == ServoState::ALIGN_XY) {
+    centering_streak_ = 0;
+  } else if (new_state == ServoState::APPROACH_DEPTH) {
+    accumulated_approach_distance_m_ = 0.0;
+  } else if (new_state == ServoState::LIFT) {
+    accumulated_lift_distance_m_ = 0.0;
   }
 }
 
-void VisualServoNode::handle_acquire()
+bool VisualServoNode::fetch_latest_frame(cv::Mat & frame)
 {
-  // Check for timeout
-  double elapsed = (this->now() - state_entry_time_).seconds();
-  if (elapsed > acquire_timeout_sec_) {
-    RCLCPP_WARN(this->get_logger(), "Acquire timed out after %.1f sec", elapsed);
-    transition_to(ServoState::IDLE);
-    return;
+  std::lock_guard<std::mutex> lock(image_mutex_);
+  if (!frame_available_) {
+    return false;
   }
+  frame = latest_frame_.clone();
+  return true;
+}
 
-  cv::Mat frame;
-  {
-    std::lock_guard<std::mutex> lock(image_mutex_);
-    if (!frame_available_) {
-      return;
-    }
-    frame = latest_frame_.clone();
-  }
+void VisualServoNode::reset_pick_progress()
+{
+  centering_streak_ = 0;
+  accumulated_approach_distance_m_ = 0.0;
+  accumulated_lift_distance_m_ = 0.0;
+  last_sampled_depth_m_.reset();
+}
 
+bool VisualServoNode::acquire_from_detection(const cv::Mat & frame)
+{
   cv::Rect2d det_roi;
   {
     std::lock_guard<std::mutex> lock(detection_mutex_);
     if (!detection_available_) {
-      return;
+      return false;
     }
     det_roi = latest_detection_roi_;
     detection_available_ = false;
   }
 
-  // Clamp ROI to image bounds
   det_roi.x = std::max(0.0, det_roi.x);
   det_roi.y = std::max(0.0, det_roi.y);
   det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
@@ -387,15 +441,81 @@ void VisualServoNode::handle_acquire()
   if (det_roi.width < 10.0 || det_roi.height < 10.0) {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
       "Detection ROI too small: %.0fx%.0f", det_roi.width, det_roi.height);
+    return false;
+  }
+
+  if (!init_tracker(frame, det_roi)) {
+    return false;
+  }
+
+  tracked_roi_ = det_roi;
+  last_track_time_ = this->now();
+  return true;
+}
+
+bool VisualServoNode::update_tracking(const cv::Mat & frame)
+{
+  {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    if (detection_available_) {
+      cv::Rect2d det_roi = latest_detection_roi_;
+      detection_available_ = false;
+
+      det_roi.x = std::max(0.0, det_roi.x);
+      det_roi.y = std::max(0.0, det_roi.y);
+      det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
+      det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
+
+      if (det_roi.width >= 10.0 && det_roi.height >= 10.0 && init_tracker(frame, det_roi)) {
+        tracked_roi_ = det_roi;
+        last_track_time_ = this->now();
+        return true;
+      }
+    }
+  }
+
+  cv::Rect2d new_roi;
+  const bool ok = update_tracker(frame, new_roi);
+  if (!ok || tracking_confidence_ < min_tracking_confidence_) {
+    const double since_track = (this->now() - last_track_time_).seconds();
+    if (since_track > lost_target_timeout_sec_) {
+      transition_to(ServoState::LOST);
+    }
+    return false;
+  }
+
+  tracked_roi_ = new_roi;
+  last_track_time_ = this->now();
+  return true;
+}
+
+void VisualServoNode::handle_idle()
+{
+  if (!camera_info_received_) {
     return;
   }
 
-  // Initialize tracker on detection ROI
-  if (init_tracker(frame, det_roi)) {
-    tracked_roi_ = det_roi;
-    // Set desired area from initial detection
-    desired_area_ = det_roi.width * det_roi.height;
-    last_track_time_ = this->now();
+  std::lock_guard<std::mutex> lock(detection_mutex_);
+  if (detection_available_) {
+    transition_to(ServoState::ACQUIRE);
+  }
+}
+
+void VisualServoNode::handle_acquire()
+{
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+  if (elapsed > acquire_timeout_sec_) {
+    RCLCPP_WARN(this->get_logger(), "Acquire timed out after %.1f sec", elapsed);
+    transition_to(ServoState::IDLE);
+    return;
+  }
+
+  cv::Mat frame;
+  if (!fetch_latest_frame(frame)) {
+    return;
+  }
+
+  if (acquire_from_detection(frame)) {
     transition_to(ServoState::TRACK);
   }
 }
@@ -403,170 +523,191 @@ void VisualServoNode::handle_acquire()
 void VisualServoNode::handle_track()
 {
   cv::Mat frame;
-  {
-    std::lock_guard<std::mutex> lock(image_mutex_);
-    if (!frame_available_) {
-      return;
-    }
-    frame = latest_frame_.clone();
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(detection_mutex_);
-    if (detection_available_) {
-      cv::Rect2d det_roi = latest_detection_roi_;
-      detection_available_ = false;
-
-      det_roi.x = std::max(0.0, det_roi.x);
-      det_roi.y = std::max(0.0, det_roi.y);
-      det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
-      det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
-
-      if (det_roi.width >= 10.0 && det_roi.height >= 10.0 && init_tracker(frame, det_roi)) {
-        tracked_roi_ = det_roi;
-        last_track_time_ = this->now();
-        transition_to(ServoState::SERVO);
-        return;
-      }
-    }
-  }
-
-  cv::Rect2d new_roi;
-  bool ok = update_tracker(frame, new_roi);
-
-  if (!ok || tracking_confidence_ < min_tracking_confidence_) {
-    double since_track = (this->now() - last_track_time_).seconds();
-    if (since_track > lost_target_timeout_sec_) {
-      transition_to(ServoState::LOST);
-    }
+  if (!fetch_latest_frame(frame)) {
     return;
   }
 
-  tracked_roi_ = new_roi;
-  last_track_time_ = this->now();
-
-  // Once tracking is stable, transition to servo
-  transition_to(ServoState::SERVO);
+  if (update_tracking(frame)) {
+    transition_to(ServoState::ALIGN_XY);
+  }
 }
 
-void VisualServoNode::handle_servo()
+void VisualServoNode::handle_align_xy()
 {
   cv::Mat frame;
-  {
-    std::lock_guard<std::mutex> lock(image_mutex_);
-    if (!frame_available_) {
-      return;
-    }
-    frame = latest_frame_.clone();
+  if (!fetch_latest_frame(frame)) {
+    return;
   }
 
-  bool have_fresh_detection = false;
-  {
-    std::lock_guard<std::mutex> lock(detection_mutex_);
-    if (detection_available_) {
-      detection_available_ = false;
-      cv::Rect2d det_roi = latest_detection_roi_;
-
-      det_roi.x = std::max(0.0, det_roi.x);
-      det_roi.y = std::max(0.0, det_roi.y);
-      det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
-      det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
-
-      if (det_roi.width >= 10.0 && det_roi.height >= 10.0 && init_tracker(frame, det_roi)) {
-        tracked_roi_ = det_roi;
-        last_track_time_ = this->now();
-        have_fresh_detection = true;
-      }
-    }
+  if (!update_tracking(frame)) {
+    return;
   }
 
-  if (!have_fresh_detection) {
-    cv::Rect2d new_roi;
-    bool ok = update_tracker(frame, new_roi);
+  const double feat_x = tracked_roi_.x + tracked_roi_.width * 0.5;
+  const double feat_y = tracked_roi_.y + tracked_roi_.height * 0.5;
+  const double err_x = feat_x - desired_x_;
+  const double err_y = feat_y - desired_y_;
+  const double pixel_error = std::sqrt(err_x * err_x + err_y * err_y);
+  const bool centered = pixel_error <= image_center_tolerance_px_;
 
-    if (!ok || tracking_confidence_ < min_tracking_confidence_) {
-      double since_track = (this->now() - last_track_time_).seconds();
-      if (since_track > lost_target_timeout_sec_) {
-        transition_to(ServoState::LOST);
-      }
-      return;
-    }
+  const auto centering_update = update_centering_streak(
+    centering_streak_, centered, centering_stable_cycles_);
+  centering_streak_ = centering_update.streak;
 
-    tracked_roi_ = new_roi;
-    last_track_time_ = this->now();
-  }
-
-  // Compute current feature values (centroid + area)
-  double feat_x = tracked_roi_.x + tracked_roi_.width / 2.0;
-  double feat_y = tracked_roi_.y + tracked_roi_.height / 2.0;
-  double feat_area = tracked_roi_.width * tracked_roi_.height;
-
-  // Check convergence
-  double err_x = feat_x - desired_x_;
-  double err_y = feat_y - desired_y_;
-  double pixel_error = std::sqrt(err_x * err_x + err_y * err_y);
-
-  if (pixel_error < image_center_tolerance_px_ &&
-    std::abs(feat_area - desired_area_) / desired_area_ < 0.05)
-  {
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-      "Servo converged: pixel_error=%.1f px", pixel_error);
-  }
-
-  // Compute IBVS twist command
-  auto twist = compute_ibvs_twist(feat_x, feat_y, feat_area,
-    desired_x_, desired_y_, desired_area_);
-
-  // Apply ramp-up
-  if (ramp_step_ < ramp_up_steps_ && ramp_up_steps_ > 0) {
-    double ramp_factor = static_cast<double>(ramp_step_ + 1) / ramp_up_steps_;
-    twist.linear.x *= ramp_factor;
-    twist.linear.y *= ramp_factor;
-    twist.linear.z *= ramp_factor;
-    twist.angular.x *= ramp_factor;
-    twist.angular.y *= ramp_factor;
-    twist.angular.z *= ramp_factor;
-    ramp_step_++;
-  }
-
-  // Publish command via PolicyOutput
+  const auto twist = compute_alignment_twist(feat_x, feat_y);
   publish_policy_output(twist, tracking_confidence_);
 
-  // Debug overlay
+  if (publish_overlay_) {
+    publish_debug_overlay(frame, tracked_roi_);
+  }
+
+  if (centering_update.stable) {
+    transition_to(ServoState::OPEN_GRIPPER);
+  }
+}
+
+void VisualServoNode::handle_open_gripper()
+{
+  cv::Mat frame;
+  if (fetch_latest_frame(frame)) {
+    if (!update_tracking(frame)) {
+      return;
+    }
+    if (publish_overlay_) {
+      publish_debug_overlay(frame, tracked_roi_);
+    }
+  }
+
+  publish_policy_output(
+    geometry_msgs::msg::Twist(), tracking_confidence_, true, true, open_gripper_command_);
+
+  if ((this->now() - state_entry_time_).seconds() >= grasp_settle_sec_) {
+    transition_to(ServoState::APPROACH_DEPTH);
+  }
+}
+
+void VisualServoNode::handle_approach_depth()
+{
+  cv::Mat frame;
+  if (!fetch_latest_frame(frame)) {
+    return;
+  }
+
+  if (!update_tracking(frame)) {
+    return;
+  }
+
+  const double feat_x = tracked_roi_.x + tracked_roi_.width * 0.5;
+  const double feat_y = tracked_roi_.y + tracked_roi_.height * 0.5;
+
+  std::optional<DepthSample> depth_sample;
+  {
+    std::lock_guard<std::mutex> lock(depth_mutex_);
+    if (use_depth_ && depth_available_) {
+      const double depth_age_sec = std::abs((this->now() - latest_depth_stamp_).seconds());
+      if (depth_age_sec <= depth_stale_timeout_sec_) {
+        depth_sample = sample_depth_at_roi_center(
+          latest_depth_frame_, tracked_roi_, depth_roi_half_size_px_,
+          static_cast<std::size_t>(std::max(1, min_valid_depth_pixels_)));
+      } else {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+          "Depth frame stale by %.3f sec; holding forward motion", depth_age_sec);
+      }
+    }
+  }
+
+  if (!use_depth_) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+      "use_depth is false; depth-guided pick approach is disabled");
+  }
+
+  if (depth_sample.has_value()) {
+    last_sampled_depth_m_ = depth_sample->depth_m;
+    if (depth_within_standoff(
+        depth_sample->depth_m, grasp_standoff_m_, grasp_depth_tolerance_m_))
+    {
+      publish_zero_motion(tracking_confidence_);
+      transition_to(ServoState::CLOSE_GRIPPER);
+      if (publish_overlay_) {
+        publish_debug_overlay(frame, tracked_roi_);
+      }
+      return;
+    }
+  } else {
+    last_sampled_depth_m_.reset();
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+      "Depth ROI invalid or empty at tracked target; holding forward motion");
+  }
+
+  geometry_msgs::msg::Twist twist = compute_alignment_twist(feat_x, feat_y);
+  if (depth_sample.has_value()) {
+    twist = compute_approach_twist(feat_x, feat_y, depth_sample->depth_m);
+    const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
+      output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_);
+    accumulated_approach_distance_m_ += std::max(0.0, twist.linear.z * delta_horizon_sec);
+    if (accumulated_approach_distance_m_ > max_approach_distance_m_) {
+      RCLCPP_WARN(this->get_logger(),
+        "Aborting pick: accumulated approach distance %.3f m exceeded limit %.3f m",
+        accumulated_approach_distance_m_, max_approach_distance_m_);
+      publish_zero_motion(tracking_confidence_);
+      transition_to(ServoState::LOST);
+      return;
+    }
+  }
+
+  publish_policy_output(twist, tracking_confidence_);
   if (publish_overlay_) {
     publish_debug_overlay(frame, tracked_roi_);
   }
 }
 
-void VisualServoNode::handle_lost()
+void VisualServoNode::handle_close_gripper()
 {
-  // Clear tracker
-  tracker_initialized_ = false;
+  publish_policy_output(
+    geometry_msgs::msg::Twist(), tracking_confidence_, true, true, close_gripper_command_);
 
-  // Check for new detections to re-acquire
-  {
-    std::lock_guard<std::mutex> lock(detection_mutex_);
-    if (detection_available_) {
-      transition_to(ServoState::ACQUIRE);
-      return;
-    }
-  }
-
-  // After some time in LOST, go back to IDLE
-  double elapsed = (this->now() - state_entry_time_).seconds();
-  if (elapsed > acquire_timeout_sec_) {
-    RCLCPP_WARN(this->get_logger(), "Lost target, returning to IDLE");
-    transition_to(ServoState::IDLE);
+  if ((this->now() - state_entry_time_).seconds() >= grasp_settle_sec_) {
+    transition_to(ServoState::LIFT);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Tracker
-// ---------------------------------------------------------------------------
+void VisualServoNode::handle_lift()
+{
+  const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
+    output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_);
+  const double remaining = std::max(0.0, lift_distance_m_ - accumulated_lift_distance_m_);
+
+  if (remaining <= 1e-6) {
+    publish_zero_motion(tracking_confidence_);
+    transition_to(ServoState::DONE);
+    return;
+  }
+
+  const double dz = std::min(max_linear_velocity_ * delta_horizon_sec, remaining);
+  publish_reference_frame_delta(0.0, 0.0, dz, tracking_confidence_, true, close_gripper_command_);
+  accumulated_lift_distance_m_ += dz;
+}
+
+void VisualServoNode::handle_done()
+{
+  publish_zero_motion(tracking_confidence_);
+}
+
+void VisualServoNode::handle_lost()
+{
+  tracker_initialized_ = false;
+  centering_streak_ = 0;
+  last_sampled_depth_m_.reset();
+  publish_zero_motion(0.0F);
+
+  std::lock_guard<std::mutex> lock(detection_mutex_);
+  if (detection_available_) {
+    transition_to(ServoState::ACQUIRE);
+  }
+}
 
 bool VisualServoNode::init_tracker(const cv::Mat & frame, const cv::Rect2d & roi)
 {
-  // The default OpenCV video module in this workspace provides MIL tracker.
   if (tracker_type_ != "mil" && tracker_type_ != "MIL") {
     RCLCPP_WARN_ONCE(
       this->get_logger(),
@@ -590,9 +731,7 @@ bool VisualServoNode::init_tracker(const cv::Mat & frame, const cv::Rect2d & roi
   try {
     cv_tracker_->init(frame, roi_int);
     tracker_initialized_ = true;
-    tracking_confidence_ = 1.0f;
-    RCLCPP_DEBUG(this->get_logger(), "Tracker initialized on ROI [%.0f, %.0f, %.0f, %.0f]",
-      roi.x, roi.y, roi.width, roi.height);
+    tracking_confidence_ = 1.0F;
     return true;
   } catch (const cv::Exception & e) {
     RCLCPP_WARN(this->get_logger(), "Tracker init failed: %s", e.what());
@@ -613,118 +752,100 @@ bool VisualServoNode::update_tracker(const cv::Mat & frame, cv::Rect2d & tracked
       cvRound(tracked_roi_.y),
       cvRound(tracked_roi_.width),
       cvRound(tracked_roi_.height));
-    bool ok = cv_tracker_->update(frame, tracked_roi_int);
+    const bool ok = cv_tracker_->update(frame, tracked_roi_int);
     if (ok) {
       tracked_roi = cv::Rect2d(
         static_cast<double>(tracked_roi_int.x),
         static_cast<double>(tracked_roi_int.y),
         static_cast<double>(tracked_roi_int.width),
         static_cast<double>(tracked_roi_int.height));
-      // Validate ROI is within image bounds
       if (tracked_roi.x >= 0 && tracked_roi.y >= 0 &&
         tracked_roi.x + tracked_roi.width <= frame.cols &&
         tracked_roi.y + tracked_roi.height <= frame.rows &&
         tracked_roi.width > 5 && tracked_roi.height > 5)
       {
-        tracking_confidence_ = 0.8f;  // OpenCV MIL tracker doesn't expose confidence.
+        tracking_confidence_ = 0.8F;
         return true;
       }
     }
-    tracking_confidence_ = 0.0f;
+    tracking_confidence_ = 0.0F;
     return false;
   } catch (const cv::Exception & e) {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
       "Tracker update failed: %s", e.what());
-    tracking_confidence_ = 0.0f;
+    tracking_confidence_ = 0.0F;
     return false;
   }
 }
 
-// ---------------------------------------------------------------------------
-// IBVS control law
-// ---------------------------------------------------------------------------
+void VisualServoNode::apply_ramp(geometry_msgs::msg::Twist & twist)
+{
+  if (ramp_step_ < ramp_up_steps_ && ramp_up_steps_ > 0) {
+    const double ramp_factor = static_cast<double>(ramp_step_ + 1) /
+      static_cast<double>(ramp_up_steps_);
+    twist.linear.x *= ramp_factor;
+    twist.linear.y *= ramp_factor;
+    twist.linear.z *= ramp_factor;
+    twist.angular.x *= ramp_factor;
+    twist.angular.y *= ramp_factor;
+    twist.angular.z *= ramp_factor;
+    ++ramp_step_;
+  }
+}
 
-geometry_msgs::msg::Twist VisualServoNode::compute_ibvs_twist(
-  double feat_x, double feat_y, double feat_area,
-  double des_x, double des_y, double des_area)
+geometry_msgs::msg::Twist VisualServoNode::compute_alignment_twist(
+  double feat_x, double feat_y, bool allow_ramp)
 {
   geometry_msgs::msg::Twist twist;
 
-  // Image-space error (pixels)
-  double err_x = feat_x - des_x;
-  double err_y = feat_y - des_y;
-
-  // Normalized errors: map pixel error to velocity using image dimensions
   double norm_err_x = 0.0;
   double norm_err_y = 0.0;
   if (image_width_ > 0 && image_height_ > 0) {
-    norm_err_x = err_x / static_cast<double>(image_width_);
-    norm_err_y = err_y / static_cast<double>(image_height_);
+    norm_err_x = (feat_x - desired_x_) / static_cast<double>(image_width_);
+    norm_err_y = (feat_y - desired_y_) / static_cast<double>(image_height_);
   }
 
-  // Scale/depth error from area ratio
-  double area_ratio = 1.0;
-  if (des_area > 0.0) {
-    area_ratio = feat_area / des_area;
+  twist.linear.x = clamp_value(lambda_xy_ * norm_err_x, -max_linear_velocity_, max_linear_velocity_);
+  twist.linear.y = clamp_value(lambda_xy_ * norm_err_y, -max_linear_velocity_, max_linear_velocity_);
+  if (allow_ramp) {
+    apply_ramp(twist);
   }
-  double err_z = area_ratio - 1.0;  // positive = too close, negative = too far
-
-  // Camera optical frame per REP-103:
-  //   x = right, y = down, z = forward.
-  // To reduce image error:
-  //   - target right of center  -> move camera right   -> +x
-  //   - target below center     -> move camera down    -> +y
-  //   - target too close        -> move camera backward -> -z
-  twist.linear.x = lambda_xy_ * norm_err_x;   // horizontal correction
-  twist.linear.y = lambda_xy_ * norm_err_y;   // vertical correction
-  twist.linear.z = -lambda_z_ * err_z;        // depth correction
-
-  // Clamp velocities
-  auto clamp = [](double val, double lim) {
-      return std::max(-lim, std::min(lim, val));
-    };
-
-  twist.linear.x = clamp(twist.linear.x, max_linear_velocity_);
-  twist.linear.y = clamp(twist.linear.y, max_linear_velocity_);
-  twist.linear.z = clamp(twist.linear.z, max_linear_velocity_);
-  twist.angular.x = clamp(twist.angular.x, max_angular_velocity_);
-  twist.angular.y = clamp(twist.angular.y, max_angular_velocity_);
-  twist.angular.z = clamp(twist.angular.z, max_angular_velocity_);
-
   return twist;
 }
 
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
+geometry_msgs::msg::Twist VisualServoNode::compute_approach_twist(
+  double feat_x, double feat_y, double depth_m, bool allow_ramp)
+{
+  auto twist = compute_alignment_twist(feat_x, feat_y, false);
+  twist.linear.z = compute_depth_velocity_mps(
+    depth_m, grasp_standoff_m_, lambda_z_, max_linear_velocity_);
+  if (allow_ramp) {
+    apply_ramp(twist);
+  }
+  return twist;
+}
 
 geometry_msgs::msg::Pose VisualServoNode::twist_to_eef_delta(
   const geometry_msgs::msg::Twist & twist, double dt)
 {
   geometry_msgs::msg::Pose delta;
-
-  // Convert twist to small displacement
   delta.position.x = twist.linear.x * dt;
   delta.position.y = twist.linear.y * dt;
   delta.position.z = twist.linear.z * dt;
 
-  // Small-angle approximation for orientation delta
-  double half_ax = twist.angular.x * dt * 0.5;
-  double half_ay = twist.angular.y * dt * 0.5;
-  double half_az = twist.angular.z * dt * 0.5;
-
+  const double half_ax = twist.angular.x * dt * 0.5;
+  const double half_ay = twist.angular.y * dt * 0.5;
+  const double half_az = twist.angular.z * dt * 0.5;
   delta.orientation.x = half_ax;
   delta.orientation.y = half_ay;
   delta.orientation.z = half_az;
   delta.orientation.w = 1.0;
 
-  // Normalize quaternion
-  double norm = std::sqrt(
+  const double norm = std::sqrt(
     delta.orientation.x * delta.orientation.x +
     delta.orientation.y * delta.orientation.y +
     delta.orientation.z * delta.orientation.z +
     delta.orientation.w * delta.orientation.w);
-
   if (norm > 1e-12) {
     delta.orientation.x /= norm;
     delta.orientation.y /= norm;
@@ -735,121 +856,138 @@ geometry_msgs::msg::Pose VisualServoNode::twist_to_eef_delta(
   return delta;
 }
 
-void VisualServoNode::publish_policy_output(
-  const geometry_msgs::msg::Twist & twist,
-  float confidence)
+geometry_msgs::msg::Twist VisualServoNode::transform_twist_to_reference(
+  const geometry_msgs::msg::Twist & twist)
 {
-  // Transform twist from camera optical frame to reference frame (arm base) via TF
   geometry_msgs::msg::Twist output_twist = twist;
 
-  if (!camera_optical_frame_.empty() && !reference_frame_.empty() &&
-    camera_optical_frame_ != reference_frame_)
+  if (camera_optical_frame_.empty() || reference_frame_.empty() ||
+    camera_optical_frame_ == reference_frame_)
   {
-    try {
-      auto transform = tf_buffer_->lookupTransform(
-        reference_frame_, camera_optical_frame_,
-        tf2::TimePointZero);
-
-      // Rotate the twist linear/angular vectors by the transform rotation
-      auto & q = transform.transform.rotation;
-
-      // Apply rotation to linear velocity
-      auto rotate_vec = [&q](double vx, double vy, double vz,
-          double & ox, double & oy, double & oz) {
-          // Quaternion rotation: v' = q * v * q_inv
-          double qx = q.x, qy = q.y, qz = q.z, qw = q.w;
-          // v as quaternion: (vx, vy, vz, 0)
-          double t2 = qw * vx + qy * vz - qz * vy;
-          double t3 = qw * vy + qz * vx - qx * vz;
-          double t4 = qw * vz + qx * vy - qy * vx;
-          double t5 = -qx * vx - qy * vy - qz * vz;
-          ox = t2 * qw - t5 * qx - t3 * qz + t4 * qy;
-          oy = t3 * qw - t5 * qy - t4 * qx + t2 * qz;
-          oz = t4 * qw - t5 * qz - t2 * qy + t3 * qx;
-        };
-
-      double lx, ly, lz;
-      rotate_vec(twist.linear.x, twist.linear.y, twist.linear.z, lx, ly, lz);
-      output_twist.linear.x = lx;
-      output_twist.linear.y = ly;
-      output_twist.linear.z = lz;
-
-      double ax, ay, az;
-      rotate_vec(twist.angular.x, twist.angular.y, twist.angular.z, ax, ay, az);
-      output_twist.angular.x = ax;
-      output_twist.angular.y = ay;
-      output_twist.angular.z = az;
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-        "TF lookup %s -> %s failed: %s, publishing in camera frame",
-        camera_optical_frame_.c_str(), reference_frame_.c_str(), ex.what());
-    }
+    return output_twist;
   }
 
-  // Convert to EEF delta pose for PolicyOutput
-  double delta_horizon_sec = output_delta_horizon_sec_;
-  if (delta_horizon_sec <= 0.0) {
-    delta_horizon_sec = 1.0 / control_rate_hz_;
-  }
-  auto eef_delta = twist_to_eef_delta(output_twist, delta_horizon_sec);
+  try {
+    auto transform = tf_buffer_->lookupTransform(
+      reference_frame_, camera_optical_frame_, tf2::TimePointZero);
+    const auto & q = transform.transform.rotation;
+    auto rotate_vec = [&q](double vx, double vy, double vz, double & ox, double & oy, double & oz) {
+        const double qx = q.x;
+        const double qy = q.y;
+        const double qz = q.z;
+        const double qw = q.w;
+        const double t2 = qw * vx + qy * vz - qz * vy;
+        const double t3 = qw * vy + qz * vx - qx * vz;
+        const double t4 = qw * vz + qx * vy - qy * vx;
+        const double t5 = -qx * vx - qy * vy - qz * vz;
+        ox = t2 * qw - t5 * qx - t3 * qz + t4 * qy;
+        oy = t3 * qw - t5 * qy - t4 * qx + t2 * qz;
+        oz = t4 * qw - t5 * qz - t2 * qy + t3 * qx;
+      };
 
+    rotate_vec(twist.linear.x, twist.linear.y, twist.linear.z,
+      output_twist.linear.x, output_twist.linear.y, output_twist.linear.z);
+    rotate_vec(twist.angular.x, twist.angular.y, twist.angular.z,
+      output_twist.angular.x, output_twist.angular.y, output_twist.angular.z);
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+      "TF lookup %s -> %s failed: %s, publishing in camera frame",
+      camera_optical_frame_.c_str(), reference_frame_.c_str(), ex.what());
+  }
+
+  return output_twist;
+}
+
+void VisualServoNode::publish_policy_output(
+  const geometry_msgs::msg::Twist & twist,
+  float confidence,
+  bool include_arm_target,
+  bool gripper_active,
+  double gripper_command)
+{
   manipulation_msgs::msg::PolicyOutput msg;
   msg.header.stamp = this->now();
   msg.header.frame_id = reference_frame_;
-
-  msg.has_eef_target = true;
-  msg.eef_target_pose = eef_delta;
   msg.reference_frame = reference_frame_;
   msg.confidence = confidence;
 
+  if (include_arm_target) {
+    const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
+      output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_);
+    const auto output_twist = transform_twist_to_reference(twist);
+    msg.has_eef_target = true;
+    msg.eef_target_pose = twist_to_eef_delta(output_twist, delta_horizon_sec);
+  } else {
+    msg.has_eef_target = false;
+  }
+
   msg.has_joint_deltas = false;
-  msg.gripper_active = false;
+  msg.gripper_active = gripper_active;
+  msg.gripper_command = clamp_value(gripper_command, 0.0, 1.0);
   msg.has_base_hint = false;
 
   policy_output_pub_->publish(msg);
 }
 
-void VisualServoNode::publish_debug_overlay(
-  const cv::Mat & frame, const cv::Rect2d & roi)
+void VisualServoNode::publish_reference_frame_delta(
+  double dx, double dy, double dz, float confidence, bool gripper_active, double gripper_command)
 {
-  cv::Mat overlay = frame.clone();
+  manipulation_msgs::msg::PolicyOutput msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = reference_frame_;
+  msg.reference_frame = reference_frame_;
+  msg.confidence = confidence;
+  msg.has_eef_target = true;
+  msg.eef_target_pose.position.x = dx;
+  msg.eef_target_pose.position.y = dy;
+  msg.eef_target_pose.position.z = dz;
+  msg.eef_target_pose.orientation.w = 1.0;
+  msg.has_joint_deltas = false;
+  msg.gripper_active = gripper_active;
+  msg.gripper_command = clamp_value(gripper_command, 0.0, 1.0);
+  msg.has_base_hint = false;
+  policy_output_pub_->publish(msg);
+}
 
-  // Draw tracked ROI
+void VisualServoNode::publish_zero_motion(float confidence)
+{
+  publish_reference_frame_delta(0.0, 0.0, 0.0, confidence);
+}
+
+void VisualServoNode::publish_debug_overlay(const cv::Mat & frame, const cv::Rect2d & roi)
+{
+  if (!debug_image_pub_) {
+    return;
+  }
+
+  cv::Mat overlay = frame.clone();
   cv::rectangle(overlay,
     cv::Point(static_cast<int>(roi.x), static_cast<int>(roi.y)),
-    cv::Point(static_cast<int>(roi.x + roi.width),
-    static_cast<int>(roi.y + roi.height)),
+    cv::Point(static_cast<int>(roi.x + roi.width), static_cast<int>(roi.y + roi.height)),
     cv::Scalar(0, 255, 0), 2);
 
-  // Draw centroid
-  cv::Point center(
-    static_cast<int>(roi.x + roi.width / 2.0),
-    static_cast<int>(roi.y + roi.height / 2.0));
+  const cv::Point center(
+    static_cast<int>(roi.x + roi.width * 0.5),
+    static_cast<int>(roi.y + roi.height * 0.5));
+  const cv::Point desired(static_cast<int>(desired_x_), static_cast<int>(desired_y_));
   cv::circle(overlay, center, 5, cv::Scalar(0, 0, 255), -1);
-
-  // Draw desired point (image center)
-  cv::Point desired(static_cast<int>(desired_x_), static_cast<int>(desired_y_));
-  cv::drawMarker(overlay, desired, cv::Scalar(255, 0, 0),
-    cv::MARKER_CROSS, 20, 2);
-
-  // Draw error line
+  cv::drawMarker(overlay, desired, cv::Scalar(255, 0, 0), cv::MARKER_CROSS, 20, 2);
   cv::line(overlay, center, desired, cv::Scalar(0, 255, 255), 1);
 
-  // State text
+  const double pixel_error = std::sqrt(
+    std::pow(static_cast<double>(center.x - desired.x), 2.0) +
+    std::pow(static_cast<double>(center.y - desired.y), 2.0));
   std::string state_text = "State: " + state_to_string(state_);
+  std::string err_text = "Err: " + std::to_string(static_cast<int>(pixel_error)) + " px";
   cv::putText(overlay, state_text, cv::Point(10, 30),
     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
-
-  // Pixel error
-  double err = std::sqrt(
-    std::pow(center.x - desired.x, 2) + std::pow(center.y - desired.y, 2));
-  std::string err_text = "Err: " + std::to_string(static_cast<int>(err)) + " px";
   cv::putText(overlay, err_text, cv::Point(10, 60),
     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
 
-  // Publish
-  if (!debug_image_pub_) {
-    return;
+  if (last_sampled_depth_m_.has_value()) {
+    const std::string depth_text = "Depth: " + std::to_string(last_sampled_depth_m_.value()) + " m";
+    cv::putText(overlay, depth_text, cv::Point(10, 90),
+      cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
   }
 
   sensor_msgs::msg::Image msg;
@@ -876,10 +1014,6 @@ void VisualServoNode::publish_state()
 }
 
 }  // namespace manipulation_visual_servo
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 int main(int argc, char * argv[])
 {

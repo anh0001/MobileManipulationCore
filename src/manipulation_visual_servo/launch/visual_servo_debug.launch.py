@@ -55,6 +55,10 @@ def generate_launch_description():
             default_value=vs_cfg.get('camera_info_topic',
                 '/piper/wrist_camera/piper_d405/color/camera_info'),
             description='Camera info topic'),
+        DeclareLaunchArgument('depth_topic',
+            default_value=vs_cfg.get('depth_topic',
+                '/piper/wrist_camera/piper_d405/depth/image_rect_raw'),
+            description='Depth image topic'),
         DeclareLaunchArgument('detection_topic',
             default_value=vs_cfg.get('detection_topic',
                 '/manipulation/target_detections'),
@@ -81,6 +85,7 @@ def generate_launch_description():
             parameters=[{
                 'rgb_topic': LaunchConfiguration('rgb_topic'),
                 'camera_info_topic': LaunchConfiguration('camera_info_topic'),
+                'depth_topic': LaunchConfiguration('depth_topic'),
                 'detection_topic': LaunchConfiguration('detection_topic'),
                 'output_topic': LaunchConfiguration('output_topic'),
                 'reference_frame': LaunchConfiguration('reference_frame'),
@@ -99,6 +104,24 @@ def generate_launch_description():
                     vs_cfg.get('acquire_timeout_sec', 5.0)),
                 'image_center_tolerance_px': float(
                     vs_cfg.get('image_center_tolerance_px', 8.0)),
+                'grasp_standoff_m': float(vs_cfg.get('grasp_standoff_m', 0.16)),
+                'grasp_depth_tolerance_m': float(
+                    vs_cfg.get('grasp_depth_tolerance_m', 0.015)),
+                'depth_roi_half_size_px': int(vs_cfg.get('depth_roi_half_size_px', 8)),
+                'min_valid_depth_pixels': int(
+                    vs_cfg.get('min_valid_depth_pixels', 12)),
+                'depth_stale_timeout_sec': float(
+                    vs_cfg.get('depth_stale_timeout_sec', 0.25)),
+                'centering_stable_cycles': int(
+                    vs_cfg.get('centering_stable_cycles', 3)),
+                'grasp_settle_sec': float(vs_cfg.get('grasp_settle_sec', 0.75)),
+                'lift_distance_m': float(vs_cfg.get('lift_distance_m', 0.08)),
+                'max_approach_distance_m': float(
+                    vs_cfg.get('max_approach_distance_m', 0.50)),
+                'open_gripper_command': float(
+                    vs_cfg.get('open_gripper_command', 1.0)),
+                'close_gripper_command': float(
+                    vs_cfg.get('close_gripper_command', 0.0)),
                 'tracker_type': str(vs_cfg.get('tracker_type', 'klt')),
                 'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
                 'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),

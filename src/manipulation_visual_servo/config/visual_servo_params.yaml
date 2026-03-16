@@ -10,8 +10,8 @@ visual_servo:
   depth_topic: "/piper/wrist_camera/piper_d405/depth/image_rect_raw"
   output_topic: "/manipulation/policy_output"
 
-  # Depth usage (deferred in V1)
-  use_depth: false
+  # Depth-guided pick parameters for the D405 wrist camera
+  use_depth: true
 
   # Rate control
   control_rate_hz: 20.0
@@ -35,6 +35,17 @@ visual_servo:
 
   # Image-space convergence
   image_center_tolerance_px: 8.0
+  grasp_standoff_m: 0.16
+  grasp_depth_tolerance_m: 0.015
+  depth_roi_half_size_px: 8
+  min_valid_depth_pixels: 12
+  depth_stale_timeout_sec: 0.25
+  centering_stable_cycles: 3
+  grasp_settle_sec: 0.75
+  lift_distance_m: 0.08
+  max_approach_distance_m: 0.50
+  open_gripper_command: 1.0
+  close_gripper_command: 0.0
 
   # Reference frame for output PolicyOutput
   reference_frame: "piper_base_link"

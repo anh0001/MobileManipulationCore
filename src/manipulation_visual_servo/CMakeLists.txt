@@ -17,6 +17,24 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(manipulation_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs video)
 
+add_library(visual_servo_utils
+  src/visual_servo_utils.cpp
+)
+
+target_include_directories(visual_servo_utils PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(visual_servo_utils
+  ${OpenCV_LIBRARIES}
+)
+
+ament_target_dependencies(visual_servo_utils
+  sensor_msgs
+)
+
 add_executable(visual_servo_node
   src/visual_servo_node.cpp
 )
@@ -28,6 +46,7 @@ target_include_directories(visual_servo_node PUBLIC
 )
 
 target_link_libraries(visual_servo_node
+  visual_servo_utils
   ${OpenCV_LIBRARIES}
 )
 
@@ -43,6 +62,7 @@ ament_target_dependencies(visual_servo_node
 )
 
 install(TARGETS visual_servo_node
+  visual_servo_utils
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -59,8 +79,26 @@ install(DIRECTORY launch/
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_visual_servo_utils
+    test/test_visual_servo_utils.cpp
+  )
+  if(TARGET test_visual_servo_utils)
+    target_link_libraries(test_visual_servo_utils
+      visual_servo_utils
+      ${OpenCV_LIBRARIES}
+    )
+    target_include_directories(test_visual_servo_utils PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      ${OpenCV_INCLUDE_DIRS}
+    )
+    ament_target_dependencies(test_visual_servo_utils
+      sensor_msgs
+    )
+  endif()
 endif()
 
 ament_package()
