@@ -43,7 +43,7 @@ visual_servo:
   centering_stable_cycles: 3           # Number of consecutive centered control cycles before grasp sequence starts
   grasp_settle_sec: 1.5                # Wait time after open/close gripper commands before next state
   lift_distance_m: 0.08                # Upward lift distance after grasp completion
-  max_approach_distance_m: 0.50        # Safety cap on total forward approach distance during one pick attempt
+  max_approach_distance_m: 1.00        # Safety cap on total forward approach distance during one pick attempt
   open_gripper_command: 1.0            # Normalized gripper command sent before approach (1.0 = open)
   close_gripper_command: 0.0           # Normalized gripper command sent at grasp depth (0.0 = closed)
 

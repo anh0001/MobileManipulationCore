@@ -488,8 +488,13 @@ private:
     }
 
     double clamped = std::clamp(command, 0.0, 1.0);
+    const auto now = this->now();
+    const double since_last_send = last_gripper_send_time_.has_value() ?
+      (now - last_gripper_send_time_.value()).seconds() : std::numeric_limits<double>::max();
+    // Skip duplicate commands unless it's been more than 2 seconds (allows re-send after state changes)
     if (last_gripper_command_.has_value() &&
-        std::abs(last_gripper_command_.value() - clamped) < gripper_command_epsilon_) {
+        std::abs(last_gripper_command_.value() - clamped) < gripper_command_epsilon_ &&
+        since_last_send < 2.0) {
       RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
         "Gripper command %.4f unchanged from last (%.4f), skipping",
         clamped, last_gripper_command_.value());
@@ -535,6 +540,7 @@ private:
     if (sent) {
       RCLCPP_INFO(this->get_logger(), "[GRIPPER] Goal sent successfully, command=%.4f", clamped);
       last_gripper_command_ = clamped;
+      last_gripper_send_time_ = now;
     } else {
       RCLCPP_WARN(this->get_logger(), "[GRIPPER] Failed to send goal for command=%.4f", clamped);
     }
@@ -1449,6 +1455,7 @@ private:
   rclcpp::Time last_policy_time_{0, 0, RCL_ROS_TIME};
   sensor_msgs::msg::JointState::SharedPtr last_joint_state_;
   std::optional<double> last_gripper_command_;
+  std::optional<rclcpp::Time> last_gripper_send_time_;
   std::atomic<bool> moveit_goal_active_{false};
   std::atomic<bool> arm_goal_active_{false};
   std::atomic<bool> gripper_goal_active_{false};
