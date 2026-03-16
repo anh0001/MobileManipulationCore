@@ -51,7 +51,7 @@
         {
             "label": "Test Health Endpoint",
             "type": "shell",
-            "command": "curl http://100.112.100.20:30542/health",
+            "command": "curl http://100.112.100.20:30543/health",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -233,38 +233,6 @@
                 "panel": "dedicated",
                 "showReuseMessage": false,
                 "clear": false
-            },
-            "options": {
-                "cwd": "${workspaceFolder}"
-            }
-        },
-        {
-            "label": "Build Visual Servo Packages",
-            "type": "shell",
-            "command": "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-up-to manipulation_visual_servo manipulation_bringup manipulation_detection",
-            "problemMatcher": [],
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": false
-            },
-            "options": {
-                "cwd": "${workspaceFolder}"
-            }
-        },
-        {
-            "label": "Test Visual Servo Packages",
-            "type": "shell",
-            "command": "source /opt/ros/humble/setup.bash && source install/setup.bash && colcon test --packages-select manipulation_visual_servo manipulation_bringup manipulation_detection && colcon test-result --verbose",
-            "problemMatcher": [],
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": false
             },
             "options": {
                 "cwd": "${workspaceFolder}"

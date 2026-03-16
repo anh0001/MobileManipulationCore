@@ -9,6 +9,8 @@ AGENTS.md
 CLAUDE.md
 .github/
 /*.png
+/*.jpg
+/*.jpeg
 
 # Python
 __pycache__/

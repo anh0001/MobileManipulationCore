@@ -107,7 +107,7 @@ moveit:
   orientation_tolerance: 0.1
   servo_cartesian_topic: "/servo_node/delta_twist_cmds"
   servo_publish_rate_hz: 30.0
-  servo_command_horizon_sec: 0.0  # <=0 derives from policy inference rate
+  servo_command_horizon_sec: 0.1  # <=0 derives from policy inference rate
   servo_max_linear_velocity: 0.10
   servo_max_angular_velocity: 0.35
   pause_base_during_servo: true
