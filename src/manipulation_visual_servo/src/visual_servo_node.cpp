@@ -669,23 +669,15 @@ geometry_msgs::msg::Twist VisualServoNode::compute_ibvs_twist(
   }
   double err_z = area_ratio - 1.0;  // positive = too close, negative = too far
 
-  // Camera frame twist (optical convention: z forward, x right, y down)
-  // Lateral: move camera to center the target
-  //   - Error in image x -> camera y velocity (with sign flip for servo)
-  //   - Error in image y -> camera z velocity
-  // Forward/back: move camera to match desired distance
-  //   - Area error -> camera x velocity (z in optical frame)
-
-  // In camera optical frame:
-  //   x = right, y = down, z = forward (into scene)
-  // To center target:
-  //   target right of center (err_x > 0) -> move camera right -> vy > 0
-  //   target below center (err_y > 0) -> move camera down -> vz > 0
-  //   target too close (err_z > 0) -> move camera back -> vx < 0
-
-  twist.linear.y = -lambda_xy_ * norm_err_x;   // lateral
-  twist.linear.z = -lambda_xy_ * norm_err_y;   // vertical
-  twist.linear.x = -lambda_z_ * err_z;          // forward/back
+  // Camera optical frame per REP-103:
+  //   x = right, y = down, z = forward.
+  // To reduce image error:
+  //   - target right of center  -> move camera right   -> +x
+  //   - target below center     -> move camera down    -> +y
+  //   - target too close        -> move camera backward -> -z
+  twist.linear.x = lambda_xy_ * norm_err_x;   // horizontal correction
+  twist.linear.y = lambda_xy_ * norm_err_y;   // vertical correction
+  twist.linear.z = -lambda_z_ * err_z;        // depth correction
 
   // Clamp velocities
   auto clamp = [](double val, double lim) {
