@@ -9,6 +9,7 @@ visual_servo:
 
   use_depth: true
   control_rate_hz: 20.0
+  output_delta_horizon_sec: 1.2   # Must match adapter servo_command_horizon_sec so velocity is preserved end-to-end
 
   # Keep empty when runtime prompt-based remote detection is used.
   target_class: ""
@@ -22,27 +23,27 @@ visual_servo:
   klt_window_size: 10
   klt_pyramid_levels: 3
 
-  lost_target_timeout_sec: 0.3
+  lost_target_timeout_sec: 2.0       # Must exceed detection period (~1 Hz) to avoid spurious LOST transitions
   acquire_timeout_sec: 5.0
-  image_center_tolerance_px: 8.0
+  image_center_tolerance_px: 8.0       # Pixel error threshold to treat the target as centered
   reference_frame: "piper_base_link"
-  grasp_standoff_m: 0.16
-  grasp_depth_tolerance_m: 0.015
-  depth_roi_half_size_px: 8
-  min_valid_depth_pixels: 12
-  depth_stale_timeout_sec: 0.25
-  centering_stable_cycles: 3
-  grasp_settle_sec: 0.75
-  lift_distance_m: 0.08
-  max_approach_distance_m: 0.50
-  open_gripper_command: 1.0
-  close_gripper_command: 0.0
+  grasp_standoff_m: 0.14               # Desired bottle distance from wrist camera (D405 ~7cm ahead of gripper fingers)
+  grasp_depth_tolerance_m: 0.02        # Tolerance band for depth convergence
+  depth_roi_half_size_px: 8            # Half-width of the square depth sampling window around ROI center
+  min_valid_depth_pixels: 12           # Minimum non-zero depth pixels required in the sampling window
+  depth_stale_timeout_sec: 1.0         # Allow for depth gaps (D405 at ~8 Hz + single-threaded executor delays)
+  centering_stable_cycles: 3           # Number of consecutive centered control cycles before grasp sequence starts
+  grasp_settle_sec: 1.5                # Wait time after open/close gripper commands before next state
+  lift_distance_m: 0.08                # Upward lift distance after grasp completion
+  max_approach_distance_m: 0.50        # Safety cap on total forward approach distance during one pick attempt
+  open_gripper_command: 1.0            # Normalized gripper command sent before approach (1.0 = open)
+  close_gripper_command: 0.0           # Normalized gripper command sent at grasp depth (0.0 = closed)
 
   control:
-    lambda_xy: 0.3
-    lambda_z: 0.1
+    lambda_xy: 2.0                     # Higher gain to overcome arm dead-band at small errors
+    lambda_z: 2.0                     # Must overcome arm dead-band at small depth errors
     lambda_rz: 0.1
-    max_linear_velocity: 0.08
+    max_linear_velocity: 0.10          # Match adapter servo_max_linear_velocity
     max_angular_velocity: 0.30
     ramp_up_steps: 5
 

@@ -473,6 +473,12 @@ private:
 
   void processGripperCommand(double command)
   {
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+      "[GRIPPER] processGripperCommand called with command=%.4f last=%s",
+      command,
+      last_gripper_command_.has_value() ?
+        std::to_string(last_gripper_command_.value()).c_str() : "none");
+
     if (command < 0.0 || command > 1.0) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 5000,
@@ -484,8 +490,18 @@ private:
     double clamped = std::clamp(command, 0.0, 1.0);
     if (last_gripper_command_.has_value() &&
         std::abs(last_gripper_command_.value() - clamped) < gripper_command_epsilon_) {
+      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "Gripper command %.4f unchanged from last (%.4f), skipping",
+        clamped, last_gripper_command_.value());
       return;
     }
+
+    RCLCPP_INFO(this->get_logger(),
+      "[GRIPPER] Processing command=%.4f (last=%s) -> action=%s",
+      clamped,
+      last_gripper_command_.has_value() ?
+        std::to_string(last_gripper_command_.value()).c_str() : "none",
+      gripper_follow_joint_trajectory_action_.c_str());
 
     bool sent = false;
     if (!gripper_joint_names_.empty()) {
@@ -517,7 +533,10 @@ private:
     }
 
     if (sent) {
+      RCLCPP_INFO(this->get_logger(), "[GRIPPER] Goal sent successfully, command=%.4f", clamped);
       last_gripper_command_ = clamped;
+    } else {
+      RCLCPP_WARN(this->get_logger(), "[GRIPPER] Failed to send goal for command=%.4f", clamped);
     }
   }
 

@@ -455,6 +455,13 @@ bool VisualServoNode::acquire_from_detection(const cv::Mat & frame)
 
 bool VisualServoNode::update_tracking(const cv::Mat & frame)
 {
+  // Strategy: The detector at ~1 Hz is the ground-truth position.  The MIL
+  // tracker interpolates between detections at 20 Hz so the servo loop has
+  // smooth feedback.  When a fresh detection arrives we adopt its ROI directly
+  // (no tracker re-init — that would lock the tracker onto the same pixels for
+  // the next second).  Between detections we let MIL run normally.
+
+  // 1. Check for a fresh detection first.
   {
     std::lock_guard<std::mutex> lock(detection_mutex_);
     if (detection_available_) {
@@ -466,26 +473,28 @@ bool VisualServoNode::update_tracking(const cv::Mat & frame)
       det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
       det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
 
-      if (det_roi.width >= 10.0 && det_roi.height >= 10.0 && init_tracker(frame, det_roi)) {
+      if (det_roi.width >= 10.0 && det_roi.height >= 10.0) {
+        // Re-init the tracker so it tracks from the new detection position.
+        init_tracker(frame, det_roi);
         tracked_roi_ = det_roi;
         last_track_time_ = this->now();
+        tracking_confidence_ = 1.0F;
         return true;
       }
     }
   }
 
-  cv::Rect2d new_roi;
-  const bool ok = update_tracker(frame, new_roi);
-  if (!ok || tracking_confidence_ < min_tracking_confidence_) {
-    const double since_track = (this->now() - last_track_time_).seconds();
-    if (since_track > lost_target_timeout_sec_) {
-      transition_to(ServoState::LOST);
-    }
+  // 2. No fresh detection — hold last tracked ROI.
+  //    Detection runs at ~1 Hz; between frames the bottle barely moves in the
+  //    image so re-using the previous ROI gives stable servo feedback without
+  //    MIL tracker drift.
+  const double since_track = (this->now() - last_track_time_).seconds();
+  if (since_track > lost_target_timeout_sec_) {
+    transition_to(ServoState::LOST);
     return false;
   }
 
-  tracked_roi_ = new_roi;
-  last_track_time_ = this->now();
+  // tracked_roi_ unchanged — reuse last detection position.
   return true;
 }
 
@@ -554,6 +563,12 @@ void VisualServoNode::handle_align_xy()
     centering_streak_, centered, centering_stable_cycles_);
   centering_streak_ = centering_update.streak;
 
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+    "[ALIGN_XY] feat=(%.1f,%.1f) desired=(%.1f,%.1f) err=(%.1f,%.1f) px_err=%.1f tol=%.1f streak=%d/%d centered=%s",
+    feat_x, feat_y, desired_x_, desired_y_, err_x, err_y, pixel_error,
+    image_center_tolerance_px_, centering_streak_, centering_stable_cycles_,
+    centered ? "YES" : "NO");
+
   const auto twist = compute_alignment_twist(feat_x, feat_y);
   publish_policy_output(twist, tracking_confidence_);
 
@@ -577,6 +592,11 @@ void VisualServoNode::handle_open_gripper()
       publish_debug_overlay(frame, tracked_roi_);
     }
   }
+
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+    "[OPEN_GRIPPER] sending gripper_active=true cmd=%.2f (open) settle=%.2f/%.2f",
+    open_gripper_command_,
+    (this->now() - state_entry_time_).seconds(), grasp_settle_sec_);
 
   publish_policy_output(
     geometry_msgs::msg::Twist(), tracking_confidence_, true, true, open_gripper_command_);
@@ -623,6 +643,12 @@ void VisualServoNode::handle_approach_depth()
 
   if (depth_sample.has_value()) {
     last_sampled_depth_m_ = depth_sample->depth_m;
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+      "[APPROACH_DEPTH] depth=%.3f m valid_px=%zu standoff=%.3f tol=%.3f roi=(%d,%d,%dx%d)",
+      depth_sample->depth_m, depth_sample->valid_pixels, grasp_standoff_m_,
+      grasp_depth_tolerance_m_,
+      depth_sample->sampled_roi.x, depth_sample->sampled_roi.y,
+      depth_sample->sampled_roi.width, depth_sample->sampled_roi.height);
     if (depth_within_standoff(
         depth_sample->depth_m, grasp_standoff_m_, grasp_depth_tolerance_m_))
     {
@@ -635,16 +661,20 @@ void VisualServoNode::handle_approach_depth()
     }
   } else {
     last_sampled_depth_m_.reset();
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-      "Depth ROI invalid or empty at tracked target; holding forward motion");
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+      "[APPROACH_DEPTH] depth sample FAILED: depth_available=%s roi=(%.0f,%.0f,%.0fx%.0f) min_valid_px=%d half_size=%d",
+      depth_available_ ? "true" : "false",
+      tracked_roi_.x, tracked_roi_.y, tracked_roi_.width, tracked_roi_.height,
+      min_valid_depth_pixels_, depth_roi_half_size_px_);
   }
 
   geometry_msgs::msg::Twist twist = compute_alignment_twist(feat_x, feat_y);
   if (depth_sample.has_value()) {
     twist = compute_approach_twist(feat_x, feat_y, depth_sample->depth_m);
-    const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
-      output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_);
-    accumulated_approach_distance_m_ += std::max(0.0, twist.linear.z * delta_horizon_sec);
+    // Accumulate actual distance per control cycle (not per output horizon).
+    // twist.linear.z is a velocity in m/s; each cycle is 1/control_rate_hz seconds.
+    const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
+    accumulated_approach_distance_m_ += std::max(0.0, twist.linear.z * cycle_dt);
     if (accumulated_approach_distance_m_ > max_approach_distance_m_) {
       RCLCPP_WARN(this->get_logger(),
         "Aborting pick: accumulated approach distance %.3f m exceeded limit %.3f m",
@@ -655,7 +685,8 @@ void VisualServoNode::handle_approach_depth()
     }
   }
 
-  publish_policy_output(twist, tracking_confidence_);
+  // Keep gripper open during approach
+  publish_policy_output(twist, tracking_confidence_, true, true, open_gripper_command_);
   if (publish_overlay_) {
     publish_debug_overlay(frame, tracked_roi_);
   }
@@ -663,6 +694,11 @@ void VisualServoNode::handle_approach_depth()
 
 void VisualServoNode::handle_close_gripper()
 {
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+    "[CLOSE_GRIPPER] sending gripper_active=true cmd=%.2f (close) settle=%.2f/%.2f",
+    close_gripper_command_,
+    (this->now() - state_entry_time_).seconds(), grasp_settle_sec_);
+
   publish_policy_output(
     geometry_msgs::msg::Twist(), tracking_confidence_, true, true, close_gripper_command_);
 
@@ -673,8 +709,9 @@ void VisualServoNode::handle_close_gripper()
 
 void VisualServoNode::handle_lift()
 {
+  const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
   const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
-    output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_);
+    output_delta_horizon_sec_ : cycle_dt;
   const double remaining = std::max(0.0, lift_distance_m_ - accumulated_lift_distance_m_);
 
   if (remaining <= 1e-6) {
@@ -683,9 +720,12 @@ void VisualServoNode::handle_lift()
     return;
   }
 
-  const double dz = std::min(max_linear_velocity_ * delta_horizon_sec, remaining);
+  // Send a delta scaled to the adapter horizon, but only accumulate the
+  // per-cycle portion so the lift distance tracks real progress.
+  const double velocity = std::min(max_linear_velocity_, remaining / cycle_dt);
+  const double dz = velocity * delta_horizon_sec;
   publish_reference_frame_delta(0.0, 0.0, dz, tracking_confidence_, true, close_gripper_command_);
-  accumulated_lift_distance_m_ += dz;
+  accumulated_lift_distance_m_ += velocity * cycle_dt;
 }
 
 void VisualServoNode::handle_done()
@@ -1019,7 +1059,9 @@ int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<manipulation_visual_servo::VisualServoNode>();
-  rclcpp::spin(node);
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin();
   rclcpp::shutdown();
   return 0;
 }
