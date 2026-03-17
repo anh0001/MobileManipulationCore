@@ -94,6 +94,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("max_approach_distance_m", 0.50);
   this->declare_parameter("approach_stall_window_sec", 1.0);
   this->declare_parameter("approach_min_progress_m", 0.01);
+  this->declare_parameter("blind_approach_depth_threshold_m", 0.30);
+  this->declare_parameter("blind_approach_velocity_fraction", 0.5);
+  this->declare_parameter("blind_approach_max_distance_m", 0.20);
   this->declare_parameter("open_gripper_command", 1.0);
   this->declare_parameter("close_gripper_command", 0.0);
 
@@ -149,6 +152,12 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   max_approach_distance_m_ = this->get_parameter("max_approach_distance_m").as_double();
   approach_stall_window_sec_ = this->get_parameter("approach_stall_window_sec").as_double();
   approach_min_progress_m_ = this->get_parameter("approach_min_progress_m").as_double();
+  blind_approach_depth_threshold_m_ =
+    this->get_parameter("blind_approach_depth_threshold_m").as_double();
+  blind_approach_velocity_fraction_ =
+    this->get_parameter("blind_approach_velocity_fraction").as_double();
+  blind_approach_max_distance_m_ =
+    this->get_parameter("blind_approach_max_distance_m").as_double();
   open_gripper_command_ = this->get_parameter("open_gripper_command").as_double();
   close_gripper_command_ = this->get_parameter("close_gripper_command").as_double();
 
@@ -428,6 +437,7 @@ void VisualServoNode::transition_to(ServoState new_state)
   } else if (new_state == ServoState::APPROACH_DEPTH) {
     close_depth_streak_ = 0;
     accumulated_approach_distance_m_ = 0.0;
+    blind_approach_distance_m_ = 0.0;
     depth_progress_history_.clear();
   } else if (new_state == ServoState::LIFT) {
     accumulated_lift_distance_m_ = 0.0;
@@ -455,6 +465,7 @@ void VisualServoNode::reset_pick_progress()
   centering_streak_ = 0;
   close_depth_streak_ = 0;
   accumulated_approach_distance_m_ = 0.0;
+  blind_approach_distance_m_ = 0.0;
   accumulated_lift_distance_m_ = 0.0;
   last_depth_sample_.reset();
   depth_progress_history_.clear();
@@ -729,9 +740,9 @@ void VisualServoNode::handle_approach_depth()
       return;
     }
   } else {
-    last_depth_sample_.reset();
+    // Only reset close streak — preserve last_depth_sample_ for blind approach
+    // fallback and depth_progress_history_ for stall detection continuity.
     close_depth_streak_ = 0;
-    depth_progress_history_.clear();
     RCLCPP_WARN_THROTTLE(
       this->get_logger(),
       *this->get_clock(), 500,
@@ -798,6 +809,51 @@ void VisualServoNode::handle_approach_depth()
       publish_zero_motion(tracking_confidence_);
       transition_to(ServoState::LOST);
       return;
+    }
+  }
+
+  const bool blind_approach_eligible = last_depth_sample_.has_value() &&
+    last_depth_sample_->depth_m<blind_approach_depth_threshold_m_ &&
+      last_depth_sample_->depth_m> grasp_standoff_m_;
+  if (!depth_sample.has_value() && blind_approach_eligible) {
+    // Blind forward approach: depth is unavailable but last reading was close.
+    // Continue forward at reduced velocity, dead-reckoning the remaining distance.
+    const double blind_vel = blind_approach_velocity_fraction_ * max_linear_velocity_;
+    twist.linear.z = blind_vel;
+
+    const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
+    accumulated_approach_distance_m_ += blind_vel * cycle_dt;
+    blind_approach_distance_m_ += blind_vel * cycle_dt;
+
+    if (blind_approach_distance_m_ > blind_approach_max_distance_m_) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Aborting pick: blind approach distance %.3f m exceeded limit %.3f m",
+        blind_approach_distance_m_, blind_approach_max_distance_m_);
+      publish_zero_motion(tracking_confidence_);
+      transition_to(ServoState::LOST);
+      return;
+    }
+
+    const double est_depth = last_depth_sample_->depth_m - blind_approach_distance_m_;
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[APPROACH_DEPTH] blind approach: last_depth=%.3f blind_dist=%.3f est_depth=%.3f "
+      "standoff=%.3f tol=%.3f close_streak=%d/%d",
+      last_depth_sample_->depth_m, blind_approach_distance_m_, est_depth,
+      grasp_standoff_m_, grasp_depth_tolerance_m_,
+      close_depth_streak_, close_depth_stable_frames_);
+
+    if (est_depth <= grasp_standoff_m_ + grasp_depth_tolerance_m_) {
+      close_depth_streak_++;
+      if (close_depth_streak_ >= close_depth_stable_frames_) {
+        publish_zero_motion(tracking_confidence_);
+        transition_to(ServoState::CLOSE_GRIPPER);
+        if (publish_overlay_) {
+          publish_debug_overlay(frame, tracked_roi_);
+        }
+        return;
+      }
     }
   }
 

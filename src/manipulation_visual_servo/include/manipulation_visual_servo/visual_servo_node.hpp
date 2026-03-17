@@ -169,6 +169,7 @@ private:
   int centering_streak_{0};
   int close_depth_streak_{0};
   double accumulated_approach_distance_m_{0.0};
+  double blind_approach_distance_m_{0.0};
   double accumulated_lift_distance_m_{0.0};
   std::optional<DepthSample> last_depth_sample_;
   std::deque<DepthHistoryEntry> depth_progress_history_;
@@ -207,6 +208,9 @@ private:
   double max_approach_distance_m_;
   double approach_stall_window_sec_;
   double approach_min_progress_m_;
+  double blind_approach_depth_threshold_m_;
+  double blind_approach_velocity_fraction_;
+  double blind_approach_max_distance_m_;
   double open_gripper_command_;
   double close_gripper_command_;
 

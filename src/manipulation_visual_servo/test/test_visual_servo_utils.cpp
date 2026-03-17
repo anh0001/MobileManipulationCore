@@ -159,5 +159,51 @@ TEST(StateHelperTest, DetectsDepthStallWhenProgressIsTooSmall)
   EXPECT_FALSE(depth_progress_stalled(0.320, 0.320, 0.0));
 }
 
+TEST(StateHelperTest, DepthStallWithEqualReadingsIsStalled)
+{
+  // No progress at all should count as stalled
+  EXPECT_TRUE(depth_progress_stalled(0.250, 0.250, 0.010));
+  // Moving backward should count as stalled
+  EXPECT_TRUE(depth_progress_stalled(0.250, 0.260, 0.010));
+}
+
+TEST(StateHelperTest, DepthWithinStandoffBoundaryValues)
+{
+  // Within tolerance boundary
+  EXPECT_TRUE(depth_within_standoff(0.134, 0.115, 0.020));
+  EXPECT_TRUE(depth_within_standoff(0.096, 0.115, 0.020));
+  // Outside tolerance
+  EXPECT_FALSE(depth_within_standoff(0.136, 0.115, 0.020));
+  EXPECT_FALSE(depth_within_standoff(0.094, 0.115, 0.020));
+  // Exactly at standoff
+  EXPECT_TRUE(depth_within_standoff(0.115, 0.115, 0.020));
+  // Zero tolerance
+  EXPECT_TRUE(depth_within_standoff(0.115, 0.115, 0.0));
+  EXPECT_FALSE(depth_within_standoff(0.116, 0.115, 0.0));
+}
+
+TEST(StateHelperTest, DepthVelocityAtStandoffIsZero)
+{
+  EXPECT_NEAR(compute_depth_velocity_mps(0.115, 0.115, 2.0, 0.10), 0.0, 1e-6);
+}
+
+TEST(DepthSampleTest, RelaxedMinPixelsAcceptsSmallSamples)
+{
+  // With only 6 valid pixels (matching relaxed min_valid_depth_pixels=6),
+  // the sample should be accepted when the IQR is reasonable.
+  const cv::Mat depth_image = (cv::Mat_<uint16_t>(5, 5) <<
+    0U, 0U, 0U, 0U, 0U,
+    0U, 0U, 250U, 0U, 0U,
+    0U, 260U, 270U, 280U, 0U,
+    0U, 0U, 290U, 300U, 0U,
+    0U, 0U, 0U, 0U, 0U);
+
+  // min_valid=6, max_iqr=0.025 (25mm)
+  const auto sample = sample_depth_at_roi_anchor(
+    depth_image, cv::Rect2d(1.0, 1.0, 2.0, 2.0), 0.5, 0.5, 1, 6U, 0.025);
+  ASSERT_TRUE(sample.has_value());
+  EXPECT_EQ(sample->valid_pixels, 6U);
+}
+
 }  // namespace
 }  // namespace manipulation_visual_servo
