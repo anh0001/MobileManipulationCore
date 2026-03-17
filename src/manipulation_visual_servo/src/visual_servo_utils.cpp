@@ -331,6 +331,27 @@ geometry_msgs::msg::Pose offset_pose_along_tool_z(
   return offset_pose;
 }
 
+geometry_msgs::msg::Pose offset_pose_along_axis(
+  const geometry_msgs::msg::Pose & pose,
+  const geometry_msgs::msg::Vector3 & axis_arm_base,
+  double offset_m)
+{
+  const double norm = std::sqrt(
+    axis_arm_base.x * axis_arm_base.x +
+    axis_arm_base.y * axis_arm_base.y +
+    axis_arm_base.z * axis_arm_base.z);
+
+  if (norm < 1e-12) {
+    return pose;
+  }
+
+  geometry_msgs::msg::Pose offset_pose = pose;
+  offset_pose.position.x -= offset_m * (axis_arm_base.x / norm);
+  offset_pose.position.y -= offset_m * (axis_arm_base.y / norm);
+  offset_pose.position.z -= offset_m * (axis_arm_base.z / norm);
+  return offset_pose;
+}
+
 geometry_msgs::msg::Pose make_pregrasp_pose(
   const geometry_msgs::msg::Pose & grasp_pose,
   double pregrasp_offset_m)

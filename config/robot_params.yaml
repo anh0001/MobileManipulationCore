@@ -122,7 +122,7 @@ moveit:
     - "piper_joint4"
     - "piper_joint5"
     - "piper_joint6"
-  ready_pose_joint_positions: [0.0, 1.2, -0.2, 0.0, -0.8, 0.0]
+  ready_pose_joint_positions: [0.0, 1.2, -0.2, 0.0, -0.5, 0.0]
   ready_pose_start_delay_sec: 1.0
   ready_pose_retry_period_sec: 1.0
   ready_pose_max_attempts: 3

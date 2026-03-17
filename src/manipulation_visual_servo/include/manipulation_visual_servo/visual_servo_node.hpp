@@ -221,6 +221,9 @@ private:
   // Parameters — hybrid pick
   double pregrasp_offset_m_;
   double eef_link_to_grasp_offset_m_;
+  double grasp_approach_axis_x_;
+  double grasp_approach_axis_y_;
+  double grasp_approach_axis_z_;
   double final_servo_distance_m_;
   double grasp_settle_sec_;
   double lift_distance_m_;

@@ -604,6 +604,12 @@ def generate_launch_description():
             'pregrasp_offset_m': float(vs_cfg.get('pregrasp_offset_m', 0.08)),
             'eef_link_to_grasp_offset_m': float(
                 vs_cfg.get('eef_link_to_grasp_offset_m', 0.10)),
+            'grasp_approach_axis_x': float(
+                vs_cfg.get('grasp_approach_axis_x', 0.0)),
+            'grasp_approach_axis_y': float(
+                vs_cfg.get('grasp_approach_axis_y', 0.0)),
+            'grasp_approach_axis_z': float(
+                vs_cfg.get('grasp_approach_axis_z', -1.0)),
             'final_servo_distance_m': float(
                 vs_cfg.get('final_servo_distance_m', 0.04)),
             'grasp_settle_sec': float(vs_cfg.get('grasp_settle_sec', 0.75)),

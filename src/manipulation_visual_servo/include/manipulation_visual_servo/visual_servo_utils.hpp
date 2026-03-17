@@ -21,6 +21,7 @@
 
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/vector3.hpp>
 #include <opencv2/core.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
@@ -112,6 +113,11 @@ geometry_msgs::msg::Pose make_grasp_pose(
 
 geometry_msgs::msg::Pose offset_pose_along_tool_z(
   const geometry_msgs::msg::Pose & pose,
+  double offset_m);
+
+geometry_msgs::msg::Pose offset_pose_along_axis(
+  const geometry_msgs::msg::Pose & pose,
+  const geometry_msgs::msg::Vector3 & axis_arm_base,
   double offset_m);
 
 geometry_msgs::msg::Pose make_pregrasp_pose(

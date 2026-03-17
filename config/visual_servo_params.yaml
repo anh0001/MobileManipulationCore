@@ -37,8 +37,11 @@ visual_servo:
   depth_stale_timeout_sec: 1.0         # Allow for depth gaps (D405 at ~8 Hz + single-threaded executor delays)
   centering_stable_cycles: 3           # Number of consecutive centered control cycles before grasp sequence starts
   close_depth_stable_frames: 3         # Number of consecutive in-band depth samples before closing the gripper
-  eef_link_to_grasp_offset_m: 0.10     # Retract the commanded EEF link from the bottle center along tool Z
-  pregrasp_offset_m: 0.08              # Distance to retract along approach axis for pre-grasp pose
+  eef_link_to_grasp_offset_m: 0.10     # Retract the commanded EEF link from the bottle center along the approach axis
+  pregrasp_offset_m: 0.08              # Additional retreat distance along the approach axis for pre-grasp pose
+  grasp_approach_axis_x: 0.0           # Approach axis in arm_base_frame; default is top-down over a table
+  grasp_approach_axis_y: 0.0
+  grasp_approach_axis_z: -1.0
   final_servo_distance_m: 0.04         # Switch to Servo for the last N meters of approach
   grasp_settle_sec: 1.5                # Wait time after open/close gripper commands before next state
   lift_distance_m: 0.08                # Upward lift distance after grasp completion
@@ -49,10 +52,14 @@ visual_servo:
   blind_approach_depth_threshold_m: 0.30  # Switch to blind approach when last good depth was below this
   blind_approach_velocity_fraction: 0.5   # Fraction of max_linear_velocity for blind forward motion
   blind_approach_max_distance_m: 0.20     # Safety cap on total blind approach distance
-  bottle_grasp_orientation_x: 1.0
-  bottle_grasp_orientation_y: 0.0
+  # Ranger MoveIt wrist convention for piper_link6.
+  # This matches ranger-garden-assistant/scripts/piper_pose_commander.py and
+  # makes tool +Z point roughly along arm-base +X, so pre-grasp retraction
+  # backs the wrist away from the bottle instead of lifting straight up.
+  bottle_grasp_orientation_x: 0.0
+  bottle_grasp_orientation_y: 0.70710678
   bottle_grasp_orientation_z: 0.0
-  bottle_grasp_orientation_w: 0.0
+  bottle_grasp_orientation_w: 0.70710678
   final_position_tolerance_m: 0.008
   final_image_tolerance_px: 12.0
   final_convergence_cycles: 3

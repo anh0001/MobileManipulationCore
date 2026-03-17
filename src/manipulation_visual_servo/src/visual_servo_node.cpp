@@ -102,6 +102,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // Declare parameters — hybrid pick
   this->declare_parameter("pregrasp_offset_m", 0.08);
   this->declare_parameter("eef_link_to_grasp_offset_m", 0.10);
+  this->declare_parameter("grasp_approach_axis_x", 0.0);
+  this->declare_parameter("grasp_approach_axis_y", 0.0);
+  this->declare_parameter("grasp_approach_axis_z", -1.0);
   this->declare_parameter("final_servo_distance_m", 0.04);
   this->declare_parameter("grasp_settle_sec", 1.0);
   this->declare_parameter("lift_distance_m", 0.08);
@@ -178,6 +181,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // Read parameters — hybrid pick
   pregrasp_offset_m_ = this->get_parameter("pregrasp_offset_m").as_double();
   eef_link_to_grasp_offset_m_ = this->get_parameter("eef_link_to_grasp_offset_m").as_double();
+  grasp_approach_axis_x_ = this->get_parameter("grasp_approach_axis_x").as_double();
+  grasp_approach_axis_y_ = this->get_parameter("grasp_approach_axis_y").as_double();
+  grasp_approach_axis_z_ = this->get_parameter("grasp_approach_axis_z").as_double();
   final_servo_distance_m_ = this->get_parameter("final_servo_distance_m").as_double();
   grasp_settle_sec_ = this->get_parameter("grasp_settle_sec").as_double();
   lift_distance_m_ = this->get_parameter("lift_distance_m").as_double();
@@ -268,8 +274,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(
     this->get_logger(),
     "Pick config: eef_to_grasp=%.3f pregrasp_offset=%.3f "
-    "final_servo_dist=%.3f lift=%.3f retreat=%.3f",
+    "approach_axis=[%.3f,%.3f,%.3f] final_servo_dist=%.3f lift=%.3f retreat=%.3f",
     eef_link_to_grasp_offset_m_, pregrasp_offset_m_,
+    grasp_approach_axis_x_, grasp_approach_axis_y_, grasp_approach_axis_z_,
     final_servo_distance_m_, lift_distance_m_, retreat_distance_m_);
   RCLCPP_INFO(
     this->get_logger(),
@@ -685,9 +692,15 @@ void VisualServoNode::handle_estimate_bottle_3d()
     bottle_in_arm_base,
     bottle_grasp_orient_x_, bottle_grasp_orient_y_,
     bottle_grasp_orient_z_, bottle_grasp_orient_w_);
-  grasp_pose_ = offset_pose_along_tool_z(bottle_center_pose, eef_link_to_grasp_offset_m_);
+  geometry_msgs::msg::Vector3 grasp_approach_axis;
+  grasp_approach_axis.x = grasp_approach_axis_x_;
+  grasp_approach_axis.y = grasp_approach_axis_y_;
+  grasp_approach_axis.z = grasp_approach_axis_z_;
 
-  pregrasp_pose_ = make_pregrasp_pose(grasp_pose_, pregrasp_offset_m_);
+  grasp_pose_ = offset_pose_along_axis(
+    bottle_center_pose, grasp_approach_axis, eef_link_to_grasp_offset_m_);
+  pregrasp_pose_ = offset_pose_along_axis(
+    grasp_pose_, grasp_approach_axis, pregrasp_offset_m_);
 
   RCLCPP_INFO(
     this->get_logger(),
