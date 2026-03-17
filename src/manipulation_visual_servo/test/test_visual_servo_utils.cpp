@@ -1,10 +1,23 @@
 // Copyright 2026 MobileManipulationCore Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <vector>
 
-#include <gtest/gtest.h>
 #include <sensor_msgs/image_encodings.hpp>
 
 #include "manipulation_visual_servo/visual_servo_utils.hpp"
@@ -55,7 +68,7 @@ TEST(DepthDecodeTest, RejectsUnsupportedEncoding)
   EXPECT_NE(error_message.find("unsupported depth encoding"), std::string::npos);
 }
 
-TEST(DepthSampleTest, UsesMedianDepthAndIgnoresZeros)
+TEST(DepthSampleTest, UsesMedianDepthAtNormalizedAnchorAndIgnoresZeros)
 {
   const cv::Mat depth_image = (cv::Mat_<uint16_t>(5, 5) <<
     0U, 0U, 0U, 0U, 0U,
@@ -64,10 +77,14 @@ TEST(DepthSampleTest, UsesMedianDepthAndIgnoresZeros)
     0U, 1500U, 1600U, 1700U, 0U,
     0U, 0U, 0U, 0U, 0U);
 
-  const auto sample = sample_depth_at_roi_center(depth_image, cv::Rect2d(1.0, 1.0, 2.0, 2.0), 1, 5U);
+  const auto sample = sample_depth_at_roi_anchor(
+    depth_image, cv::Rect2d(1.0, 1.0, 2.0, 2.0), 0.5, 0.5, 1, 5U, 0.5);
   ASSERT_TRUE(sample.has_value());
   EXPECT_EQ(sample->valid_pixels, 9U);
   EXPECT_NEAR(sample->depth_m, 1.3, 1e-6);
+  EXPECT_EQ(sample->anchor_px, 2);
+  EXPECT_EQ(sample->anchor_py, 2);
+  EXPECT_NEAR(sample->depth_iqr_m, 0.4, 1e-6);
 }
 
 TEST(DepthSampleTest, ClipsAtImageBorderAndRejectsInsufficientPixels)
@@ -77,14 +94,32 @@ TEST(DepthSampleTest, ClipsAtImageBorderAndRejectsInsufficientPixels)
     0U, 800U, 0U,
     0U, 0U, 0U);
 
-  const auto missing = sample_depth_at_roi_center(depth_image, cv::Rect2d(0.0, 0.0, 1.0, 1.0), 2, 2U);
+  const auto missing = sample_depth_at_roi_anchor(
+    depth_image, cv::Rect2d(0.0, 0.0, 1.0, 1.0), 1.0, 1.0, 2, 2U, 0.5);
   EXPECT_FALSE(missing.has_value());
 
-  const auto valid = sample_depth_at_roi_center(depth_image, cv::Rect2d(0.0, 0.0, 1.0, 1.0), 2, 1U);
+  const auto valid = sample_depth_at_roi_anchor(
+    depth_image, cv::Rect2d(0.0, 0.0, 1.0, 1.0), 1.0, 1.0, 2, 1U, 0.5);
   ASSERT_TRUE(valid.has_value());
   EXPECT_EQ(valid->sampled_roi.x, 0);
   EXPECT_EQ(valid->sampled_roi.y, 0);
+  EXPECT_EQ(valid->anchor_px, 1);
+  EXPECT_EQ(valid->anchor_py, 1);
   EXPECT_NEAR(valid->depth_m, 0.8, 1e-6);
+}
+
+TEST(DepthSampleTest, RejectsHighIqrWindow)
+{
+  const cv::Mat depth_image = (cv::Mat_<uint16_t>(5, 5) <<
+    0U, 0U, 0U, 0U, 0U,
+    0U, 1000U, 1000U, 2000U, 0U,
+    0U, 1000U, 1000U, 2000U, 0U,
+    0U, 1000U, 2000U, 2000U, 0U,
+    0U, 0U, 0U, 0U, 0U);
+
+  const auto rejected = sample_depth_at_roi_anchor(
+    depth_image, cv::Rect2d(1.0, 1.0, 2.0, 2.0), 0.5, 0.5, 1, 5U, 0.20);
+  EXPECT_FALSE(rejected.has_value());
 }
 
 TEST(StateHelperTest, CenteringRequiresStableCycles)
@@ -115,6 +150,13 @@ TEST(StateHelperTest, DepthWindowControlsApproachCompletionAndVelocity)
   EXPECT_NEAR(compute_depth_velocity_mps(0.200, 0.160, 1.0, 0.08), 0.04, 1e-6);
   EXPECT_NEAR(compute_depth_velocity_mps(0.100, 0.160, 1.0, 0.08), -0.06, 1e-6);
   EXPECT_NEAR(compute_depth_velocity_mps(0.500, 0.160, 1.0, 0.08), 0.08, 1e-6);
+}
+
+TEST(StateHelperTest, DetectsDepthStallWhenProgressIsTooSmall)
+{
+  EXPECT_TRUE(depth_progress_stalled(0.320, 0.315, 0.010));
+  EXPECT_FALSE(depth_progress_stalled(0.320, 0.300, 0.010));
+  EXPECT_FALSE(depth_progress_stalled(0.320, 0.320, 0.0));
 }
 
 }  // namespace

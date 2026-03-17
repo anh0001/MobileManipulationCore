@@ -35,15 +35,21 @@ visual_servo:
 
   # Image-space convergence
   image_center_tolerance_px: 8.0       # Pixel error threshold to treat the target as centered
-  grasp_standoff_m: 0.14               # Desired bottle distance from wrist camera (D405 ~7cm ahead of gripper fingers)
+  grasp_standoff_m: 0.115              # Desired bottle distance from wrist camera for a ~10 cm D405-to-fingertip offset plus clearance
   grasp_depth_tolerance_m: 0.02        # Tolerance band for depth convergence
-  depth_roi_half_size_px: 8            # Half-width of the square depth sampling window around ROI center
+  depth_sample_anchor_x: 0.50          # Normalized ROI x anchor (width fraction, right-positive)
+  depth_sample_anchor_y: 0.68          # Normalized ROI y anchor (height fraction, down-positive)
+  depth_roi_half_size_px: 8            # Half-width of the square depth sampling window around the anchor pixel
   min_valid_depth_pixels: 12           # Minimum non-zero depth pixels required in the sampling window
+  depth_sample_max_iqr_m: 0.015        # Reject a depth sample if the local interquartile range exceeds this threshold
   depth_stale_timeout_sec: 1.0         # Allow for depth gaps (D405 at ~8 Hz + single-threaded executor delays)
   centering_stable_cycles: 3           # Number of consecutive centered control cycles before grasp sequence starts
+  close_depth_stable_frames: 3         # Number of consecutive in-band depth samples before closing the gripper
   grasp_settle_sec: 1.5                # Wait time after open/close gripper commands before next state
   lift_distance_m: 0.08                # Upward lift distance after grasp completion
   max_approach_distance_m: 1.00        # Safety cap on total forward approach distance during one pick attempt
+  approach_stall_window_sec: 1.0       # Abort if depth fails to improve enough over this rolling window while approaching
+  approach_min_progress_m: 0.01        # Minimum depth improvement required over the stall window
   open_gripper_command: 1.0            # Normalized gripper command sent before approach (1.0 = open)
   close_gripper_command: 0.0           # Normalized gripper command sent at grasp depth (0.0 = closed)
 

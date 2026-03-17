@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -29,9 +33,9 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <tf2_ros/buffer.h>
-#include <tf2_ros/transform_listener.h>
 #include <vision_msgs/msg/detection2_d_array.hpp>
+
+#include "manipulation_visual_servo/visual_servo_utils.hpp"
 
 namespace manipulation_visual_servo
 {
@@ -106,6 +110,12 @@ private:
   void publish_debug_overlay(const cv::Mat & frame, const cv::Rect2d & roi);
   void publish_state();
 
+  struct DepthHistoryEntry
+  {
+    rclcpp::Time stamp;
+    double depth_m{0.0};
+  };
+
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rgb_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
@@ -132,6 +142,7 @@ private:
   cv::Mat latest_frame_;
   rclcpp::Time latest_frame_stamp_;
   bool frame_available_{false};
+  rclcpp::Time last_processed_frame_stamp_;
 
   std::mutex depth_mutex_;
   cv::Mat latest_depth_frame_;
@@ -156,9 +167,11 @@ private:
   double desired_y_{0.0};
 
   int centering_streak_{0};
+  int close_depth_streak_{0};
   double accumulated_approach_distance_m_{0.0};
   double accumulated_lift_distance_m_{0.0};
-  std::optional<double> last_sampled_depth_m_;
+  std::optional<DepthSample> last_depth_sample_;
+  std::deque<DepthHistoryEntry> depth_progress_history_;
 
   std::string rgb_topic_;
   std::string camera_info_topic_;
@@ -181,13 +194,19 @@ private:
   double image_center_tolerance_px_;
   double grasp_standoff_m_;
   double grasp_depth_tolerance_m_;
+  double depth_sample_anchor_x_;
+  double depth_sample_anchor_y_;
   int depth_roi_half_size_px_;
   int min_valid_depth_pixels_;
+  double depth_sample_max_iqr_m_;
   double depth_stale_timeout_sec_;
   int centering_stable_cycles_;
+  int close_depth_stable_frames_;
   double grasp_settle_sec_;
   double lift_distance_m_;
   double max_approach_distance_m_;
+  double approach_stall_window_sec_;
+  double approach_min_progress_m_;
   double open_gripper_command_;
   double close_gripper_command_;
 

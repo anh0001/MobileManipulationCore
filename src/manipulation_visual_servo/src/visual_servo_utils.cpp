@@ -77,20 +77,25 @@ bool decode_depth_image(
   return true;
 }
 
-std::optional<DepthSample> sample_depth_at_roi_center(
+std::optional<DepthSample> sample_depth_at_roi_anchor(
   const cv::Mat & depth_image,
   const cv::Rect2d & tracked_roi,
+  double anchor_x_norm,
+  double anchor_y_norm,
   int depth_roi_half_size_px,
-  std::size_t min_valid_depth_pixels)
+  std::size_t min_valid_depth_pixels,
+  double max_iqr_m)
 {
   if (depth_image.empty() || depth_image.type() != CV_16UC1) {
     return std::nullopt;
   }
 
+  const double clamped_anchor_x = clamp_value(anchor_x_norm, 0.0, 1.0);
+  const double clamped_anchor_y = clamp_value(anchor_y_norm, 0.0, 1.0);
   const int cx = clamp_value(
-    cvRound(tracked_roi.x + tracked_roi.width * 0.5), 0, depth_image.cols - 1);
+    cvRound(tracked_roi.x + tracked_roi.width * clamped_anchor_x), 0, depth_image.cols - 1);
   const int cy = clamp_value(
-    cvRound(tracked_roi.y + tracked_roi.height * 0.5), 0, depth_image.rows - 1);
+    cvRound(tracked_roi.y + tracked_roi.height * clamped_anchor_y), 0, depth_image.rows - 1);
   const int half_size = std::max(0, depth_roi_half_size_px);
 
   const int x0 = clamp_value(cx - half_size, 0, depth_image.cols - 1);
@@ -115,13 +120,33 @@ std::optional<DepthSample> sample_depth_at_roi_center(
     return std::nullopt;
   }
 
-  const auto mid = valid_depth_mm.begin() + static_cast<std::ptrdiff_t>(valid_depth_mm.size() / 2);
-  std::nth_element(valid_depth_mm.begin(), mid, valid_depth_mm.end());
+  std::sort(valid_depth_mm.begin(), valid_depth_mm.end());
+  auto percentile_mm = [&valid_depth_mm](double fraction) {
+      if (valid_depth_mm.empty()) {
+        return 0.0;
+      }
+
+      const double position = clamp_value(fraction, 0.0, 1.0) *
+        static_cast<double>(valid_depth_mm.size() - 1);
+      const auto lower_index = static_cast<std::size_t>(std::floor(position));
+      const auto upper_index = static_cast<std::size_t>(std::ceil(position));
+      const double lower_value = static_cast<double>(valid_depth_mm[lower_index]);
+      const double upper_value = static_cast<double>(valid_depth_mm[upper_index]);
+      const double weight = position - static_cast<double>(lower_index);
+      return lower_value + (upper_value - lower_value) * weight;
+    };
+  const double depth_iqr_m = (percentile_mm(0.75) - percentile_mm(0.25)) / 1000.0;
+  if (max_iqr_m > 0.0 && depth_iqr_m > max_iqr_m) {
+    return std::nullopt;
+  }
 
   DepthSample sample;
-  sample.depth_m = static_cast<double>(*mid) / 1000.0;
+  sample.depth_m = percentile_mm(0.5) / 1000.0;
   sample.valid_pixels = valid_depth_mm.size();
   sample.sampled_roi = sample_roi;
+  sample.anchor_px = cx;
+  sample.anchor_py = cy;
+  sample.depth_iqr_m = depth_iqr_m;
   return sample;
 }
 
@@ -136,6 +161,11 @@ CenteringUpdate update_centering_streak(int current_streak, bool centered, int r
 bool depth_within_standoff(double depth_m, double grasp_standoff_m, double depth_tolerance_m)
 {
   return std::abs(depth_m - grasp_standoff_m) <= std::max(0.0, depth_tolerance_m);
+}
+
+bool depth_progress_stalled(double oldest_depth_m, double newest_depth_m, double min_progress_m)
+{
+  return (oldest_depth_m - newest_depth_m) < std::max(0.0, min_progress_m);
 }
 
 double compute_depth_velocity_mps(

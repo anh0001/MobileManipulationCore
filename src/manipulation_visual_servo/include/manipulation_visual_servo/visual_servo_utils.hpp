@@ -29,6 +29,9 @@ struct DepthSample
   double depth_m{0.0};
   std::size_t valid_pixels{0};
   cv::Rect sampled_roi;
+  int anchor_px{0};
+  int anchor_py{0};
+  double depth_iqr_m{0.0};
 };
 
 struct CenteringUpdate
@@ -44,15 +47,23 @@ bool decode_depth_image(
   cv::Mat & depth_image,
   std::string * error_message = nullptr);
 
-std::optional<DepthSample> sample_depth_at_roi_center(
+std::optional<DepthSample> sample_depth_at_roi_anchor(
   const cv::Mat & depth_image,
   const cv::Rect2d & tracked_roi,
+  double anchor_x_norm,
+  double anchor_y_norm,
   int depth_roi_half_size_px,
-  std::size_t min_valid_depth_pixels);
+  std::size_t min_valid_depth_pixels,
+  double max_iqr_m);
 
 CenteringUpdate update_centering_streak(int current_streak, bool centered, int required_cycles);
 
 bool depth_within_standoff(double depth_m, double grasp_standoff_m, double depth_tolerance_m);
+
+bool depth_progress_stalled(
+  double oldest_depth_m,
+  double newest_depth_m,
+  double min_progress_m);
 
 double compute_depth_velocity_mps(
   double depth_m,
