@@ -408,7 +408,12 @@ private:
                 target_out.pose.position.y,
                 target_out.pose.position.z);
 
-    if (isServoMode()) {
+    // Per-message arm_command_mode override takes precedence over the global
+    // arm_execution_mode parameter, allowing a single pick sequence to mix
+    // MoveGroup (pre-grasp) and MoveIt Servo (final correction) commands.
+    const bool use_servo = resolveServoMode(msg->arm_command_mode);
+
+    if (use_servo) {
       return queueServoCommand(target_out);
     }
 
@@ -570,6 +575,27 @@ private:
   bool isServoMode() const
   {
     return arm_execution_mode_ == "moveit_servo";
+  }
+
+  bool resolveServoMode(const std::string& per_message_mode)
+  {
+    if (per_message_mode.empty()) {
+      return isServoMode();
+    }
+    std::string mode = per_message_mode;
+    std::transform(mode.begin(), mode.end(), mode.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (mode == "moveit_servo") {
+      return true;
+    }
+    if (mode == "move_group") {
+      return false;
+    }
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "Unknown per-message arm_command_mode='%s'; falling back to global mode '%s'",
+      per_message_mode.c_str(), arm_execution_mode_.c_str());
+    return isServoMode();
   }
 
   bool isServoCommandActive()

@@ -32,6 +32,21 @@ T clamp_value(T value, T lower, T upper)
   return std::max(lower, std::min(upper, value));
 }
 
+double percentile_from_sorted(const std::vector<uint16_t> & sorted_values, double fraction)
+{
+  if (sorted_values.empty()) {
+    return 0.0;
+  }
+  const double position = clamp_value(fraction, 0.0, 1.0) *
+    static_cast<double>(sorted_values.size() - 1);
+  const auto lower_index = static_cast<std::size_t>(std::floor(position));
+  const auto upper_index = static_cast<std::size_t>(std::ceil(position));
+  const double lower_value = static_cast<double>(sorted_values[lower_index]);
+  const double upper_value = static_cast<double>(sorted_values[upper_index]);
+  const double weight = position - static_cast<double>(lower_index);
+  return lower_value + (upper_value - lower_value) * weight;
+}
+
 }  // namespace
 
 bool is_supported_depth_encoding(const std::string & encoding)
@@ -77,12 +92,34 @@ bool decode_depth_image(
   return true;
 }
 
-std::optional<DepthSample> sample_depth_at_roi_anchor(
+cv::Rect compute_body_roi(
+  const cv::Rect2d & detection_roi,
+  double body_top_frac,
+  double body_bottom_frac,
+  double body_left_frac,
+  double body_right_frac,
+  int image_width,
+  int image_height)
+{
+  const double top = detection_roi.y + detection_roi.height * clamp_value(body_top_frac, 0.0, 1.0);
+  const double bottom =
+    detection_roi.y + detection_roi.height * clamp_value(body_bottom_frac, 0.0, 1.0);
+  const double left =
+    detection_roi.x + detection_roi.width * clamp_value(body_left_frac, 0.0, 1.0);
+  const double right =
+    detection_roi.x + detection_roi.width * clamp_value(body_right_frac, 0.0, 1.0);
+
+  const int x0 = clamp_value(static_cast<int>(std::round(left)), 0, image_width - 1);
+  const int y0 = clamp_value(static_cast<int>(std::round(top)), 0, image_height - 1);
+  const int x1 = clamp_value(static_cast<int>(std::round(right)), x0 + 1, image_width);
+  const int y1 = clamp_value(static_cast<int>(std::round(bottom)), y0 + 1, image_height);
+
+  return cv::Rect(x0, y0, x1 - x0, y1 - y0);
+}
+
+std::optional<DepthSample> sample_depth_in_roi(
   const cv::Mat & depth_image,
-  const cv::Rect2d & tracked_roi,
-  double anchor_x_norm,
-  double anchor_y_norm,
-  int depth_roi_half_size_px,
+  const cv::Rect & roi,
   std::size_t min_valid_depth_pixels,
   double max_iqr_m)
 {
@@ -90,25 +127,16 @@ std::optional<DepthSample> sample_depth_at_roi_anchor(
     return std::nullopt;
   }
 
-  const double clamped_anchor_x = clamp_value(anchor_x_norm, 0.0, 1.0);
-  const double clamped_anchor_y = clamp_value(anchor_y_norm, 0.0, 1.0);
-  const int cx = clamp_value(
-    cvRound(tracked_roi.x + tracked_roi.width * clamped_anchor_x), 0, depth_image.cols - 1);
-  const int cy = clamp_value(
-    cvRound(tracked_roi.y + tracked_roi.height * clamped_anchor_y), 0, depth_image.rows - 1);
-  const int half_size = std::max(0, depth_roi_half_size_px);
-
-  const int x0 = clamp_value(cx - half_size, 0, depth_image.cols - 1);
-  const int y0 = clamp_value(cy - half_size, 0, depth_image.rows - 1);
-  const int x1 = clamp_value(cx + half_size + 1, x0 + 1, depth_image.cols);
-  const int y1 = clamp_value(cy + half_size + 1, y0 + 1, depth_image.rows);
-  const cv::Rect sample_roi(x0, y0, x1 - x0, y1 - y0);
+  const cv::Rect safe_roi = roi & cv::Rect(0, 0, depth_image.cols, depth_image.rows);
+  if (safe_roi.width <= 0 || safe_roi.height <= 0) {
+    return std::nullopt;
+  }
 
   std::vector<uint16_t> valid_depth_mm;
-  valid_depth_mm.reserve(static_cast<std::size_t>(sample_roi.area()));
-  for (int row = sample_roi.y; row < sample_roi.y + sample_roi.height; ++row) {
+  valid_depth_mm.reserve(static_cast<std::size_t>(safe_roi.area()));
+  for (int row = safe_roi.y; row < safe_roi.y + safe_roi.height; ++row) {
     const auto * row_ptr = depth_image.ptr<uint16_t>(row);
-    for (int col = sample_roi.x; col < sample_roi.x + sample_roi.width; ++col) {
+    for (int col = safe_roi.x; col < safe_roi.x + safe_roi.width; ++col) {
       const uint16_t depth_mm = row_ptr[col];
       if (depth_mm > 0U) {
         valid_depth_mm.push_back(depth_mm);
@@ -121,33 +149,186 @@ std::optional<DepthSample> sample_depth_at_roi_anchor(
   }
 
   std::sort(valid_depth_mm.begin(), valid_depth_mm.end());
-  auto percentile_mm = [&valid_depth_mm](double fraction) {
-      if (valid_depth_mm.empty()) {
-        return 0.0;
-      }
-
-      const double position = clamp_value(fraction, 0.0, 1.0) *
-        static_cast<double>(valid_depth_mm.size() - 1);
-      const auto lower_index = static_cast<std::size_t>(std::floor(position));
-      const auto upper_index = static_cast<std::size_t>(std::ceil(position));
-      const double lower_value = static_cast<double>(valid_depth_mm[lower_index]);
-      const double upper_value = static_cast<double>(valid_depth_mm[upper_index]);
-      const double weight = position - static_cast<double>(lower_index);
-      return lower_value + (upper_value - lower_value) * weight;
-    };
-  const double depth_iqr_m = (percentile_mm(0.75) - percentile_mm(0.25)) / 1000.0;
+  const double depth_iqr_m =
+    (percentile_from_sorted(valid_depth_mm, 0.75) -
+    percentile_from_sorted(valid_depth_mm, 0.25)) / 1000.0;
   if (max_iqr_m > 0.0 && depth_iqr_m > max_iqr_m) {
     return std::nullopt;
   }
 
   DepthSample sample;
-  sample.depth_m = percentile_mm(0.5) / 1000.0;
+  sample.depth_m = percentile_from_sorted(valid_depth_mm, 0.5) / 1000.0;
   sample.valid_pixels = valid_depth_mm.size();
-  sample.sampled_roi = sample_roi;
-  sample.anchor_px = cx;
-  sample.anchor_py = cy;
+  sample.sampled_roi = safe_roi;
+  sample.anchor_px = safe_roi.x + safe_roi.width / 2;
+  sample.anchor_py = safe_roi.y + safe_roi.height / 2;
   sample.depth_iqr_m = depth_iqr_m;
   return sample;
+}
+
+std::optional<BottleEstimate3D> estimate_bottle_3d(
+  const cv::Mat & depth_image,
+  const cv::Rect2d & detection_roi,
+  const CameraIntrinsics & intrinsics,
+  double body_top_frac,
+  double body_bottom_frac,
+  double body_left_frac,
+  double body_right_frac,
+  std::size_t min_valid_depth_pixels,
+  double max_iqr_m)
+{
+  if (intrinsics.fx <= 0.0 || intrinsics.fy <= 0.0) {
+    return std::nullopt;
+  }
+
+  const cv::Rect body_roi = compute_body_roi(
+    detection_roi, body_top_frac, body_bottom_frac, body_left_frac, body_right_frac,
+    depth_image.cols, depth_image.rows);
+
+  if (body_roi.width <= 0 || body_roi.height <= 0) {
+    return std::nullopt;
+  }
+
+  // Collect valid depth pixels and their 3D deprojections
+  struct PixelDepth
+  {
+    int u;
+    int v;
+    uint16_t depth_mm;
+  };
+  std::vector<PixelDepth> valid_pixels;
+  valid_pixels.reserve(static_cast<std::size_t>(body_roi.area()));
+
+  for (int row = body_roi.y; row < body_roi.y + body_roi.height; ++row) {
+    const auto * row_ptr = depth_image.ptr<uint16_t>(row);
+    for (int col = body_roi.x; col < body_roi.x + body_roi.width; ++col) {
+      const uint16_t depth_mm = row_ptr[col];
+      if (depth_mm > 0U) {
+        valid_pixels.push_back({col, row, depth_mm});
+      }
+    }
+  }
+
+  if (valid_pixels.size() < min_valid_depth_pixels) {
+    return std::nullopt;
+  }
+
+  // Sort by depth for IQR check
+  std::vector<uint16_t> depth_values;
+  depth_values.reserve(valid_pixels.size());
+  for (const auto & px : valid_pixels) {
+    depth_values.push_back(px.depth_mm);
+  }
+  std::sort(depth_values.begin(), depth_values.end());
+
+  const double depth_iqr_m =
+    (percentile_from_sorted(depth_values, 0.75) -
+    percentile_from_sorted(depth_values, 0.25)) / 1000.0;
+  if (max_iqr_m > 0.0 && depth_iqr_m > max_iqr_m) {
+    return std::nullopt;
+  }
+
+  // IQR-based outlier rejection: keep pixels within [Q1 - 1.5*IQR, Q3 + 1.5*IQR]
+  const double q1_mm = percentile_from_sorted(depth_values, 0.25);
+  const double q3_mm = percentile_from_sorted(depth_values, 0.75);
+  const double iqr_mm = q3_mm - q1_mm;
+  const double lower_fence_mm = q1_mm - 1.5 * iqr_mm;
+  const double upper_fence_mm = q3_mm + 1.5 * iqr_mm;
+
+  // Deproject inlier pixels to 3D
+  std::vector<double> xs, ys, zs;
+  xs.reserve(valid_pixels.size());
+  ys.reserve(valid_pixels.size());
+  zs.reserve(valid_pixels.size());
+
+  for (const auto & px : valid_pixels) {
+    const double d_mm = static_cast<double>(px.depth_mm);
+    if (d_mm < lower_fence_mm || d_mm > upper_fence_mm) {
+      continue;
+    }
+    const double z = d_mm / 1000.0;
+    const double x = (static_cast<double>(px.u) - intrinsics.cx) * z / intrinsics.fx;
+    const double y = (static_cast<double>(px.v) - intrinsics.cy) * z / intrinsics.fy;
+    xs.push_back(x);
+    ys.push_back(y);
+    zs.push_back(z);
+  }
+
+  if (xs.empty()) {
+    return std::nullopt;
+  }
+
+  // Compute median of each coordinate for robust centroid
+  auto median = [](std::vector<double> & vals) {
+      std::sort(vals.begin(), vals.end());
+      const std::size_t n = vals.size();
+      if (n % 2 == 0) {
+        return (vals[n / 2 - 1] + vals[n / 2]) / 2.0;
+      }
+      return vals[n / 2];
+    };
+
+  BottleEstimate3D estimate;
+  estimate.centroid_camera.x = median(xs);
+  estimate.centroid_camera.y = median(ys);
+  estimate.centroid_camera.z = median(zs);
+  estimate.depth_m = estimate.centroid_camera.z;
+  estimate.valid_pixels = xs.size();
+  estimate.depth_iqr_m = depth_iqr_m;
+  estimate.body_roi = body_roi;
+  return estimate;
+}
+
+geometry_msgs::msg::Pose make_grasp_pose(
+  const geometry_msgs::msg::Point & bottle_position_arm_base,
+  double orient_x, double orient_y, double orient_z, double orient_w)
+{
+  geometry_msgs::msg::Pose pose;
+  pose.position = bottle_position_arm_base;
+  pose.orientation.x = orient_x;
+  pose.orientation.y = orient_y;
+  pose.orientation.z = orient_z;
+  pose.orientation.w = orient_w;
+
+  // Normalize quaternion
+  const double norm = std::sqrt(
+    orient_x * orient_x + orient_y * orient_y +
+    orient_z * orient_z + orient_w * orient_w);
+  if (norm > 1e-12) {
+    pose.orientation.x /= norm;
+    pose.orientation.y /= norm;
+    pose.orientation.z /= norm;
+    pose.orientation.w /= norm;
+  } else {
+    pose.orientation.w = 1.0;
+  }
+
+  return pose;
+}
+
+geometry_msgs::msg::Pose make_pregrasp_pose(
+  const geometry_msgs::msg::Pose & grasp_pose,
+  double pregrasp_offset_m)
+{
+  // Retract along the tool approach axis (local Z) by pregrasp_offset_m.
+  // The approach axis in the arm base frame is derived from the grasp orientation.
+  // For quaternion q, the local Z axis is:
+  //   z_axis = q * [0,0,1] * q_inv
+  const double qx = grasp_pose.orientation.x;
+  const double qy = grasp_pose.orientation.y;
+  const double qz = grasp_pose.orientation.z;
+  const double qw = grasp_pose.orientation.w;
+
+  // Rotate [0, 0, 1] by quaternion
+  const double az_x = 2.0 * (qx * qz + qw * qy);
+  const double az_y = 2.0 * (qy * qz - qw * qx);
+  const double az_z = 1.0 - 2.0 * (qx * qx + qy * qy);
+
+  geometry_msgs::msg::Pose pregrasp = grasp_pose;
+  pregrasp.position.x -= pregrasp_offset_m * az_x;
+  pregrasp.position.y -= pregrasp_offset_m * az_y;
+  pregrasp.position.z -= pregrasp_offset_m * az_z;
+  return pregrasp;
 }
 
 CenteringUpdate update_centering_streak(int current_streak, bool centered, int required_cycles)
@@ -156,30 +337,6 @@ CenteringUpdate update_centering_streak(int current_streak, bool centered, int r
   update.streak = centered ? current_streak + 1 : 0;
   update.stable = update.streak >= std::max(1, required_cycles);
   return update;
-}
-
-bool depth_within_standoff(double depth_m, double grasp_standoff_m, double depth_tolerance_m)
-{
-  return std::abs(depth_m - grasp_standoff_m) <= std::max(0.0, depth_tolerance_m);
-}
-
-bool depth_progress_stalled(double oldest_depth_m, double newest_depth_m, double min_progress_m)
-{
-  return (oldest_depth_m - newest_depth_m) < std::max(0.0, min_progress_m);
-}
-
-double compute_depth_velocity_mps(
-  double depth_m,
-  double grasp_standoff_m,
-  double lambda_z,
-  double max_linear_velocity)
-{
-  const double unclamped = lambda_z * (depth_m - grasp_standoff_m);
-  const double limit = std::max(0.0, max_linear_velocity);
-  if (limit <= 0.0) {
-    return 0.0;
-  }
-  return clamp_value(unclamped, -limit, limit);
 }
 
 }  // namespace manipulation_visual_servo

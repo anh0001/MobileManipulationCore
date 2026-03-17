@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -46,6 +47,8 @@ sensor_msgs::msg::Image make_depth_image(
   return msg;
 }
 
+// --- Depth decode tests ---
+
 TEST(DepthDecodeTest, Accepts16UC1Image)
 {
   const auto msg = make_depth_image({1000U, 1200U, 1400U, 1600U}, 2U, 2U);
@@ -68,7 +71,40 @@ TEST(DepthDecodeTest, RejectsUnsupportedEncoding)
   EXPECT_NE(error_message.find("unsupported depth encoding"), std::string::npos);
 }
 
-TEST(DepthSampleTest, UsesMedianDepthAtNormalizedAnchorAndIgnoresZeros)
+// --- Body ROI computation ---
+
+TEST(BodyRoiTest, CropsDetectionToBodyRegion)
+{
+  // Detection ROI: (100, 50, 200x300) in a 640x480 image
+  const cv::Rect2d det(100.0, 50.0, 200.0, 300.0);
+  const auto roi = compute_body_roi(det, 0.30, 0.90, 0.20, 0.80, 640, 480);
+
+  // Expected body region:
+  // top = 50 + 300*0.30 = 140
+  // bottom = 50 + 300*0.90 = 320
+  // left = 100 + 200*0.20 = 140
+  // right = 100 + 200*0.80 = 260
+  EXPECT_EQ(roi.x, 140);
+  EXPECT_EQ(roi.y, 140);
+  EXPECT_EQ(roi.width, 120);   // 260 - 140
+  EXPECT_EQ(roi.height, 180);  // 320 - 140
+}
+
+TEST(BodyRoiTest, ClipsToImageBounds)
+{
+  // Detection near image edge
+  const cv::Rect2d det(600.0, 400.0, 100.0, 200.0);
+  const auto roi = compute_body_roi(det, 0.0, 1.0, 0.0, 1.0, 640, 480);
+
+  EXPECT_GE(roi.x, 0);
+  EXPECT_GE(roi.y, 0);
+  EXPECT_LE(roi.x + roi.width, 640);
+  EXPECT_LE(roi.y + roi.height, 480);
+}
+
+// --- Depth sampling in ROI ---
+
+TEST(DepthSampleRoiTest, SamplesMedianDepthAndIgnoresZeros)
 {
   const cv::Mat depth_image = (cv::Mat_<uint16_t>(5, 5) <<
     0U, 0U, 0U, 0U, 0U,
@@ -77,52 +113,183 @@ TEST(DepthSampleTest, UsesMedianDepthAtNormalizedAnchorAndIgnoresZeros)
     0U, 1500U, 1600U, 1700U, 0U,
     0U, 0U, 0U, 0U, 0U);
 
-  const auto sample = sample_depth_at_roi_anchor(
-    depth_image, cv::Rect2d(1.0, 1.0, 2.0, 2.0), 0.5, 0.5, 1, 5U, 0.5);
+  const cv::Rect roi(1, 1, 3, 3);
+  const auto sample = sample_depth_in_roi(depth_image, roi, 5U, 0.5);
   ASSERT_TRUE(sample.has_value());
   EXPECT_EQ(sample->valid_pixels, 9U);
   EXPECT_NEAR(sample->depth_m, 1.3, 1e-6);
-  EXPECT_EQ(sample->anchor_px, 2);
-  EXPECT_EQ(sample->anchor_py, 2);
-  EXPECT_NEAR(sample->depth_iqr_m, 0.4, 1e-6);
 }
 
-TEST(DepthSampleTest, ClipsAtImageBorderAndRejectsInsufficientPixels)
+TEST(DepthSampleRoiTest, RejectsInsufficientPixels)
 {
   const cv::Mat depth_image = (cv::Mat_<uint16_t>(3, 3) <<
     0U, 0U, 0U,
     0U, 800U, 0U,
     0U, 0U, 0U);
 
-  const auto missing = sample_depth_at_roi_anchor(
-    depth_image, cv::Rect2d(0.0, 0.0, 1.0, 1.0), 1.0, 1.0, 2, 2U, 0.5);
+  const cv::Rect roi(0, 0, 3, 3);
+  const auto missing = sample_depth_in_roi(depth_image, roi, 2U, 0.5);
   EXPECT_FALSE(missing.has_value());
 
-  const auto valid = sample_depth_at_roi_anchor(
-    depth_image, cv::Rect2d(0.0, 0.0, 1.0, 1.0), 1.0, 1.0, 2, 1U, 0.5);
+  const auto valid = sample_depth_in_roi(depth_image, roi, 1U, 0.5);
   ASSERT_TRUE(valid.has_value());
-  EXPECT_EQ(valid->sampled_roi.x, 0);
-  EXPECT_EQ(valid->sampled_roi.y, 0);
-  EXPECT_EQ(valid->anchor_px, 1);
-  EXPECT_EQ(valid->anchor_py, 1);
   EXPECT_NEAR(valid->depth_m, 0.8, 1e-6);
 }
 
-TEST(DepthSampleTest, RejectsHighIqrWindow)
+TEST(DepthSampleRoiTest, RejectsHighIqr)
 {
-  const cv::Mat depth_image = (cv::Mat_<uint16_t>(5, 5) <<
-    0U, 0U, 0U, 0U, 0U,
-    0U, 1000U, 1000U, 2000U, 0U,
-    0U, 1000U, 1000U, 2000U, 0U,
-    0U, 1000U, 2000U, 2000U, 0U,
-    0U, 0U, 0U, 0U, 0U);
+  const cv::Mat depth_image = (cv::Mat_<uint16_t>(3, 3) <<
+    1000U, 1000U, 2000U,
+    1000U, 1000U, 2000U,
+    1000U, 2000U, 2000U);
 
-  const auto rejected = sample_depth_at_roi_anchor(
-    depth_image, cv::Rect2d(1.0, 1.0, 2.0, 2.0), 0.5, 0.5, 1, 5U, 0.20);
+  const cv::Rect roi(0, 0, 3, 3);
+  const auto rejected = sample_depth_in_roi(depth_image, roi, 5U, 0.20);
   EXPECT_FALSE(rejected.has_value());
 }
 
-TEST(StateHelperTest, CenteringRequiresStableCycles)
+// --- 3D centroid estimation ---
+
+TEST(Estimate3DTest, ComputesCentroidFromValidDepth)
+{
+  // 5x5 depth image with a cluster of valid pixels in the center
+  const cv::Mat depth_image = (cv::Mat_<uint16_t>(5, 5) <<
+    0U, 0U, 0U, 0U, 0U,
+    0U, 500U, 500U, 500U, 0U,
+    0U, 500U, 500U, 500U, 0U,
+    0U, 500U, 500U, 500U, 0U,
+    0U, 0U, 0U, 0U, 0U);
+
+  CameraIntrinsics intr;
+  intr.fx = 1.0;
+  intr.fy = 1.0;
+  intr.cx = 2.0;  // image center
+  intr.cy = 2.0;
+  intr.width = 5;
+  intr.height = 5;
+
+  // Use full detection box, body fracs that keep center region
+  const cv::Rect2d det(0.0, 0.0, 5.0, 5.0);
+  const auto est = estimate_bottle_3d(
+    depth_image, det, intr,
+    0.2, 0.8, 0.2, 0.8,  // body fracs
+    3U, 0.5);
+
+  ASSERT_TRUE(est.has_value());
+  // All valid pixels at depth 500mm = 0.5m, centered at (2,2)
+  EXPECT_NEAR(est->depth_m, 0.5, 1e-6);
+  EXPECT_NEAR(est->centroid_camera.z, 0.5, 1e-6);
+  // At pixel (2,2) with cx=2,cy=2, fx=fy=1: x = (2-2)*0.5/1 = 0
+  EXPECT_NEAR(est->centroid_camera.x, 0.0, 0.01);
+  EXPECT_NEAR(est->centroid_camera.y, 0.0, 0.01);
+}
+
+TEST(Estimate3DTest, RejectsEmptyOrNoIntrinsics)
+{
+  const cv::Mat depth_image = cv::Mat::zeros(5, 5, CV_16UC1);
+  CameraIntrinsics bad_intr{};
+
+  const auto est = estimate_bottle_3d(
+    depth_image, cv::Rect2d(0, 0, 5, 5), bad_intr,
+    0.0, 1.0, 0.0, 1.0, 1U, 1.0);
+  EXPECT_FALSE(est.has_value());
+}
+
+TEST(Estimate3DTest, RejectsNoisyDepthByIqr)
+{
+  // Wide spread of depths -> high IQR
+  const cv::Mat depth_image = (cv::Mat_<uint16_t>(3, 3) <<
+    100U, 500U, 900U,
+    200U, 600U, 1000U,
+    300U, 700U, 1100U);
+
+  CameraIntrinsics intr;
+  intr.fx = 1.0;
+  intr.fy = 1.0;
+  intr.cx = 1.0;
+  intr.cy = 1.0;
+  intr.width = 3;
+  intr.height = 3;
+
+  // Tight IQR threshold should reject
+  const auto est = estimate_bottle_3d(
+    depth_image, cv::Rect2d(0, 0, 3, 3), intr,
+    0.0, 1.0, 0.0, 1.0, 3U, 0.05);
+  EXPECT_FALSE(est.has_value());
+}
+
+// --- Grasp pose synthesis ---
+
+TEST(GraspPoseTest, SetsPositionAndNormalizesOrientation)
+{
+  geometry_msgs::msg::Point pos;
+  pos.x = 0.3;
+  pos.y = 0.1;
+  pos.z = 0.2;
+
+  const auto pose = make_grasp_pose(pos, 0.0, 0.0, 0.0, 1.0);
+  EXPECT_NEAR(pose.position.x, 0.3, 1e-6);
+  EXPECT_NEAR(pose.position.y, 0.1, 1e-6);
+  EXPECT_NEAR(pose.position.z, 0.2, 1e-6);
+  // Should be unit quaternion
+  const double norm = std::sqrt(
+    pose.orientation.x * pose.orientation.x +
+    pose.orientation.y * pose.orientation.y +
+    pose.orientation.z * pose.orientation.z +
+    pose.orientation.w * pose.orientation.w);
+  EXPECT_NEAR(norm, 1.0, 1e-6);
+}
+
+TEST(GraspPoseTest, NormalizesNonUnitQuaternion)
+{
+  geometry_msgs::msg::Point pos;
+  const auto pose = make_grasp_pose(pos, 2.0, 0.0, 0.0, 0.0);
+  EXPECT_NEAR(pose.orientation.x, 1.0, 1e-6);
+  EXPECT_NEAR(pose.orientation.y, 0.0, 1e-6);
+  EXPECT_NEAR(pose.orientation.z, 0.0, 1e-6);
+  EXPECT_NEAR(pose.orientation.w, 0.0, 1e-6);
+}
+
+// --- Pre-grasp pose synthesis ---
+
+TEST(PregraspPoseTest, RetractsAlongToolZAxis)
+{
+  geometry_msgs::msg::Point pos;
+  pos.x = 0.3;
+  pos.y = 0.0;
+  pos.z = 0.2;
+
+  // Grasp orientation: identity quaternion (tool Z = world Z)
+  const auto grasp = make_grasp_pose(pos, 0.0, 0.0, 0.0, 1.0);
+  const auto pregrasp = make_pregrasp_pose(grasp, 0.08);
+
+  // Should retract 0.08 m along Z
+  EXPECT_NEAR(pregrasp.position.x, 0.3, 1e-6);
+  EXPECT_NEAR(pregrasp.position.y, 0.0, 1e-6);
+  EXPECT_NEAR(pregrasp.position.z, 0.12, 1e-6);  // 0.2 - 0.08
+}
+
+TEST(PregraspPoseTest, RetractsAlongRotatedToolAxis)
+{
+  geometry_msgs::msg::Point pos;
+  pos.x = 0.3;
+  pos.y = 0.0;
+  pos.z = 0.2;
+
+  // Grasp orientation: 180 deg rotation about X (tool Z = -world Z, pointing down)
+  const auto grasp = make_grasp_pose(pos, 1.0, 0.0, 0.0, 0.0);
+  const auto pregrasp = make_pregrasp_pose(grasp, 0.08);
+
+  // Tool Z axis for quat (1,0,0,0) is [0, 0, -1]
+  // Retract along -[0,0,-1] = [0,0,+1]
+  EXPECT_NEAR(pregrasp.position.x, 0.3, 1e-6);
+  EXPECT_NEAR(pregrasp.position.y, 0.0, 1e-6);
+  EXPECT_NEAR(pregrasp.position.z, 0.28, 1e-6);  // 0.2 + 0.08
+}
+
+// --- Centering streak ---
+
+TEST(CenteringStreakTest, RequiresConsecutiveCycles)
 {
   auto update = update_centering_streak(0, true, 3);
   EXPECT_EQ(update.streak, 1);
@@ -139,70 +306,6 @@ TEST(StateHelperTest, CenteringRequiresStableCycles)
   update = update_centering_streak(update.streak, false, 3);
   EXPECT_EQ(update.streak, 0);
   EXPECT_FALSE(update.stable);
-}
-
-TEST(StateHelperTest, DepthWindowControlsApproachCompletionAndVelocity)
-{
-  EXPECT_TRUE(depth_within_standoff(0.160, 0.160, 0.015));
-  EXPECT_TRUE(depth_within_standoff(0.172, 0.160, 0.015));
-  EXPECT_FALSE(depth_within_standoff(0.190, 0.160, 0.015));
-
-  EXPECT_NEAR(compute_depth_velocity_mps(0.200, 0.160, 1.0, 0.08), 0.04, 1e-6);
-  EXPECT_NEAR(compute_depth_velocity_mps(0.100, 0.160, 1.0, 0.08), -0.06, 1e-6);
-  EXPECT_NEAR(compute_depth_velocity_mps(0.500, 0.160, 1.0, 0.08), 0.08, 1e-6);
-}
-
-TEST(StateHelperTest, DetectsDepthStallWhenProgressIsTooSmall)
-{
-  EXPECT_TRUE(depth_progress_stalled(0.320, 0.315, 0.010));
-  EXPECT_FALSE(depth_progress_stalled(0.320, 0.300, 0.010));
-  EXPECT_FALSE(depth_progress_stalled(0.320, 0.320, 0.0));
-}
-
-TEST(StateHelperTest, DepthStallWithEqualReadingsIsStalled)
-{
-  // No progress at all should count as stalled
-  EXPECT_TRUE(depth_progress_stalled(0.250, 0.250, 0.010));
-  // Moving backward should count as stalled
-  EXPECT_TRUE(depth_progress_stalled(0.250, 0.260, 0.010));
-}
-
-TEST(StateHelperTest, DepthWithinStandoffBoundaryValues)
-{
-  // Within tolerance boundary
-  EXPECT_TRUE(depth_within_standoff(0.134, 0.115, 0.020));
-  EXPECT_TRUE(depth_within_standoff(0.096, 0.115, 0.020));
-  // Outside tolerance
-  EXPECT_FALSE(depth_within_standoff(0.136, 0.115, 0.020));
-  EXPECT_FALSE(depth_within_standoff(0.094, 0.115, 0.020));
-  // Exactly at standoff
-  EXPECT_TRUE(depth_within_standoff(0.115, 0.115, 0.020));
-  // Zero tolerance
-  EXPECT_TRUE(depth_within_standoff(0.115, 0.115, 0.0));
-  EXPECT_FALSE(depth_within_standoff(0.116, 0.115, 0.0));
-}
-
-TEST(StateHelperTest, DepthVelocityAtStandoffIsZero)
-{
-  EXPECT_NEAR(compute_depth_velocity_mps(0.115, 0.115, 2.0, 0.10), 0.0, 1e-6);
-}
-
-TEST(DepthSampleTest, RelaxedMinPixelsAcceptsSmallSamples)
-{
-  // With only 6 valid pixels (matching relaxed min_valid_depth_pixels=6),
-  // the sample should be accepted when the IQR is reasonable.
-  const cv::Mat depth_image = (cv::Mat_<uint16_t>(5, 5) <<
-    0U, 0U, 0U, 0U, 0U,
-    0U, 0U, 250U, 0U, 0U,
-    0U, 260U, 270U, 280U, 0U,
-    0U, 0U, 290U, 300U, 0U,
-    0U, 0U, 0U, 0U, 0U);
-
-  // min_valid=6, max_iqr=0.025 (25mm)
-  const auto sample = sample_depth_at_roi_anchor(
-    depth_image, cv::Rect2d(1.0, 1.0, 2.0, 2.0), 0.5, 0.5, 1, 6U, 0.025);
-  ASSERT_TRUE(sample.has_value());
-  EXPECT_EQ(sample->valid_pixels, 6U);
 }
 
 }  // namespace

@@ -24,3 +24,9 @@ string reference_frame
 
 # Confidence score from policy (if available)
 float32 confidence
+
+# Per-message arm command mode override (optional).
+# When non-empty, the adapter uses this mode for this specific message
+# instead of its globally configured arm_execution_mode parameter.
+# Valid values: "move_group", "moveit_servo"
+string arm_command_mode

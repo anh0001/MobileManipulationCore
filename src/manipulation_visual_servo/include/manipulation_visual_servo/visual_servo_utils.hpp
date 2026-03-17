@@ -17,7 +17,10 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/point.hpp>
 #include <opencv2/core.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
@@ -34,12 +37,32 @@ struct DepthSample
   double depth_iqr_m{0.0};
 };
 
+struct CameraIntrinsics
+{
+  double fx{0.0};
+  double fy{0.0};
+  double cx{0.0};
+  double cy{0.0};
+  int width{0};
+  int height{0};
+};
+
+struct BottleEstimate3D
+{
+  geometry_msgs::msg::Point centroid_camera;  // In camera optical frame
+  double depth_m{0.0};
+  std::size_t valid_pixels{0};
+  double depth_iqr_m{0.0};
+  cv::Rect body_roi;  // The body sub-region used for sampling
+};
+
 struct CenteringUpdate
 {
   int streak{0};
   bool stable{false};
 };
 
+// Depth image decoding
 bool is_supported_depth_encoding(const std::string & encoding);
 
 bool decode_depth_image(
@@ -47,28 +70,51 @@ bool decode_depth_image(
   cv::Mat & depth_image,
   std::string * error_message = nullptr);
 
-std::optional<DepthSample> sample_depth_at_roi_anchor(
+// Extract the body sub-region of a detection ROI for depth sampling.
+// The fractional parameters crop the detection box to the bottle body,
+// avoiding the cap/neck (top) and base (bottom).
+cv::Rect compute_body_roi(
+  const cv::Rect2d & detection_roi,
+  double body_top_frac,
+  double body_bottom_frac,
+  double body_left_frac,
+  double body_right_frac,
+  int image_width,
+  int image_height);
+
+// Sample depth from a specified ROI with median/IQR filtering.
+// Returns nullopt if insufficient valid pixels or IQR exceeds threshold.
+std::optional<DepthSample> sample_depth_in_roi(
   const cv::Mat & depth_image,
-  const cv::Rect2d & tracked_roi,
-  double anchor_x_norm,
-  double anchor_y_norm,
-  int depth_roi_half_size_px,
+  const cv::Rect & roi,
   std::size_t min_valid_depth_pixels,
   double max_iqr_m);
 
+// Estimate 3D bottle centroid from detection ROI + depth image.
+// Crops the body region, samples depth, deprojects valid pixels using
+// camera intrinsics, and returns the median 3D point in camera optical frame.
+std::optional<BottleEstimate3D> estimate_bottle_3d(
+  const cv::Mat & depth_image,
+  const cv::Rect2d & detection_roi,
+  const CameraIntrinsics & intrinsics,
+  double body_top_frac,
+  double body_bottom_frac,
+  double body_left_frac,
+  double body_right_frac,
+  std::size_t min_valid_depth_pixels,
+  double max_iqr_m);
+
+// Synthesize grasp and pre-grasp poses from a bottle 3D position (in arm base frame)
+// and a fixed grasp orientation template.
+geometry_msgs::msg::Pose make_grasp_pose(
+  const geometry_msgs::msg::Point & bottle_position_arm_base,
+  double orient_x, double orient_y, double orient_z, double orient_w);
+
+geometry_msgs::msg::Pose make_pregrasp_pose(
+  const geometry_msgs::msg::Pose & grasp_pose,
+  double pregrasp_offset_m);
+
+// Centering streak helper (retained from old pipeline)
 CenteringUpdate update_centering_streak(int current_streak, bool centered, int required_cycles);
-
-bool depth_within_standoff(double depth_m, double grasp_standoff_m, double depth_tolerance_m);
-
-bool depth_progress_stalled(
-  double oldest_depth_m,
-  double newest_depth_m,
-  double min_progress_m);
-
-double compute_depth_velocity_mps(
-  double depth_m,
-  double grasp_standoff_m,
-  double lambda_z,
-  double max_linear_velocity);
 
 }  // namespace manipulation_visual_servo

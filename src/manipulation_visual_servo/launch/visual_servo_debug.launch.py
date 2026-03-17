@@ -14,11 +14,15 @@
 # limitations under the License.
 
 """
-Debug launch file for isolated visual servo node testing.
+Debug launch file for isolated hybrid pick visual servo node testing.
 
 This launches only the visual_servo_node with configurable parameters,
 without the adapter or perception nodes. Useful for bench testing with
 bags or simulated detection feeds.
+
+The hybrid pick pipeline requires MoveIt Servo to be available for the
+FINAL_SERVO phase. The adapter must be configured with both move_group
+and moveit_servo support since this node sends per-message mode overrides.
 """
 
 import os
@@ -43,7 +47,7 @@ def generate_launch_description():
     except FileNotFoundError:
         pass
 
-    control_cfg = vs_cfg.get('control', {})
+    servo_ctrl = vs_cfg.get('servo_control', {})
     debug_cfg = vs_cfg.get('debug', {})
 
     return LaunchDescription([
@@ -96,71 +100,104 @@ def generate_launch_description():
             name='visual_servo_node',
             output='screen',
             parameters=[{
+                # Topics
                 'rgb_topic': LaunchConfiguration('rgb_topic'),
                 'camera_info_topic': LaunchConfiguration('camera_info_topic'),
                 'depth_topic': LaunchConfiguration('depth_topic'),
                 'detection_topic': LaunchConfiguration('detection_topic'),
                 'output_topic': LaunchConfiguration('output_topic'),
+                'joint_states_topic': str(vs_cfg.get(
+                    'joint_states_topic', '/joint_states')),
+                # Frames
                 'reference_frame': LaunchConfiguration('reference_frame'),
                 'camera_optical_frame': LaunchConfiguration('camera_optical_frame'),
+                'ee_frame': str(vs_cfg.get('ee_frame', 'piper_link6')),
+                'arm_base_frame': str(vs_cfg.get('arm_base_frame', 'piper_base_link')),
+                # General
                 'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
-                'output_delta_horizon_sec': float(vs_cfg.get('output_delta_horizon_sec', 0.0)),
-                'use_depth': bool(vs_cfg.get('use_depth', False)),
                 'target_class': str(vs_cfg.get('target_class', '')),
                 'min_detection_confidence': float(
                     vs_cfg.get('min_detection_confidence', 0.4)),
-                'min_tracking_confidence': float(
-                    vs_cfg.get('min_tracking_confidence', 0.5)),
+                # Timeouts
                 'lost_target_timeout_sec': float(
-                    vs_cfg.get('lost_target_timeout_sec', 0.3)),
+                    vs_cfg.get('lost_target_timeout_sec', 2.0)),
                 'acquire_timeout_sec': float(
                     vs_cfg.get('acquire_timeout_sec', 5.0)),
-                'image_center_tolerance_px': float(
-                    vs_cfg.get('image_center_tolerance_px', 8.0)),
-                'grasp_standoff_m': float(vs_cfg.get('grasp_standoff_m', 0.115)),
-                'grasp_depth_tolerance_m': float(
-                    vs_cfg.get('grasp_depth_tolerance_m', 0.015)),
-                'depth_sample_anchor_x': float(
-                    vs_cfg.get('depth_sample_anchor_x', 0.50)),
-                'depth_sample_anchor_y': float(
-                    vs_cfg.get('depth_sample_anchor_y', 0.68)),
-                'depth_roi_half_size_px': int(vs_cfg.get('depth_roi_half_size_px', 8)),
+                'estimate_timeout_sec': float(
+                    vs_cfg.get('estimate_timeout_sec', 3.0)),
+                'pregrasp_timeout_sec': float(
+                    vs_cfg.get('pregrasp_timeout_sec', 15.0)),
+                'final_servo_timeout_sec': float(
+                    vs_cfg.get('final_servo_timeout_sec', 10.0)),
+                'verify_timeout_sec': float(
+                    vs_cfg.get('verify_timeout_sec', 2.0)),
+                'lift_timeout_sec': float(
+                    vs_cfg.get('lift_timeout_sec', 10.0)),
+                # Depth sampling
+                'depth_roi_body_top_frac': float(
+                    vs_cfg.get('depth_roi_body_top_frac', 0.30)),
+                'depth_roi_body_bottom_frac': float(
+                    vs_cfg.get('depth_roi_body_bottom_frac', 0.90)),
+                'depth_roi_body_left_frac': float(
+                    vs_cfg.get('depth_roi_body_left_frac', 0.20)),
+                'depth_roi_body_right_frac': float(
+                    vs_cfg.get('depth_roi_body_right_frac', 0.80)),
                 'min_valid_depth_pixels': int(
-                    vs_cfg.get('min_valid_depth_pixels', 12)),
+                    vs_cfg.get('min_valid_depth_pixels', 10)),
                 'depth_sample_max_iqr_m': float(
-                    vs_cfg.get('depth_sample_max_iqr_m', 0.015)),
+                    vs_cfg.get('depth_sample_max_iqr_m', 0.03)),
                 'depth_stale_timeout_sec': float(
-                    vs_cfg.get('depth_stale_timeout_sec', 0.25)),
-                'centering_stable_cycles': int(
-                    vs_cfg.get('centering_stable_cycles', 3)),
-                'close_depth_stable_frames': int(
-                    vs_cfg.get('close_depth_stable_frames', 3)),
-                'grasp_settle_sec': float(vs_cfg.get('grasp_settle_sec', 0.75)),
-                'lift_distance_m': float(vs_cfg.get('lift_distance_m', 0.08)),
-                'max_approach_distance_m': float(
-                    vs_cfg.get('max_approach_distance_m', 0.50)),
-                'approach_stall_window_sec': float(
-                    vs_cfg.get('approach_stall_window_sec', 1.0)),
-                'approach_min_progress_m': float(
-                    vs_cfg.get('approach_min_progress_m', 0.01)),
+                    vs_cfg.get('depth_stale_timeout_sec', 1.0)),
+                # Hybrid pick
+                'pregrasp_offset_m': float(
+                    vs_cfg.get('pregrasp_offset_m', 0.08)),
+                'final_servo_distance_m': float(
+                    vs_cfg.get('final_servo_distance_m', 0.04)),
+                'grasp_settle_sec': float(
+                    vs_cfg.get('grasp_settle_sec', 1.0)),
+                'lift_distance_m': float(
+                    vs_cfg.get('lift_distance_m', 0.08)),
+                'retreat_distance_m': float(
+                    vs_cfg.get('retreat_distance_m', 0.05)),
+                # Grasp orientation
+                'bottle_grasp_orientation_x': float(
+                    vs_cfg.get('bottle_grasp_orientation_x', 1.0)),
+                'bottle_grasp_orientation_y': float(
+                    vs_cfg.get('bottle_grasp_orientation_y', 0.0)),
+                'bottle_grasp_orientation_z': float(
+                    vs_cfg.get('bottle_grasp_orientation_z', 0.0)),
+                'bottle_grasp_orientation_w': float(
+                    vs_cfg.get('bottle_grasp_orientation_w', 0.0)),
+                # Convergence
+                'final_position_tolerance_m': float(
+                    vs_cfg.get('final_position_tolerance_m', 0.008)),
+                'final_image_tolerance_px': float(
+                    vs_cfg.get('final_image_tolerance_px', 12.0)),
+                'final_convergence_cycles': int(
+                    vs_cfg.get('final_convergence_cycles', 3)),
+                # Gripper
                 'open_gripper_command': float(
                     vs_cfg.get('open_gripper_command', 1.0)),
                 'close_gripper_command': float(
                     vs_cfg.get('close_gripper_command', 0.0)),
-                'tracker_type': str(vs_cfg.get('tracker_type', 'klt')),
-                'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
-                'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),
-                'klt_min_distance': float(vs_cfg.get('klt_min_distance', 5.0)),
-                'klt_window_size': int(vs_cfg.get('klt_window_size', 10)),
-                'klt_pyramid_levels': int(vs_cfg.get('klt_pyramid_levels', 3)),
-                'control.lambda_xy': float(control_cfg.get('lambda_xy', 0.3)),
-                'control.lambda_z': float(control_cfg.get('lambda_z', 0.1)),
-                'control.lambda_rz': float(control_cfg.get('lambda_rz', 0.1)),
-                'control.max_linear_velocity': float(
-                    control_cfg.get('max_linear_velocity', 0.08)),
-                'control.max_angular_velocity': float(
-                    control_cfg.get('max_angular_velocity', 0.30)),
-                'control.ramp_up_steps': int(control_cfg.get('ramp_up_steps', 5)),
+                'grasp_success_min_width': float(
+                    vs_cfg.get('grasp_success_min_width', 0.003)),
+                'gripper_closed_position': float(
+                    vs_cfg.get('gripper_closed_position', 0.0)),
+                'gripper_joint_name': str(
+                    vs_cfg.get('gripper_joint_name', 'piper_joint7')),
+                # Servo control
+                'servo_control.lambda_xy': float(
+                    servo_ctrl.get('lambda_xy', 2.0)),
+                'servo_control.lambda_z': float(
+                    servo_ctrl.get('lambda_z', 2.0)),
+                'servo_control.max_linear_velocity': float(
+                    servo_ctrl.get('max_linear_velocity', 0.05)),
+                'servo_control.max_angular_velocity': float(
+                    servo_ctrl.get('max_angular_velocity', 0.20)),
+                'servo_control.ramp_up_steps': int(
+                    servo_ctrl.get('ramp_up_steps', 3)),
+                # Debug
                 'debug.publish_overlay': bool(
                     debug_cfg.get('publish_overlay', True)),
                 'debug.overlay_topic': str(

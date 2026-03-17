@@ -17,9 +17,8 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
-#include <utility>
 
-#include <opencv2/video/tracking.hpp>
+#include <opencv2/imgproc.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
@@ -44,12 +43,14 @@ std::string state_to_string(ServoState state)
   switch (state) {
     case ServoState::IDLE: return "IDLE";
     case ServoState::ACQUIRE: return "ACQUIRE";
-    case ServoState::TRACK: return "TRACK";
-    case ServoState::ALIGN_XY: return "ALIGN_XY";
+    case ServoState::ESTIMATE_BOTTLE_3D: return "ESTIMATE_BOTTLE_3D";
     case ServoState::OPEN_GRIPPER: return "OPEN_GRIPPER";
-    case ServoState::APPROACH_DEPTH: return "APPROACH_DEPTH";
+    case ServoState::PLAN_PREGRASP: return "PLAN_PREGRASP";
+    case ServoState::EXEC_PREGRASP: return "EXEC_PREGRASP";
+    case ServoState::FINAL_SERVO: return "FINAL_SERVO";
     case ServoState::CLOSE_GRIPPER: return "CLOSE_GRIPPER";
-    case ServoState::LIFT: return "LIFT";
+    case ServoState::VERIFY_GRASP: return "VERIFY_GRASP";
+    case ServoState::LIFT_RETREAT: return "LIFT_RETREAT";
     case ServoState::DONE: return "DONE";
     case ServoState::LOST: return "LOST";
     default: return "UNKNOWN";
@@ -59,6 +60,7 @@ std::string state_to_string(ServoState state)
 VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 : Node("visual_servo_node", options)
 {
+  // Declare parameters — topics
   this->declare_parameter("rgb_topic", "/piper/wrist_camera/piper_d405/color/image_rect_raw");
   this->declare_parameter(
     "camera_info_topic",
@@ -66,132 +68,163 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("depth_topic", "/piper/wrist_camera/piper_d405/depth/image_rect_raw");
   this->declare_parameter("detection_topic", "/manipulation/target_detections");
   this->declare_parameter("output_topic", "/manipulation/policy_output");
-  this->declare_parameter("use_depth", true);
-  this->declare_parameter("control_rate_hz", 20.0);
-  this->declare_parameter("output_delta_horizon_sec", 0.0);
-  this->declare_parameter("target_class", "");
-  this->declare_parameter("min_detection_confidence", 0.4);
-  this->declare_parameter("min_tracking_confidence", 0.5);
-  this->declare_parameter("lost_target_timeout_sec", 0.3);
-  this->declare_parameter("acquire_timeout_sec", 5.0);
-  this->declare_parameter("image_center_tolerance_px", 8.0);
+  this->declare_parameter("joint_states_topic", "/joint_states");
+
+  // Declare parameters — frames
   this->declare_parameter("reference_frame", "piper_base_link");
   this->declare_parameter("camera_optical_frame", "piper_camera_optical_frame");
   this->declare_parameter("ee_frame", "piper_link6");
   this->declare_parameter("arm_base_frame", "piper_base_link");
-  this->declare_parameter("grasp_standoff_m", 0.115);
-  this->declare_parameter("grasp_depth_tolerance_m", 0.015);
-  this->declare_parameter("depth_sample_anchor_x", 0.50);
-  this->declare_parameter("depth_sample_anchor_y", 0.68);
-  this->declare_parameter("depth_roi_half_size_px", 8);
-  this->declare_parameter("min_valid_depth_pixels", 12);
-  this->declare_parameter("depth_sample_max_iqr_m", 0.015);
-  this->declare_parameter("depth_stale_timeout_sec", 0.25);
-  this->declare_parameter("centering_stable_cycles", 3);
-  this->declare_parameter("close_depth_stable_frames", 3);
-  this->declare_parameter("grasp_settle_sec", 0.75);
+
+  // Declare parameters — general
+  this->declare_parameter("control_rate_hz", 20.0);
+  this->declare_parameter("target_class", "");
+  this->declare_parameter("min_detection_confidence", 0.4);
+
+  // Declare parameters — timeouts
+  this->declare_parameter("lost_target_timeout_sec", 2.0);
+  this->declare_parameter("acquire_timeout_sec", 5.0);
+  this->declare_parameter("estimate_timeout_sec", 3.0);
+  this->declare_parameter("pregrasp_timeout_sec", 15.0);
+  this->declare_parameter("final_servo_timeout_sec", 10.0);
+  this->declare_parameter("verify_timeout_sec", 2.0);
+  this->declare_parameter("lift_timeout_sec", 10.0);
+
+  // Declare parameters — depth sampling
+  this->declare_parameter("depth_roi_body_top_frac", 0.30);
+  this->declare_parameter("depth_roi_body_bottom_frac", 0.90);
+  this->declare_parameter("depth_roi_body_left_frac", 0.20);
+  this->declare_parameter("depth_roi_body_right_frac", 0.80);
+  this->declare_parameter("min_valid_depth_pixels", 10);
+  this->declare_parameter("depth_sample_max_iqr_m", 0.03);
+  this->declare_parameter("depth_stale_timeout_sec", 1.0);
+
+  // Declare parameters — hybrid pick
+  this->declare_parameter("pregrasp_offset_m", 0.08);
+  this->declare_parameter("final_servo_distance_m", 0.04);
+  this->declare_parameter("grasp_settle_sec", 1.0);
   this->declare_parameter("lift_distance_m", 0.08);
-  this->declare_parameter("max_approach_distance_m", 0.50);
-  this->declare_parameter("approach_stall_window_sec", 1.0);
-  this->declare_parameter("approach_min_progress_m", 0.01);
-  this->declare_parameter("blind_approach_depth_threshold_m", 0.30);
-  this->declare_parameter("blind_approach_velocity_fraction", 0.5);
-  this->declare_parameter("blind_approach_max_distance_m", 0.20);
+  this->declare_parameter("retreat_distance_m", 0.05);
+
+  // Declare parameters — grasp orientation template
+  this->declare_parameter("bottle_grasp_orientation_x", 1.0);
+  this->declare_parameter("bottle_grasp_orientation_y", 0.0);
+  this->declare_parameter("bottle_grasp_orientation_z", 0.0);
+  this->declare_parameter("bottle_grasp_orientation_w", 0.0);
+
+  // Declare parameters — convergence
+  this->declare_parameter("final_position_tolerance_m", 0.008);
+  this->declare_parameter("final_image_tolerance_px", 12.0);
+  this->declare_parameter("final_convergence_cycles", 3);
+
+  // Declare parameters — gripper
   this->declare_parameter("open_gripper_command", 1.0);
   this->declare_parameter("close_gripper_command", 0.0);
+  this->declare_parameter("grasp_success_min_width", 0.003);
+  this->declare_parameter("gripper_closed_position", 0.0);
+  this->declare_parameter("gripper_joint_name", "piper_joint7");
 
-  this->declare_parameter("tracker_type", "klt");
-  this->declare_parameter("klt_max_features", 200);
-  this->declare_parameter("klt_quality_level", 0.01);
-  this->declare_parameter("klt_min_distance", 5.0);
-  this->declare_parameter("klt_window_size", 10);
-  this->declare_parameter("klt_pyramid_levels", 3);
+  // Declare parameters — servo control
+  this->declare_parameter("servo_control.lambda_xy", 2.0);
+  this->declare_parameter("servo_control.lambda_z", 2.0);
+  this->declare_parameter("servo_control.max_linear_velocity", 0.05);
+  this->declare_parameter("servo_control.max_angular_velocity", 0.20);
+  this->declare_parameter("servo_control.ramp_up_steps", 3);
 
-  this->declare_parameter("control.lambda_xy", 0.3);
-  this->declare_parameter("control.lambda_z", 0.1);
-  this->declare_parameter("control.lambda_rz", 0.1);
-  this->declare_parameter("control.max_linear_velocity", 0.08);
-  this->declare_parameter("control.max_angular_velocity", 0.30);
-  this->declare_parameter("control.ramp_up_steps", 5);
-
+  // Declare parameters — debug
   this->declare_parameter("debug.publish_overlay", true);
   this->declare_parameter("debug.overlay_topic", "/visual_servo/debug_image");
   this->declare_parameter("debug.publish_state", true);
   this->declare_parameter("debug.state_topic", "/visual_servo/state");
 
+  // Read parameters — topics
   rgb_topic_ = this->get_parameter("rgb_topic").as_string();
   camera_info_topic_ = this->get_parameter("camera_info_topic").as_string();
   depth_topic_ = this->get_parameter("depth_topic").as_string();
   detection_topic_ = this->get_parameter("detection_topic").as_string();
   output_topic_ = this->get_parameter("output_topic").as_string();
-  use_depth_ = this->get_parameter("use_depth").as_bool();
-  control_rate_hz_ = this->get_parameter("control_rate_hz").as_double();
-  output_delta_horizon_sec_ = this->get_parameter("output_delta_horizon_sec").as_double();
-  target_class_ = this->get_parameter("target_class").as_string();
-  min_detection_confidence_ = this->get_parameter("min_detection_confidence").as_double();
-  min_tracking_confidence_ = this->get_parameter("min_tracking_confidence").as_double();
-  lost_target_timeout_sec_ = this->get_parameter("lost_target_timeout_sec").as_double();
-  acquire_timeout_sec_ = this->get_parameter("acquire_timeout_sec").as_double();
-  image_center_tolerance_px_ = this->get_parameter("image_center_tolerance_px").as_double();
+  joint_states_topic_ = this->get_parameter("joint_states_topic").as_string();
+
+  // Read parameters — frames
   reference_frame_ = this->get_parameter("reference_frame").as_string();
   camera_optical_frame_ = this->get_parameter("camera_optical_frame").as_string();
   ee_frame_ = this->get_parameter("ee_frame").as_string();
   arm_base_frame_ = this->get_parameter("arm_base_frame").as_string();
-  grasp_standoff_m_ = this->get_parameter("grasp_standoff_m").as_double();
-  grasp_depth_tolerance_m_ = this->get_parameter("grasp_depth_tolerance_m").as_double();
-  depth_sample_anchor_x_ = this->get_parameter("depth_sample_anchor_x").as_double();
-  depth_sample_anchor_y_ = this->get_parameter("depth_sample_anchor_y").as_double();
-  depth_roi_half_size_px_ = this->get_parameter("depth_roi_half_size_px").as_int();
+
+  // Read parameters — general
+  control_rate_hz_ = this->get_parameter("control_rate_hz").as_double();
+  target_class_ = this->get_parameter("target_class").as_string();
+  min_detection_confidence_ = this->get_parameter("min_detection_confidence").as_double();
+
+  // Read parameters — timeouts
+  lost_target_timeout_sec_ = this->get_parameter("lost_target_timeout_sec").as_double();
+  acquire_timeout_sec_ = this->get_parameter("acquire_timeout_sec").as_double();
+  estimate_timeout_sec_ = this->get_parameter("estimate_timeout_sec").as_double();
+  pregrasp_timeout_sec_ = this->get_parameter("pregrasp_timeout_sec").as_double();
+  final_servo_timeout_sec_ = this->get_parameter("final_servo_timeout_sec").as_double();
+  verify_timeout_sec_ = this->get_parameter("verify_timeout_sec").as_double();
+  lift_timeout_sec_ = this->get_parameter("lift_timeout_sec").as_double();
+
+  // Read parameters — depth sampling
+  depth_roi_body_top_frac_ = this->get_parameter("depth_roi_body_top_frac").as_double();
+  depth_roi_body_bottom_frac_ = this->get_parameter("depth_roi_body_bottom_frac").as_double();
+  depth_roi_body_left_frac_ = this->get_parameter("depth_roi_body_left_frac").as_double();
+  depth_roi_body_right_frac_ = this->get_parameter("depth_roi_body_right_frac").as_double();
   min_valid_depth_pixels_ = this->get_parameter("min_valid_depth_pixels").as_int();
   depth_sample_max_iqr_m_ = this->get_parameter("depth_sample_max_iqr_m").as_double();
   depth_stale_timeout_sec_ = this->get_parameter("depth_stale_timeout_sec").as_double();
-  centering_stable_cycles_ = this->get_parameter("centering_stable_cycles").as_int();
-  close_depth_stable_frames_ = this->get_parameter("close_depth_stable_frames").as_int();
+
+  // Read parameters — hybrid pick
+  pregrasp_offset_m_ = this->get_parameter("pregrasp_offset_m").as_double();
+  final_servo_distance_m_ = this->get_parameter("final_servo_distance_m").as_double();
   grasp_settle_sec_ = this->get_parameter("grasp_settle_sec").as_double();
   lift_distance_m_ = this->get_parameter("lift_distance_m").as_double();
-  max_approach_distance_m_ = this->get_parameter("max_approach_distance_m").as_double();
-  approach_stall_window_sec_ = this->get_parameter("approach_stall_window_sec").as_double();
-  approach_min_progress_m_ = this->get_parameter("approach_min_progress_m").as_double();
-  blind_approach_depth_threshold_m_ =
-    this->get_parameter("blind_approach_depth_threshold_m").as_double();
-  blind_approach_velocity_fraction_ =
-    this->get_parameter("blind_approach_velocity_fraction").as_double();
-  blind_approach_max_distance_m_ =
-    this->get_parameter("blind_approach_max_distance_m").as_double();
+  retreat_distance_m_ = this->get_parameter("retreat_distance_m").as_double();
+
+  // Read parameters — grasp orientation
+  bottle_grasp_orient_x_ = this->get_parameter("bottle_grasp_orientation_x").as_double();
+  bottle_grasp_orient_y_ = this->get_parameter("bottle_grasp_orientation_y").as_double();
+  bottle_grasp_orient_z_ = this->get_parameter("bottle_grasp_orientation_z").as_double();
+  bottle_grasp_orient_w_ = this->get_parameter("bottle_grasp_orientation_w").as_double();
+
+  // Read parameters — convergence
+  final_position_tolerance_m_ = this->get_parameter("final_position_tolerance_m").as_double();
+  final_image_tolerance_px_ = this->get_parameter("final_image_tolerance_px").as_double();
+  final_convergence_cycles_ = this->get_parameter("final_convergence_cycles").as_int();
+
+  // Read parameters — gripper
   open_gripper_command_ = this->get_parameter("open_gripper_command").as_double();
   close_gripper_command_ = this->get_parameter("close_gripper_command").as_double();
+  grasp_success_min_width_ = this->get_parameter("grasp_success_min_width").as_double();
+  gripper_closed_position_ = this->get_parameter("gripper_closed_position").as_double();
+  gripper_joint_name_ = this->get_parameter("gripper_joint_name").as_string();
 
-  tracker_type_ = this->get_parameter("tracker_type").as_string();
-  klt_max_features_ = this->get_parameter("klt_max_features").as_int();
-  klt_quality_level_ = this->get_parameter("klt_quality_level").as_double();
-  klt_min_distance_ = this->get_parameter("klt_min_distance").as_double();
-  klt_window_size_ = this->get_parameter("klt_window_size").as_int();
-  klt_pyramid_levels_ = this->get_parameter("klt_pyramid_levels").as_int();
+  // Read parameters — servo control
+  servo_lambda_xy_ = this->get_parameter("servo_control.lambda_xy").as_double();
+  servo_lambda_z_ = this->get_parameter("servo_control.lambda_z").as_double();
+  servo_max_linear_velocity_ = this->get_parameter("servo_control.max_linear_velocity").as_double();
+  servo_max_angular_velocity_ =
+    this->get_parameter("servo_control.max_angular_velocity").as_double();
+  servo_ramp_up_steps_ = this->get_parameter("servo_control.ramp_up_steps").as_int();
 
-  lambda_xy_ = this->get_parameter("control.lambda_xy").as_double();
-  lambda_z_ = this->get_parameter("control.lambda_z").as_double();
-  lambda_rz_ = this->get_parameter("control.lambda_rz").as_double();
-  max_linear_velocity_ = this->get_parameter("control.max_linear_velocity").as_double();
-  max_angular_velocity_ = this->get_parameter("control.max_angular_velocity").as_double();
-  ramp_up_steps_ = this->get_parameter("control.ramp_up_steps").as_int();
-
+  // Read parameters — debug
   publish_overlay_ = this->get_parameter("debug.publish_overlay").as_bool();
   overlay_topic_ = this->get_parameter("debug.overlay_topic").as_string();
   publish_state_flag_ = this->get_parameter("debug.publish_state").as_bool();
   state_topic_ = this->get_parameter("debug.state_topic").as_string();
 
+  // Initialize TF
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
+  // Create subscriptions
   rgb_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     rgb_topic_, rclcpp::SensorDataQoS(),
     std::bind(&VisualServoNode::image_callback, this, std::placeholders::_1));
 
-  if (use_depth_) {
-    depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-      depth_topic_, rclcpp::SensorDataQoS(),
-      std::bind(&VisualServoNode::depth_callback, this, std::placeholders::_1));
-  }
+  depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+    depth_topic_, rclcpp::SensorDataQoS(),
+    std::bind(&VisualServoNode::depth_callback, this, std::placeholders::_1));
 
   camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
     camera_info_topic_, rclcpp::SensorDataQoS(),
@@ -201,6 +234,11 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     detection_topic_, 10,
     std::bind(&VisualServoNode::detection_callback, this, std::placeholders::_1));
 
+  joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+    joint_states_topic_, 10,
+    std::bind(&VisualServoNode::joint_state_callback, this, std::placeholders::_1));
+
+  // Create publishers
   policy_output_pub_ = this->create_publisher<manipulation_msgs::msg::PolicyOutput>(
     output_topic_, 10);
 
@@ -212,33 +250,32 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     debug_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(overlay_topic_, 10);
   }
 
+  // Create control timer
   auto period = std::chrono::duration<double>(1.0 / std::max(1.0, control_rate_hz_));
   control_timer_ = this->create_wall_timer(
     std::chrono::duration_cast<std::chrono::nanoseconds>(period),
     std::bind(&VisualServoNode::control_timer_callback, this));
 
   state_entry_time_ = this->now();
-  last_track_time_ = this->now();
-  last_processed_frame_stamp_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
 
   RCLCPP_INFO(
     this->get_logger(),
-    "VisualServoNode initialized: rgb=%s depth=%s detections=%s output=%s rate=%.1f Hz",
+    "HybridPickNode initialized: rgb=%s depth=%s detections=%s output=%s rate=%.1f Hz",
     rgb_topic_.c_str(), depth_topic_.c_str(), detection_topic_.c_str(), output_topic_.c_str(),
     control_rate_hz_);
   RCLCPP_INFO(
     this->get_logger(),
-    "Pick config: use_depth=%s standoff=%.3f tol=%.3f lift=%.3f max_approach=%.3f",
-    use_depth_ ? "true" : "false", grasp_standoff_m_, grasp_depth_tolerance_m_,
-    lift_distance_m_, max_approach_distance_m_);
+    "Pick config: pregrasp_offset=%.3f final_servo_dist=%.3f lift=%.3f retreat=%.3f",
+    pregrasp_offset_m_, final_servo_distance_m_, lift_distance_m_, retreat_distance_m_);
   RCLCPP_INFO(
     this->get_logger(),
-    "Depth sample: anchor=(%.2f, %.2f) half_size=%d min_valid=%d max_iqr=%.3f "
-    "close_stable=%d stall_window=%.2f min_progress=%.3f",
-    depth_sample_anchor_x_, depth_sample_anchor_y_, depth_roi_half_size_px_,
-    min_valid_depth_pixels_, depth_sample_max_iqr_m_, close_depth_stable_frames_,
-    approach_stall_window_sec_, approach_min_progress_m_);
+    "Grasp orient: [%.3f, %.3f, %.3f, %.3f] pos_tol=%.4f img_tol=%.1f conv_cycles=%d",
+    bottle_grasp_orient_x_, bottle_grasp_orient_y_,
+    bottle_grasp_orient_z_, bottle_grasp_orient_w_,
+    final_position_tolerance_m_, final_image_tolerance_px_, final_convergence_cycles_);
 }
+
+// --- Sensor callbacks ---
 
 void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
 {
@@ -246,27 +283,22 @@ void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedP
     cv::Mat converted;
     if (msg->encoding == sensor_msgs::image_encodings::BGR8) {
       const cv::Mat view(
-        static_cast<int>(msg->height),
-        static_cast<int>(msg->width),
-        CV_8UC3,
+        static_cast<int>(msg->height), static_cast<int>(msg->width), CV_8UC3,
         const_cast<unsigned char *>(msg->data.data()),
         static_cast<std::size_t>(msg->step));
       converted = view.clone();
     } else if (msg->encoding == sensor_msgs::image_encodings::RGB8) {
       const cv::Mat view(
-        static_cast<int>(msg->height),
-        static_cast<int>(msg->width),
-        CV_8UC3,
+        static_cast<int>(msg->height), static_cast<int>(msg->width), CV_8UC3,
         const_cast<unsigned char *>(msg->data.data()),
         static_cast<std::size_t>(msg->step));
       cv::cvtColor(view, converted, cv::COLOR_RGB2BGR);
     } else {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
-        "Unsupported image encoding: %s (expected bgr8/rgb8)", msg->encoding.c_str());
+        "Unsupported image encoding: %s", msg->encoding.c_str());
       return;
     }
-
     std::lock_guard<std::mutex> lock(image_mutex_);
     latest_frame_ = converted;
     latest_frame_stamp_ = msg->header.stamp;
@@ -286,16 +318,11 @@ void VisualServoNode::depth_callback(const sensor_msgs::msg::Image::ConstSharedP
     if (!depth_encoding_warned_) {
       RCLCPP_WARN(
         this->get_logger(),
-        "Depth frame rejected from %s: %s", depth_topic_.c_str(), error_message.c_str());
+        "Depth frame rejected: %s", error_message.c_str());
       depth_encoding_warned_ = true;
-    } else {
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(), *this->get_clock(), 5000,
-        "Depth frame rejected from %s: %s", depth_topic_.c_str(), error_message.c_str());
     }
     return;
   }
-
   {
     std::lock_guard<std::mutex> lock(depth_mutex_);
     latest_depth_frame_ = depth_image;
@@ -311,22 +338,20 @@ void VisualServoNode::camera_info_callback(
   if (camera_info_received_) {
     return;
   }
-
   if (msg->k[0] > 0.0 && msg->k[4] > 0.0) {
-    const double px = msg->k[0];
-    const double py = msg->k[4];
-    const double u0 = msg->k[2];
-    const double v0 = msg->k[5];
-    image_width_ = static_cast<int>(msg->width);
-    image_height_ = static_cast<int>(msg->height);
+    intrinsics_.fx = msg->k[0];
+    intrinsics_.fy = msg->k[4];
+    intrinsics_.cx = msg->k[2];
+    intrinsics_.cy = msg->k[5];
+    intrinsics_.width = static_cast<int>(msg->width);
+    intrinsics_.height = static_cast<int>(msg->height);
     camera_info_received_ = true;
-    desired_x_ = u0;
-    desired_y_ = v0;
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Camera intrinsics received: fx=%.1f fy=%.1f cx=%.1f cy=%.1f [%dx%d]",
-      px, py, u0, v0, image_width_, image_height_);
+      "Camera intrinsics: fx=%.1f fy=%.1f cx=%.1f cy=%.1f [%dx%d]",
+      intrinsics_.fx, intrinsics_.fy, intrinsics_.cx, intrinsics_.cy,
+      intrinsics_.width, intrinsics_.height);
   }
 }
 
@@ -347,7 +372,6 @@ void VisualServoNode::detection_callback(
       score = static_cast<float>(det.results[0].hypothesis.score);
       class_id = det.results[0].hypothesis.class_id;
     }
-
     if (score < min_detection_confidence_) {
       continue;
     }
@@ -372,44 +396,34 @@ void VisualServoNode::detection_callback(
   std::lock_guard<std::mutex> lock(detection_mutex_);
   latest_detection_roi_ = cv::Rect2d(cx - w / 2.0, cy - h / 2.0, w, h);
   latest_detection_confidence_ = best_score;
-  latest_detection_class_ = best->results.empty() ? "" : best->results[0].hypothesis.class_id;
   detection_available_ = true;
   latest_detection_stamp_ = msg->header.stamp;
 }
 
+void VisualServoNode::joint_state_callback(
+  const sensor_msgs::msg::JointState::ConstSharedPtr & msg)
+{
+  std::lock_guard<std::mutex> lock(joint_state_mutex_);
+  latest_joint_state_ = msg;
+}
+
+// --- Control loop ---
+
 void VisualServoNode::control_timer_callback()
 {
   switch (state_) {
-    case ServoState::IDLE:
-      handle_idle();
-      break;
-    case ServoState::ACQUIRE:
-      handle_acquire();
-      break;
-    case ServoState::TRACK:
-      handle_track();
-      break;
-    case ServoState::ALIGN_XY:
-      handle_align_xy();
-      break;
-    case ServoState::OPEN_GRIPPER:
-      handle_open_gripper();
-      break;
-    case ServoState::APPROACH_DEPTH:
-      handle_approach_depth();
-      break;
-    case ServoState::CLOSE_GRIPPER:
-      handle_close_gripper();
-      break;
-    case ServoState::LIFT:
-      handle_lift();
-      break;
-    case ServoState::DONE:
-      handle_done();
-      break;
-    case ServoState::LOST:
-      handle_lost();
-      break;
+    case ServoState::IDLE: handle_idle(); break;
+    case ServoState::ACQUIRE: handle_acquire(); break;
+    case ServoState::ESTIMATE_BOTTLE_3D: handle_estimate_bottle_3d(); break;
+    case ServoState::OPEN_GRIPPER: handle_open_gripper(); break;
+    case ServoState::PLAN_PREGRASP: handle_plan_pregrasp(); break;
+    case ServoState::EXEC_PREGRASP: handle_exec_pregrasp(); break;
+    case ServoState::FINAL_SERVO: handle_final_servo(); break;
+    case ServoState::CLOSE_GRIPPER: handle_close_gripper(); break;
+    case ServoState::VERIFY_GRASP: handle_verify_grasp(); break;
+    case ServoState::LIFT_RETREAT: handle_lift_retreat(); break;
+    case ServoState::DONE: handle_done(); break;
+    case ServoState::LOST: handle_lost(); break;
   }
 
   if (publish_state_flag_) {
@@ -422,7 +436,6 @@ void VisualServoNode::transition_to(ServoState new_state)
   if (new_state == state_) {
     return;
   }
-
   RCLCPP_INFO(
     this->get_logger(), "State transition: %s -> %s",
     state_to_string(state_).c_str(), state_to_string(new_state).c_str());
@@ -431,128 +444,119 @@ void VisualServoNode::transition_to(ServoState new_state)
   ramp_step_ = 0;
 
   if (new_state == ServoState::ACQUIRE) {
-    reset_pick_progress();
-  } else if (new_state == ServoState::ALIGN_XY) {
-    centering_streak_ = 0;
-  } else if (new_state == ServoState::APPROACH_DEPTH) {
-    close_depth_streak_ = 0;
-    accumulated_approach_distance_m_ = 0.0;
-    blind_approach_distance_m_ = 0.0;
-    depth_progress_history_.clear();
-  } else if (new_state == ServoState::LIFT) {
-    accumulated_lift_distance_m_ = 0.0;
+    bottle_estimate_.reset();
+    convergence_streak_ = 0;
+    pregrasp_sent_ = false;
+    lift_phase_done_ = false;
+  } else if (new_state == ServoState::FINAL_SERVO) {
+    convergence_streak_ = 0;
+  } else if (new_state == ServoState::LIFT_RETREAT) {
+    lift_phase_done_ = false;
+    get_current_ee_pose(ee_pose_at_lift_start_);
   }
 }
 
-bool VisualServoNode::fetch_latest_frame(cv::Mat & frame)
+// --- Helpers ---
+
+bool VisualServoNode::fetch_latest_detection(cv::Rect2d & roi, float & confidence)
 {
-  std::lock_guard<std::mutex> lock(image_mutex_);
-  if (!frame_available_) {
+  std::lock_guard<std::mutex> lock(detection_mutex_);
+  if (!detection_available_) {
     return false;
   }
-  // Skip if this is the same frame we already processed (prevents
-  // re-running the tracker on stale data and accumulating duplicate deltas).
-  if (latest_frame_stamp_ == last_processed_frame_stamp_) {
-    return false;
-  }
-  frame = latest_frame_.clone();
-  last_processed_frame_stamp_ = latest_frame_stamp_;
+  roi = latest_detection_roi_;
+  confidence = latest_detection_confidence_;
+  detection_available_ = false;
   return true;
 }
 
-void VisualServoNode::reset_pick_progress()
+bool VisualServoNode::get_current_ee_pose(geometry_msgs::msg::PoseStamped & pose)
 {
-  centering_streak_ = 0;
-  close_depth_streak_ = 0;
-  accumulated_approach_distance_m_ = 0.0;
-  blind_approach_distance_m_ = 0.0;
-  accumulated_lift_distance_m_ = 0.0;
-  last_depth_sample_.reset();
-  depth_progress_history_.clear();
-}
-
-bool VisualServoNode::acquire_from_detection(const cv::Mat & frame)
-{
-  cv::Rect2d det_roi;
-  {
-    std::lock_guard<std::mutex> lock(detection_mutex_);
-    if (!detection_available_) {
-      return false;
-    }
-    det_roi = latest_detection_roi_;
-    detection_available_ = false;
-  }
-
-  det_roi.x = std::max(0.0, det_roi.x);
-  det_roi.y = std::max(0.0, det_roi.y);
-  det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
-  det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
-
-  if (det_roi.width < 10.0 || det_roi.height < 10.0) {
+  try {
+    auto tf = tf_buffer_->lookupTransform(
+      arm_base_frame_, ee_frame_, tf2::TimePointZero);
+    pose.header.frame_id = arm_base_frame_;
+    pose.header.stamp = tf.header.stamp;
+    pose.pose.position.x = tf.transform.translation.x;
+    pose.pose.position.y = tf.transform.translation.y;
+    pose.pose.position.z = tf.transform.translation.z;
+    pose.pose.orientation = tf.transform.rotation;
+    return true;
+  } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(
-      this->get_logger(), *this->get_clock(), 1000,
-      "Detection ROI too small: %.0fx%.0f", det_roi.width, det_roi.height);
+      this->get_logger(), *this->get_clock(), 2000,
+      "EE TF lookup failed: %s", ex.what());
     return false;
   }
-
-  if (!init_tracker(frame, det_roi)) {
-    return false;
-  }
-
-  tracked_roi_ = det_roi;
-  last_track_time_ = this->now();
-  return true;
 }
 
-bool VisualServoNode::update_tracking(const cv::Mat & frame)
+double VisualServoNode::get_gripper_width()
 {
-  // Fresh detections act as the source of truth at ~1 Hz; MIL propagates the
-  // ROI between detections so the servo loop stays locked to the bottle body.
-  {
-    std::lock_guard<std::mutex> lock(detection_mutex_);
-    if (detection_available_) {
-      cv::Rect2d det_roi = latest_detection_roi_;
-      detection_available_ = false;
-
-      det_roi.x = std::max(0.0, det_roi.x);
-      det_roi.y = std::max(0.0, det_roi.y);
-      det_roi.width = std::min(det_roi.width, static_cast<double>(frame.cols) - det_roi.x);
-      det_roi.height = std::min(det_roi.height, static_cast<double>(frame.rows) - det_roi.y);
-
-      if (det_roi.width >= 10.0 && det_roi.height >= 10.0) {
-        // Re-init the tracker so it tracks from the new detection position.
-        init_tracker(frame, det_roi);
-        tracked_roi_ = det_roi;
-        last_track_time_ = this->now();
-        tracking_confidence_ = 1.0F;
-        return true;
-      }
+  std::lock_guard<std::mutex> lock(joint_state_mutex_);
+  if (!latest_joint_state_) {
+    return -1.0;
+  }
+  for (std::size_t i = 0; i < latest_joint_state_->name.size(); ++i) {
+    if (latest_joint_state_->name[i] == gripper_joint_name_ &&
+      i < latest_joint_state_->position.size())
+    {
+      return latest_joint_state_->position[i];
     }
   }
-
-  const double since_track = (this->now() - last_track_time_).seconds();
-  if (since_track > lost_target_timeout_sec_) {
-    transition_to(ServoState::LOST);
-    return false;
-  }
-
-  cv::Rect2d updated_roi;
-  if (!update_tracker(frame, updated_roi)) {
-    transition_to(ServoState::LOST);
-    return false;
-  }
-
-  tracked_roi_ = updated_roi;
-  last_track_time_ = this->now();
-  return true;
+  return -1.0;
 }
+
+bool VisualServoNode::transform_point_to_arm_base(
+  const geometry_msgs::msg::Point & point_camera,
+  geometry_msgs::msg::Point & point_arm_base)
+{
+  try {
+    geometry_msgs::msg::PointStamped in;
+    in.header.frame_id = camera_optical_frame_;
+    in.header.stamp = rclcpp::Time(0);
+    in.point = point_camera;
+
+    geometry_msgs::msg::PointStamped out;
+    tf_buffer_->transform(in, out, arm_base_frame_);
+    point_arm_base = out.point;
+    return true;
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 2000,
+      "Camera->arm_base TF failed: %s", ex.what());
+    return false;
+  }
+}
+
+double VisualServoNode::compute_image_error(const cv::Rect2d & roi)
+{
+  if (!camera_info_received_) {
+    return 1e6;
+  }
+  const double feat_x = roi.x + roi.width * 0.5;
+  const double feat_y = roi.y + roi.height * 0.5;
+  const double err_x = feat_x - intrinsics_.cx;
+  const double err_y = feat_y - intrinsics_.cy;
+  return std::sqrt(err_x * err_x + err_y * err_y);
+}
+
+double VisualServoNode::compute_position_residual(
+  const geometry_msgs::msg::PoseStamped & current_ee,
+  const geometry_msgs::msg::Pose & target)
+{
+  const double dx = current_ee.pose.position.x - target.position.x;
+  const double dy = current_ee.pose.position.y - target.position.y;
+  const double dz = current_ee.pose.position.z - target.position.z;
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// --- State handlers ---
 
 void VisualServoNode::handle_idle()
 {
   if (!camera_info_received_) {
     return;
   }
-
   std::lock_guard<std::mutex> lock(detection_mutex_);
   if (detection_available_) {
     transition_to(ServoState::ACQUIRE);
@@ -568,612 +572,504 @@ void VisualServoNode::handle_acquire()
     return;
   }
 
-  cv::Mat frame;
-  if (!fetch_latest_frame(frame)) {
-    return;
-  }
-
-  if (acquire_from_detection(frame)) {
-    transition_to(ServoState::TRACK);
-  }
-}
-
-void VisualServoNode::handle_track()
-{
-  cv::Mat frame;
-  if (!fetch_latest_frame(frame)) {
-    return;
-  }
-
-  if (update_tracking(frame)) {
-    transition_to(ServoState::ALIGN_XY);
+  cv::Rect2d roi;
+  float confidence;
+  if (fetch_latest_detection(roi, confidence)) {
+    if (roi.width >= 10.0 && roi.height >= 10.0) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Target acquired: roi=(%.0f,%.0f,%.0fx%.0f) conf=%.2f",
+        roi.x, roi.y, roi.width, roi.height, confidence);
+      transition_to(ServoState::ESTIMATE_BOTTLE_3D);
+    }
   }
 }
 
-void VisualServoNode::handle_align_xy()
+void VisualServoNode::handle_estimate_bottle_3d()
 {
-  cv::Mat frame;
-  if (!fetch_latest_frame(frame)) {
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+  if (elapsed > estimate_timeout_sec_) {
+    RCLCPP_WARN(this->get_logger(), "3D estimation timed out after %.1f sec", elapsed);
+    transition_to(ServoState::LOST);
     return;
   }
 
-  if (!update_tracking(frame)) {
+  // Get latest detection ROI
+  cv::Rect2d det_roi;
+  {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    if (!detection_available_) {
+      return;  // Wait for a detection
+    }
+    det_roi = latest_detection_roi_;
+    detection_available_ = false;
+  }
+
+  // Get latest depth
+  cv::Mat depth;
+  {
+    std::lock_guard<std::mutex> lock(depth_mutex_);
+    if (!depth_available_) {
+      return;
+    }
+    const double age = std::abs((this->now() - latest_depth_stamp_).seconds());
+    if (age > depth_stale_timeout_sec_) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Depth stale by %.3f sec in ESTIMATE_BOTTLE_3D", age);
+      return;
+    }
+    depth = latest_depth_frame_.clone();
+  }
+
+  // Estimate 3D centroid in camera frame
+  auto estimate = estimate_bottle_3d(
+    depth, det_roi, intrinsics_,
+    depth_roi_body_top_frac_, depth_roi_body_bottom_frac_,
+    depth_roi_body_left_frac_, depth_roi_body_right_frac_,
+    static_cast<std::size_t>(std::max(1, min_valid_depth_pixels_)),
+    depth_sample_max_iqr_m_);
+
+  if (!estimate.has_value()) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "3D estimation failed: insufficient depth or high IQR");
     return;
   }
 
-  const double feat_x = tracked_roi_.x + tracked_roi_.width * 0.5;
-  const double feat_y = tracked_roi_.y + tracked_roi_.height * 0.5;
-  const double err_x = feat_x - desired_x_;
-  const double err_y = feat_y - desired_y_;
-  const double pixel_error = std::sqrt(err_x * err_x + err_y * err_y);
-  const bool centered = pixel_error <= image_center_tolerance_px_;
+  // Transform centroid to arm base frame
+  geometry_msgs::msg::Point bottle_in_arm_base;
+  if (!transform_point_to_arm_base(estimate->centroid_camera, bottle_in_arm_base)) {
+    return;
+  }
 
-  const auto centering_update = update_centering_streak(
-    centering_streak_, centered, centering_stable_cycles_);
-  centering_streak_ = centering_update.streak;
-
-  RCLCPP_INFO_THROTTLE(
+  RCLCPP_INFO(
     this->get_logger(),
-    *this->get_clock(), 500,
-    "[ALIGN_XY] feat=(%.1f,%.1f) desired=(%.1f,%.1f) err=(%.1f,%.1f) "
-    "px_err=%.1f tol=%.1f streak=%d/%d centered=%s",
-    feat_x, feat_y, desired_x_, desired_y_, err_x, err_y, pixel_error,
-    image_center_tolerance_px_, centering_streak_, centering_stable_cycles_,
-    centered ? "YES" : "NO");
+    "Bottle 3D estimate: camera=(%.3f,%.3f,%.3f) arm_base=(%.3f,%.3f,%.3f) "
+    "valid_px=%zu iqr=%.4f",
+    estimate->centroid_camera.x, estimate->centroid_camera.y, estimate->centroid_camera.z,
+    bottle_in_arm_base.x, bottle_in_arm_base.y, bottle_in_arm_base.z,
+    estimate->valid_pixels, estimate->depth_iqr_m);
 
-  const auto twist = compute_alignment_twist(feat_x, feat_y);
-  publish_policy_output(twist, tracking_confidence_);
+  bottle_estimate_ = estimate;
 
-  if (publish_overlay_) {
-    publish_debug_overlay(frame, tracked_roi_);
-  }
+  // Synthesize grasp and pre-grasp poses
+  grasp_pose_ = make_grasp_pose(
+    bottle_in_arm_base,
+    bottle_grasp_orient_x_, bottle_grasp_orient_y_,
+    bottle_grasp_orient_z_, bottle_grasp_orient_w_);
 
-  if (centering_update.stable) {
-    transition_to(ServoState::OPEN_GRIPPER);
-  }
+  pregrasp_pose_ = make_pregrasp_pose(grasp_pose_, pregrasp_offset_m_);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Grasp pose: [%.3f,%.3f,%.3f] Pre-grasp: [%.3f,%.3f,%.3f]",
+    grasp_pose_.position.x, grasp_pose_.position.y, grasp_pose_.position.z,
+    pregrasp_pose_.position.x, pregrasp_pose_.position.y, pregrasp_pose_.position.z);
+
+  transition_to(ServoState::OPEN_GRIPPER);
 }
 
 void VisualServoNode::handle_open_gripper()
 {
-  cv::Mat frame;
-  if (fetch_latest_frame(frame)) {
-    if (!update_tracking(frame)) {
-      return;
-    }
-    if (publish_overlay_) {
-      publish_debug_overlay(frame, tracked_roi_);
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+
+  RCLCPP_INFO_THROTTLE(
+    this->get_logger(), *this->get_clock(), 500,
+    "[OPEN_GRIPPER] cmd=%.2f settle=%.2f/%.2f",
+    open_gripper_command_, elapsed, grasp_settle_sec_);
+
+  publish_gripper_command(open_gripper_command_);
+
+  if (elapsed >= grasp_settle_sec_) {
+    transition_to(ServoState::PLAN_PREGRASP);
+  }
+}
+
+void VisualServoNode::handle_plan_pregrasp()
+{
+  // Send the pre-grasp pose once via MoveGroup
+  if (!pregrasp_sent_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Sending pre-grasp pose via MoveGroup: [%.3f,%.3f,%.3f]",
+      pregrasp_pose_.position.x, pregrasp_pose_.position.y, pregrasp_pose_.position.z);
+    publish_move_group_target(pregrasp_pose_);
+    pregrasp_sent_ = true;
+    return;
+  }
+
+  // Transition immediately to EXEC_PREGRASP — the adapter handles the async execution
+  transition_to(ServoState::EXEC_PREGRASP);
+}
+
+void VisualServoNode::handle_exec_pregrasp()
+{
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+  if (elapsed > pregrasp_timeout_sec_) {
+    RCLCPP_WARN(this->get_logger(), "Pre-grasp execution timed out after %.1f sec", elapsed);
+    transition_to(ServoState::LOST);
+    return;
+  }
+
+  // Check if EE has reached near the pre-grasp position
+  geometry_msgs::msg::PoseStamped current_ee;
+  if (!get_current_ee_pose(current_ee)) {
+    return;
+  }
+
+  const double residual = compute_position_residual(current_ee, pregrasp_pose_);
+
+  RCLCPP_INFO_THROTTLE(
+    this->get_logger(), *this->get_clock(), 1000,
+    "[EXEC_PREGRASP] residual=%.4f threshold=%.4f elapsed=%.1f",
+    residual, final_servo_distance_m_, elapsed);
+
+  // When EE is within final_servo_distance of the grasp pose, switch to servo
+  const double dist_to_grasp = compute_position_residual(current_ee, grasp_pose_);
+  if (dist_to_grasp <= final_servo_distance_m_ || residual < 0.005) {
+    transition_to(ServoState::FINAL_SERVO);
+  }
+}
+
+void VisualServoNode::handle_final_servo()
+{
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+  if (elapsed > final_servo_timeout_sec_) {
+    RCLCPP_WARN(this->get_logger(), "Final servo timed out after %.1f sec", elapsed);
+    transition_to(ServoState::LOST);
+    return;
+  }
+
+  // Get current EE pose
+  geometry_msgs::msg::PoseStamped current_ee;
+  if (!get_current_ee_pose(current_ee)) {
+    return;
+  }
+
+  // Compute 3D position error to grasp pose
+  geometry_msgs::msg::Point pos_error;
+  pos_error.x = grasp_pose_.position.x - current_ee.pose.position.x;
+  pos_error.y = grasp_pose_.position.y - current_ee.pose.position.y;
+  pos_error.z = grasp_pose_.position.z - current_ee.pose.position.z;
+  const double pos_residual = std::sqrt(
+    pos_error.x * pos_error.x + pos_error.y * pos_error.y + pos_error.z * pos_error.z);
+
+  // Get latest detection for image-space error
+  double image_err = 1e6;
+  double img_err_x = 0.0;
+  double img_err_y = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    if (detection_available_) {
+      image_err = compute_image_error(latest_detection_roi_);
+      img_err_x = (latest_detection_roi_.x + latest_detection_roi_.width * 0.5) - intrinsics_.cx;
+      img_err_y = (latest_detection_roi_.y + latest_detection_roi_.height * 0.5) - intrinsics_.cy;
+      // Don't consume — keep available for overlay
     }
   }
 
   RCLCPP_INFO_THROTTLE(
     this->get_logger(), *this->get_clock(), 500,
-    "[OPEN_GRIPPER] sending gripper_active=true cmd=%.2f (open) settle=%.2f/%.2f",
-    open_gripper_command_,
-    (this->now() - state_entry_time_).seconds(), grasp_settle_sec_);
+    "[FINAL_SERVO] pos_residual=%.4f (tol=%.4f) img_err=%.1f (tol=%.1f) streak=%d/%d",
+    pos_residual, final_position_tolerance_m_,
+    image_err, final_image_tolerance_px_,
+    convergence_streak_, final_convergence_cycles_);
 
-  publish_policy_output(
-    geometry_msgs::msg::Twist(), tracking_confidence_, true, true, open_gripper_command_);
+  // Check convergence
+  const bool pos_ok = pos_residual <= final_position_tolerance_m_;
+  const bool img_ok = image_err <= final_image_tolerance_px_;
+  const auto conv_update = update_centering_streak(
+    convergence_streak_, pos_ok && img_ok, final_convergence_cycles_);
+  convergence_streak_ = conv_update.streak;
 
-  if ((this->now() - state_entry_time_).seconds() >= grasp_settle_sec_) {
-    transition_to(ServoState::APPROACH_DEPTH);
-  }
-}
-
-void VisualServoNode::handle_approach_depth()
-{
-  cv::Mat frame;
-  if (!fetch_latest_frame(frame)) {
+  if (conv_update.stable) {
+    publish_zero_motion();
+    transition_to(ServoState::CLOSE_GRIPPER);
     return;
   }
 
-  if (!update_tracking(frame)) {
-    return;
-  }
+  // Send servo twist toward grasp pose
+  publish_servo_twist(pos_error, img_err_x, img_err_y);
 
-  const double feat_x = tracked_roi_.x + tracked_roi_.width * 0.5;
-  const double feat_y = tracked_roi_.y + tracked_roi_.height * 0.5;
-
-  std::optional<DepthSample> depth_sample;
-  rclcpp::Time depth_sample_stamp(0, 0, this->get_clock()->get_clock_type());
-  bool depth_available_snapshot = false;
-  {
-    std::lock_guard<std::mutex> lock(depth_mutex_);
-    depth_available_snapshot = depth_available_;
-    if (use_depth_ && depth_available_) {
-      const double depth_age_sec = std::abs((this->now() - latest_depth_stamp_).seconds());
-      if (depth_age_sec <= depth_stale_timeout_sec_) {
-        depth_sample = sample_depth_at_roi_anchor(
-          latest_depth_frame_, tracked_roi_, depth_sample_anchor_x_, depth_sample_anchor_y_,
-          depth_roi_half_size_px_, static_cast<std::size_t>(std::max(1, min_valid_depth_pixels_)),
-          depth_sample_max_iqr_m_);
-        if (depth_sample.has_value()) {
-          depth_sample_stamp = latest_depth_stamp_;
-        }
-      } else {
-        RCLCPP_WARN_THROTTLE(
-          this->get_logger(), *this->get_clock(), 2000,
-          "Depth frame stale by %.3f sec; holding forward motion", depth_age_sec);
-      }
-    }
-  }
-
-  if (!use_depth_) {
-    RCLCPP_WARN_THROTTLE(
-      this->get_logger(), *this->get_clock(), 5000,
-      "use_depth is false; depth-guided pick approach is disabled");
-  }
-
-  if (depth_sample.has_value()) {
-    last_depth_sample_ = depth_sample;
-    const bool depth_in_band = depth_within_standoff(
-      depth_sample->depth_m, grasp_standoff_m_, grasp_depth_tolerance_m_);
-    const auto close_update = update_centering_streak(
-      close_depth_streak_, depth_in_band, close_depth_stable_frames_);
-    close_depth_streak_ = close_update.streak;
-    RCLCPP_INFO_THROTTLE(
-      this->get_logger(),
-      *this->get_clock(), 500,
-      "[APPROACH_DEPTH] depth=%.3f m iqr=%.3f valid_px=%zu standoff=%.3f "
-      "tol=%.3f anchor=(%d,%d) roi=(%d,%d,%dx%d) close_streak=%d/%d",
-      depth_sample->depth_m, depth_sample->depth_iqr_m, depth_sample->valid_pixels,
-      grasp_standoff_m_, grasp_depth_tolerance_m_,
-      depth_sample->anchor_px, depth_sample->anchor_py,
-      depth_sample->sampled_roi.x, depth_sample->sampled_roi.y,
-      depth_sample->sampled_roi.width, depth_sample->sampled_roi.height,
-      close_depth_streak_, close_depth_stable_frames_);
-
-    if (depth_in_band && close_update.stable) {
-      publish_zero_motion(tracking_confidence_);
-      transition_to(ServoState::CLOSE_GRIPPER);
-      if (publish_overlay_) {
-        publish_debug_overlay(frame, tracked_roi_);
-      }
-      return;
-    }
-
-    if (depth_in_band) {
-      publish_policy_output(
-        geometry_msgs::msg::Twist(), tracking_confidence_, true, true, open_gripper_command_);
-      if (publish_overlay_) {
-        publish_debug_overlay(frame, tracked_roi_);
-      }
-      return;
-    }
-  } else {
-    // Only reset close streak — preserve last_depth_sample_ for blind approach
-    // fallback and depth_progress_history_ for stall detection continuity.
-    close_depth_streak_ = 0;
-    RCLCPP_WARN_THROTTLE(
-      this->get_logger(),
-      *this->get_clock(), 500,
-      "[APPROACH_DEPTH] depth sample FAILED: depth_available=%s "
-      "roi=(%.0f,%.0f,%.0fx%.0f) anchor=(%.2f,%.2f) min_valid_px=%d "
-      "half_size=%d max_iqr=%.3f",
-      depth_available_snapshot ? "true" : "false",
-      tracked_roi_.x, tracked_roi_.y, tracked_roi_.width, tracked_roi_.height,
-      depth_sample_anchor_x_, depth_sample_anchor_y_,
-      min_valid_depth_pixels_, depth_roi_half_size_px_, depth_sample_max_iqr_m_);
-  }
-
-  geometry_msgs::msg::Twist twist = compute_alignment_twist(feat_x, feat_y);
-  if (depth_sample.has_value()) {
-    twist = compute_approach_twist(feat_x, feat_y, depth_sample->depth_m);
-
-    if (depth_sample_stamp.nanoseconds() > 0) {
-      if (!depth_progress_history_.empty() &&
-        depth_progress_history_.back().stamp == depth_sample_stamp)
-      {
-        depth_progress_history_.back().depth_m = depth_sample->depth_m;
-      } else {
-        depth_progress_history_.push_back({depth_sample_stamp, depth_sample->depth_m});
-      }
-
-      const double stall_window_sec = std::max(0.0, approach_stall_window_sec_);
-      if (stall_window_sec > 0.0) {
-        const auto window = rclcpp::Duration::from_seconds(stall_window_sec);
-        while (depth_progress_history_.size() > 1 &&
-          (depth_sample_stamp - depth_progress_history_.front().stamp) > window)
-        {
-          depth_progress_history_.pop_front();
-        }
-
-        if (twist.linear.z > 1e-4 && !depth_progress_history_.empty() &&
-          (depth_sample_stamp - depth_progress_history_.front().stamp).seconds() >=
-          stall_window_sec &&
-          depth_progress_stalled(
-            depth_progress_history_.front().depth_m, depth_sample->depth_m,
-            approach_min_progress_m_))
-        {
-          const double observed_progress =
-            depth_progress_history_.front().depth_m - depth_sample->depth_m;
-          RCLCPP_WARN(
-            this->get_logger(),
-            "Aborting pick: depth progress stalled (%.3f m over %.2f s, min %.3f m)",
-            observed_progress, stall_window_sec, approach_min_progress_m_);
-          publish_zero_motion(tracking_confidence_);
-          transition_to(ServoState::LOST);
-          return;
-        }
-      }
-    }
-
-    // Accumulate actual distance per control cycle (not per output horizon).
-    // twist.linear.z is a velocity in m/s; each cycle is 1/control_rate_hz seconds.
-    const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
-    accumulated_approach_distance_m_ += std::max(0.0, twist.linear.z * cycle_dt);
-    if (accumulated_approach_distance_m_ > max_approach_distance_m_) {
-      RCLCPP_WARN(
-        this->get_logger(),
-        "Aborting pick: accumulated approach distance %.3f m exceeded limit %.3f m",
-        accumulated_approach_distance_m_, max_approach_distance_m_);
-      publish_zero_motion(tracking_confidence_);
-      transition_to(ServoState::LOST);
-      return;
-    }
-  }
-
-  const bool blind_approach_eligible = last_depth_sample_.has_value() &&
-    last_depth_sample_->depth_m<blind_approach_depth_threshold_m_ &&
-      last_depth_sample_->depth_m> grasp_standoff_m_;
-  if (!depth_sample.has_value() && blind_approach_eligible) {
-    // Blind forward approach: depth is unavailable but last reading was close.
-    // Continue forward at reduced velocity, dead-reckoning the remaining distance.
-    const double blind_vel = blind_approach_velocity_fraction_ * max_linear_velocity_;
-    twist.linear.z = blind_vel;
-
-    const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
-    accumulated_approach_distance_m_ += blind_vel * cycle_dt;
-    blind_approach_distance_m_ += blind_vel * cycle_dt;
-
-    if (blind_approach_distance_m_ > blind_approach_max_distance_m_) {
-      RCLCPP_WARN(
-        this->get_logger(),
-        "Aborting pick: blind approach distance %.3f m exceeded limit %.3f m",
-        blind_approach_distance_m_, blind_approach_max_distance_m_);
-      publish_zero_motion(tracking_confidence_);
-      transition_to(ServoState::LOST);
-      return;
-    }
-
-    const double est_depth = last_depth_sample_->depth_m - blind_approach_distance_m_;
-    RCLCPP_INFO_THROTTLE(
-      this->get_logger(), *this->get_clock(), 500,
-      "[APPROACH_DEPTH] blind approach: last_depth=%.3f blind_dist=%.3f est_depth=%.3f "
-      "standoff=%.3f tol=%.3f close_streak=%d/%d",
-      last_depth_sample_->depth_m, blind_approach_distance_m_, est_depth,
-      grasp_standoff_m_, grasp_depth_tolerance_m_,
-      close_depth_streak_, close_depth_stable_frames_);
-
-    if (est_depth <= grasp_standoff_m_ + grasp_depth_tolerance_m_) {
-      close_depth_streak_++;
-      if (close_depth_streak_ >= close_depth_stable_frames_) {
-        publish_zero_motion(tracking_confidence_);
-        transition_to(ServoState::CLOSE_GRIPPER);
-        if (publish_overlay_) {
-          publish_debug_overlay(frame, tracked_roi_);
-        }
-        return;
-      }
-    }
-  }
-
-  // Keep gripper open during approach
-  publish_policy_output(twist, tracking_confidence_, true, true, open_gripper_command_);
+  // Debug overlay
   if (publish_overlay_) {
-    publish_debug_overlay(frame, tracked_roi_);
+    cv::Mat frame;
+    {
+      std::lock_guard<std::mutex> lock(image_mutex_);
+      if (frame_available_) {
+        frame = latest_frame_.clone();
+      }
+    }
+    if (!frame.empty()) {
+      std::lock_guard<std::mutex> lock(detection_mutex_);
+      if (detection_available_) {
+        publish_debug_overlay(frame, latest_detection_roi_);
+      }
+    }
   }
 }
 
 void VisualServoNode::handle_close_gripper()
 {
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+
   RCLCPP_INFO_THROTTLE(
     this->get_logger(), *this->get_clock(), 500,
-    "[CLOSE_GRIPPER] sending gripper_active=true cmd=%.2f (close) settle=%.2f/%.2f",
-    close_gripper_command_,
-    (this->now() - state_entry_time_).seconds(), grasp_settle_sec_);
+    "[CLOSE_GRIPPER] cmd=%.2f settle=%.2f/%.2f",
+    close_gripper_command_, elapsed, grasp_settle_sec_);
 
-  publish_policy_output(
-    geometry_msgs::msg::Twist(), tracking_confidence_, true, true, close_gripper_command_);
+  publish_gripper_command(close_gripper_command_);
 
-  if ((this->now() - state_entry_time_).seconds() >= grasp_settle_sec_) {
-    transition_to(ServoState::LIFT);
+  if (elapsed >= grasp_settle_sec_) {
+    transition_to(ServoState::VERIFY_GRASP);
   }
 }
 
-void VisualServoNode::handle_lift()
+void VisualServoNode::handle_verify_grasp()
 {
-  const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
-  const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
-    output_delta_horizon_sec_ : cycle_dt;
-  const double remaining = std::max(0.0, lift_distance_m_ - accumulated_lift_distance_m_);
+  const double elapsed = (this->now() - state_entry_time_).seconds();
 
-  if (remaining <= 1e-6) {
-    publish_zero_motion(tracking_confidence_);
+  const double width = get_gripper_width();
+
+  RCLCPP_INFO_THROTTLE(
+    this->get_logger(), *this->get_clock(), 500,
+    "[VERIFY_GRASP] gripper_width=%.4f threshold=%.4f elapsed=%.2f",
+    width, gripper_closed_position_ + grasp_success_min_width_, elapsed);
+
+  if (width < 0.0) {
+    // No joint state yet — wait
+    if (elapsed > verify_timeout_sec_) {
+      RCLCPP_WARN(this->get_logger(), "Verify timed out: no gripper joint state");
+      transition_to(ServoState::LOST);
+    }
+    return;
+  }
+
+  // Success: gripper is open wider than closed + min_width (object between fingers)
+  if (width > gripper_closed_position_ + grasp_success_min_width_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Grasp verified: width=%.4f > threshold=%.4f",
+      width, gripper_closed_position_ + grasp_success_min_width_);
+    transition_to(ServoState::LIFT_RETREAT);
+    return;
+  }
+
+  // Failure: gripper closed near-fully with no object
+  if (elapsed > verify_timeout_sec_) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Grasp failed: width=%.4f <= threshold=%.4f — reopening and retreating",
+      width, gripper_closed_position_ + grasp_success_min_width_);
+    // Reopen gripper
+    publish_gripper_command(open_gripper_command_);
+    transition_to(ServoState::LOST);
+  }
+}
+
+void VisualServoNode::handle_lift_retreat()
+{
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+  if (elapsed > lift_timeout_sec_) {
+    RCLCPP_WARN(this->get_logger(), "Lift/retreat timed out after %.1f sec", elapsed);
     transition_to(ServoState::DONE);
     return;
   }
 
-  // Send a delta scaled to the adapter horizon, but only accumulate the
-  // per-cycle portion so the lift distance tracks real progress.
-  const double velocity = std::min(max_linear_velocity_, remaining / cycle_dt);
-  const double dz = velocity * delta_horizon_sec;
-  publish_reference_frame_delta(0.0, 0.0, dz, tracking_confidence_, true, close_gripper_command_);
-  accumulated_lift_distance_m_ += velocity * cycle_dt;
+  geometry_msgs::msg::PoseStamped current_ee;
+  if (!get_current_ee_pose(current_ee)) {
+    return;
+  }
+
+  if (!lift_phase_done_) {
+    // Lift: check if EE Z has increased by lift_distance_m from start
+    const double lifted =
+      current_ee.pose.position.z - ee_pose_at_lift_start_.pose.position.z;
+
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[LIFT_RETREAT] lift: actual=%.4f target=%.4f",
+      lifted, lift_distance_m_);
+
+    if (lifted >= lift_distance_m_) {
+      lift_phase_done_ = true;
+      RCLCPP_INFO(this->get_logger(), "Lift complete (%.4f m), starting retreat", lifted);
+    } else {
+      // Command upward delta
+      const double dz = std::min(
+        lift_distance_m_ - lifted,
+        servo_max_linear_velocity_ / std::max(1.0, control_rate_hz_));
+      publish_lift_command(dz);
+    }
+  } else {
+    // Retreat: move backward (negative X in arm base frame) by retreat_distance_m
+    const double retreated =
+      ee_pose_at_lift_start_.pose.position.x - current_ee.pose.position.x;
+
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[LIFT_RETREAT] retreat: actual=%.4f target=%.4f",
+      retreated, retreat_distance_m_);
+
+    if (retreated >= retreat_distance_m_ || retreat_distance_m_ <= 0.001) {
+      RCLCPP_INFO(this->get_logger(), "Retreat complete (%.4f m)", retreated);
+      transition_to(ServoState::DONE);
+    } else {
+      // Command backward delta
+      const double dx = -std::min(
+        retreat_distance_m_ - retreated,
+        servo_max_linear_velocity_ / std::max(1.0, control_rate_hz_));
+
+      manipulation_msgs::msg::PolicyOutput msg;
+      msg.header.stamp = this->now();
+      msg.header.frame_id = reference_frame_;
+      msg.reference_frame = reference_frame_;
+      msg.confidence = 1.0;
+      msg.has_eef_target = true;
+      msg.eef_target_pose.position.x = dx;
+      msg.eef_target_pose.position.y = 0.0;
+      msg.eef_target_pose.position.z = 0.0;
+      msg.eef_target_pose.orientation.w = 1.0;
+      msg.arm_command_mode = "moveit_servo";
+      msg.gripper_active = true;
+      msg.gripper_command = close_gripper_command_;
+      policy_output_pub_->publish(msg);
+    }
+  }
 }
 
 void VisualServoNode::handle_done()
 {
-  publish_zero_motion(tracking_confidence_);
+  publish_zero_motion();
 }
 
 void VisualServoNode::handle_lost()
 {
-  tracker_initialized_ = false;
-  centering_streak_ = 0;
-  close_depth_streak_ = 0;
-  last_depth_sample_.reset();
-  depth_progress_history_.clear();
-  publish_zero_motion(0.0F);
+  bottle_estimate_.reset();
+  convergence_streak_ = 0;
+  pregrasp_sent_ = false;
+  publish_zero_motion();
 
+  // Try to re-acquire from fresh detection
   std::lock_guard<std::mutex> lock(detection_mutex_);
   if (detection_available_) {
     transition_to(ServoState::ACQUIRE);
   }
 }
 
-bool VisualServoNode::init_tracker(const cv::Mat & frame, const cv::Rect2d & roi)
-{
-  if (tracker_type_ != "mil" && tracker_type_ != "MIL") {
-    RCLCPP_WARN_ONCE(
-      this->get_logger(),
-      "Requested tracker_type='%s', but this build only supports OpenCV MIL tracker; using MIL",
-      tracker_type_.c_str());
-  }
-  cv_tracker_ = cv::TrackerMIL::create();
+// --- Publishing ---
 
-  const cv::Rect roi_int(
-    cvRound(roi.x),
-    cvRound(roi.y),
-    cvRound(roi.width),
-    cvRound(roi.height));
-  if (roi_int.width <= 0 || roi_int.height <= 0) {
-    RCLCPP_WARN(
-      this->get_logger(), "Tracker init skipped: invalid ROI [%.1f, %.1f, %.1f, %.1f]",
-      roi.x, roi.y, roi.width, roi.height);
-    tracker_initialized_ = false;
-    return false;
-  }
-
-  try {
-    cv_tracker_->init(frame, roi_int);
-    tracker_initialized_ = true;
-    tracking_confidence_ = 1.0F;
-    return true;
-  } catch (const cv::Exception & e) {
-    RCLCPP_WARN(this->get_logger(), "Tracker init failed: %s", e.what());
-    tracker_initialized_ = false;
-    return false;
-  }
-}
-
-bool VisualServoNode::update_tracker(const cv::Mat & frame, cv::Rect2d & tracked_roi)
-{
-  if (!tracker_initialized_ || !cv_tracker_) {
-    return false;
-  }
-
-  try {
-    cv::Rect tracked_roi_int(
-      cvRound(tracked_roi_.x),
-      cvRound(tracked_roi_.y),
-      cvRound(tracked_roi_.width),
-      cvRound(tracked_roi_.height));
-    const bool ok = cv_tracker_->update(frame, tracked_roi_int);
-    if (ok) {
-      tracked_roi = cv::Rect2d(
-        static_cast<double>(tracked_roi_int.x),
-        static_cast<double>(tracked_roi_int.y),
-        static_cast<double>(tracked_roi_int.width),
-        static_cast<double>(tracked_roi_int.height));
-      if (tracked_roi.x >= 0 && tracked_roi.y >= 0 &&
-        tracked_roi.x + tracked_roi.width <= frame.cols &&
-        tracked_roi.y + tracked_roi.height <= frame.rows &&
-        tracked_roi.width > 5 && tracked_roi.height > 5)
-      {
-        tracking_confidence_ = 0.8F;
-        return true;
-      }
-    }
-    tracking_confidence_ = 0.0F;
-    return false;
-  } catch (const cv::Exception & e) {
-    RCLCPP_WARN_THROTTLE(
-      this->get_logger(), *this->get_clock(), 1000,
-      "Tracker update failed: %s", e.what());
-    tracking_confidence_ = 0.0F;
-    return false;
-  }
-}
-
-void VisualServoNode::apply_ramp(geometry_msgs::msg::Twist & twist)
-{
-  if (ramp_step_ < ramp_up_steps_ && ramp_up_steps_ > 0) {
-    const double ramp_factor = static_cast<double>(ramp_step_ + 1) /
-      static_cast<double>(ramp_up_steps_);
-    twist.linear.x *= ramp_factor;
-    twist.linear.y *= ramp_factor;
-    twist.linear.z *= ramp_factor;
-    twist.angular.x *= ramp_factor;
-    twist.angular.y *= ramp_factor;
-    twist.angular.z *= ramp_factor;
-    ++ramp_step_;
-  }
-}
-
-geometry_msgs::msg::Twist VisualServoNode::compute_alignment_twist(
-  double feat_x, double feat_y, bool allow_ramp)
-{
-  geometry_msgs::msg::Twist twist;
-
-  double norm_err_x = 0.0;
-  double norm_err_y = 0.0;
-  if (image_width_ > 0 && image_height_ > 0) {
-    norm_err_x = (feat_x - desired_x_) / static_cast<double>(image_width_);
-    norm_err_y = (feat_y - desired_y_) / static_cast<double>(image_height_);
-  }
-
-  twist.linear.x =
-    clamp_value(lambda_xy_ * norm_err_x, -max_linear_velocity_, max_linear_velocity_);
-  twist.linear.y =
-    clamp_value(lambda_xy_ * norm_err_y, -max_linear_velocity_, max_linear_velocity_);
-  if (allow_ramp) {
-    apply_ramp(twist);
-  }
-  return twist;
-}
-
-geometry_msgs::msg::Twist VisualServoNode::compute_approach_twist(
-  double feat_x, double feat_y, double depth_m, bool allow_ramp)
-{
-  auto twist = compute_alignment_twist(feat_x, feat_y, false);
-  twist.linear.z = compute_depth_velocity_mps(
-    depth_m, grasp_standoff_m_, lambda_z_, max_linear_velocity_);
-  if (allow_ramp) {
-    apply_ramp(twist);
-  }
-  return twist;
-}
-
-geometry_msgs::msg::Pose VisualServoNode::twist_to_eef_delta(
-  const geometry_msgs::msg::Twist & twist, double dt)
-{
-  geometry_msgs::msg::Pose delta;
-  delta.position.x = twist.linear.x * dt;
-  delta.position.y = twist.linear.y * dt;
-  delta.position.z = twist.linear.z * dt;
-
-  const double half_ax = twist.angular.x * dt * 0.5;
-  const double half_ay = twist.angular.y * dt * 0.5;
-  const double half_az = twist.angular.z * dt * 0.5;
-  delta.orientation.x = half_ax;
-  delta.orientation.y = half_ay;
-  delta.orientation.z = half_az;
-  delta.orientation.w = 1.0;
-
-  const double norm = std::sqrt(
-    delta.orientation.x * delta.orientation.x +
-    delta.orientation.y * delta.orientation.y +
-    delta.orientation.z * delta.orientation.z +
-    delta.orientation.w * delta.orientation.w);
-  if (norm > 1e-12) {
-    delta.orientation.x /= norm;
-    delta.orientation.y /= norm;
-    delta.orientation.z /= norm;
-    delta.orientation.w /= norm;
-  }
-
-  return delta;
-}
-
-geometry_msgs::msg::Twist VisualServoNode::transform_twist_to_reference(
-  const geometry_msgs::msg::Twist & twist)
-{
-  geometry_msgs::msg::Twist output_twist = twist;
-
-  if (camera_optical_frame_.empty() || reference_frame_.empty() ||
-    camera_optical_frame_ == reference_frame_)
-  {
-    return output_twist;
-  }
-
-  try {
-    auto transform = tf_buffer_->lookupTransform(
-      reference_frame_, camera_optical_frame_, tf2::TimePointZero);
-    const auto & q = transform.transform.rotation;
-    auto rotate_vec = [&q](double vx, double vy, double vz, double & ox, double & oy, double & oz) {
-        const double qx = q.x;
-        const double qy = q.y;
-        const double qz = q.z;
-        const double qw = q.w;
-        const double t2 = qw * vx + qy * vz - qz * vy;
-        const double t3 = qw * vy + qz * vx - qx * vz;
-        const double t4 = qw * vz + qx * vy - qy * vx;
-        const double t5 = -qx * vx - qy * vy - qz * vz;
-        ox = t2 * qw - t5 * qx - t3 * qz + t4 * qy;
-        oy = t3 * qw - t5 * qy - t4 * qx + t2 * qz;
-        oz = t4 * qw - t5 * qz - t2 * qy + t3 * qx;
-      };
-
-    rotate_vec(
-      twist.linear.x, twist.linear.y, twist.linear.z,
-      output_twist.linear.x, output_twist.linear.y, output_twist.linear.z);
-    rotate_vec(
-      twist.angular.x, twist.angular.y, twist.angular.z,
-      output_twist.angular.x, output_twist.angular.y, output_twist.angular.z);
-  } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN_THROTTLE(
-      this->get_logger(), *this->get_clock(), 2000,
-      "TF lookup %s -> %s failed: %s, publishing in camera frame",
-      camera_optical_frame_.c_str(), reference_frame_.c_str(), ex.what());
-  }
-
-  return output_twist;
-}
-
-void VisualServoNode::publish_policy_output(
-  const geometry_msgs::msg::Twist & twist,
-  float confidence,
-  bool include_arm_target,
-  bool gripper_active,
-  double gripper_command)
+void VisualServoNode::publish_move_group_target(const geometry_msgs::msg::Pose & target_pose)
 {
   manipulation_msgs::msg::PolicyOutput msg;
   msg.header.stamp = this->now();
   msg.header.frame_id = reference_frame_;
   msg.reference_frame = reference_frame_;
-  msg.confidence = confidence;
-
-  if (include_arm_target) {
-    const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
-      output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_);
-    const auto output_twist = transform_twist_to_reference(twist);
-    msg.has_eef_target = true;
-    msg.eef_target_pose = twist_to_eef_delta(output_twist, delta_horizon_sec);
-  } else {
-    msg.has_eef_target = false;
-  }
-
+  msg.confidence = 1.0;
+  msg.has_eef_target = true;
+  msg.eef_target_pose = target_pose;
   msg.has_joint_deltas = false;
-  msg.gripper_active = gripper_active;
-  msg.gripper_command = clamp_value(gripper_command, 0.0, 1.0);
+  msg.gripper_active = true;
+  msg.gripper_command = open_gripper_command_;
   msg.has_base_hint = false;
-
+  msg.arm_command_mode = "move_group";
   policy_output_pub_->publish(msg);
 }
 
-void VisualServoNode::publish_reference_frame_delta(
-  double dx, double dy, double dz, float confidence, bool gripper_active, double gripper_command)
+void VisualServoNode::publish_servo_twist(
+  const geometry_msgs::msg::Point & position_error,
+  double /*image_err_x*/, double /*image_err_y*/)
+{
+  // Proportional control on 3D position error (arm_base_frame).
+  // Image error parameters reserved for future lateral correction refinement.
+  const double dt = 1.0 / std::max(1.0, control_rate_hz_);
+
+  double vx = clamp_value(
+    servo_lambda_z_ * position_error.x, -servo_max_linear_velocity_, servo_max_linear_velocity_);
+  double vy = clamp_value(
+    servo_lambda_z_ * position_error.y, -servo_max_linear_velocity_, servo_max_linear_velocity_);
+  double vz = clamp_value(
+    servo_lambda_z_ * position_error.z, -servo_max_linear_velocity_, servo_max_linear_velocity_);
+
+  // Apply ramp
+  if (ramp_step_ < servo_ramp_up_steps_ && servo_ramp_up_steps_ > 0) {
+    const double ramp = static_cast<double>(ramp_step_ + 1) /
+      static_cast<double>(servo_ramp_up_steps_);
+    vx *= ramp;
+    vy *= ramp;
+    vz *= ramp;
+    ++ramp_step_;
+  }
+
+  // Convert velocity to delta pose for the adapter
+  manipulation_msgs::msg::PolicyOutput msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = reference_frame_;
+  msg.reference_frame = reference_frame_;
+  msg.confidence = 1.0;
+  msg.has_eef_target = true;
+  msg.eef_target_pose.position.x = vx * dt;
+  msg.eef_target_pose.position.y = vy * dt;
+  msg.eef_target_pose.position.z = vz * dt;
+  msg.eef_target_pose.orientation.w = 1.0;
+  msg.has_joint_deltas = false;
+  msg.gripper_active = true;
+  msg.gripper_command = open_gripper_command_;
+  msg.has_base_hint = false;
+  msg.arm_command_mode = "moveit_servo";
+  policy_output_pub_->publish(msg);
+}
+
+void VisualServoNode::publish_gripper_command(double command)
 {
   manipulation_msgs::msg::PolicyOutput msg;
   msg.header.stamp = this->now();
   msg.header.frame_id = reference_frame_;
   msg.reference_frame = reference_frame_;
-  msg.confidence = confidence;
+  msg.confidence = 1.0;
+  msg.has_eef_target = false;
+  msg.has_joint_deltas = false;
+  msg.gripper_active = true;
+  msg.gripper_command = clamp_value(command, 0.0, 1.0);
+  msg.has_base_hint = false;
+  policy_output_pub_->publish(msg);
+}
+
+void VisualServoNode::publish_zero_motion()
+{
+  manipulation_msgs::msg::PolicyOutput msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = reference_frame_;
+  msg.reference_frame = reference_frame_;
+  msg.confidence = 1.0;
   msg.has_eef_target = true;
-  msg.eef_target_pose.position.x = dx;
-  msg.eef_target_pose.position.y = dy;
+  msg.eef_target_pose.orientation.w = 1.0;
+  msg.has_joint_deltas = false;
+  msg.gripper_active = false;
+  msg.has_base_hint = false;
+  msg.arm_command_mode = "moveit_servo";
+  policy_output_pub_->publish(msg);
+}
+
+void VisualServoNode::publish_lift_command(double dz)
+{
+  manipulation_msgs::msg::PolicyOutput msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = reference_frame_;
+  msg.reference_frame = reference_frame_;
+  msg.confidence = 1.0;
+  msg.has_eef_target = true;
+  msg.eef_target_pose.position.x = 0.0;
+  msg.eef_target_pose.position.y = 0.0;
   msg.eef_target_pose.position.z = dz;
   msg.eef_target_pose.orientation.w = 1.0;
   msg.has_joint_deltas = false;
-  msg.gripper_active = gripper_active;
-  msg.gripper_command = clamp_value(gripper_command, 0.0, 1.0);
+  msg.gripper_active = true;
+  msg.gripper_command = close_gripper_command_;
   msg.has_base_hint = false;
+  msg.arm_command_mode = "moveit_servo";
   policy_output_pub_->publish(msg);
-}
-
-void VisualServoNode::publish_zero_motion(float confidence)
-{
-  publish_reference_frame_delta(0.0, 0.0, 0.0, confidence);
 }
 
 void VisualServoNode::publish_debug_overlay(const cv::Mat & frame, const cv::Rect2d & roi)
@@ -1183,36 +1079,32 @@ void VisualServoNode::publish_debug_overlay(const cv::Mat & frame, const cv::Rec
   }
 
   cv::Mat overlay = frame.clone();
+
+  // Detection ROI
   cv::rectangle(
     overlay,
     cv::Point(static_cast<int>(roi.x), static_cast<int>(roi.y)),
     cv::Point(static_cast<int>(roi.x + roi.width), static_cast<int>(roi.y + roi.height)),
     cv::Scalar(0, 255, 0), 2);
 
+  // Feature center and image center
   const cv::Point center(
     static_cast<int>(roi.x + roi.width * 0.5),
     static_cast<int>(roi.y + roi.height * 0.5));
-  const cv::Point desired(static_cast<int>(desired_x_), static_cast<int>(desired_y_));
+  const cv::Point desired(static_cast<int>(intrinsics_.cx), static_cast<int>(intrinsics_.cy));
   cv::circle(overlay, center, 5, cv::Scalar(0, 0, 255), -1);
   cv::drawMarker(overlay, desired, cv::Scalar(255, 0, 0), cv::MARKER_CROSS, 20, 2);
   cv::line(overlay, center, desired, cv::Scalar(0, 255, 255), 1);
 
-  if (last_depth_sample_.has_value()) {
-    cv::rectangle(
-      overlay,
-      last_depth_sample_->sampled_roi,
-      cv::Scalar(255, 255, 0), 1);
-    cv::drawMarker(
-      overlay,
-      cv::Point(last_depth_sample_->anchor_px, last_depth_sample_->anchor_py),
-      cv::Scalar(255, 0, 255), cv::MARKER_CROSS, 14, 2);
+  // Body ROI if estimate exists
+  if (bottle_estimate_.has_value()) {
+    cv::rectangle(overlay, bottle_estimate_->body_roi, cv::Scalar(255, 255, 0), 1);
   }
 
-  const double pixel_error = std::sqrt(
-    std::pow(static_cast<double>(center.x - desired.x), 2.0) +
-    std::pow(static_cast<double>(center.y - desired.y), 2.0));
-  std::string state_text = "State: " + state_to_string(state_);
-  std::string err_text = "Err: " + std::to_string(static_cast<int>(pixel_error)) + " px";
+  // State text
+  const double pixel_error = compute_image_error(roi);
+  const std::string state_text = "State: " + state_to_string(state_);
+  const std::string err_text = "ImgErr: " + std::to_string(static_cast<int>(pixel_error)) + " px";
   cv::putText(
     overlay, state_text, cv::Point(10, 30),
     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
@@ -1220,21 +1112,12 @@ void VisualServoNode::publish_debug_overlay(const cv::Mat & frame, const cv::Rec
     overlay, err_text, cv::Point(10, 60),
     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
 
-  if (last_depth_sample_.has_value()) {
-    const std::string depth_text = "Depth: " + std::to_string(last_depth_sample_->depth_m) + " m";
-    const std::string sample_text =
-      "Anchor: (" + std::to_string(last_depth_sample_->anchor_px) + "," +
-      std::to_string(last_depth_sample_->anchor_py) + ") valid=" +
-      std::to_string(last_depth_sample_->valid_pixels) + " iqr=" +
-      std::to_string(last_depth_sample_->depth_iqr_m) + " close=" +
-      std::to_string(close_depth_streak_) + "/" +
-      std::to_string(close_depth_stable_frames_);
+  if (bottle_estimate_.has_value()) {
+    const std::string depth_text =
+      "Depth: " + std::to_string(bottle_estimate_->depth_m) + " m";
     cv::putText(
       overlay, depth_text, cv::Point(10, 90),
       cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
-    cv::putText(
-      overlay, sample_text, cv::Point(10, 120),
-      cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 2);
   }
 
   sensor_msgs::msg::Image msg;
@@ -1254,7 +1137,6 @@ void VisualServoNode::publish_state()
   if (!state_pub_) {
     return;
   }
-
   std_msgs::msg::String msg;
   msg.data = state_to_string(state_);
   state_pub_->publish(msg);

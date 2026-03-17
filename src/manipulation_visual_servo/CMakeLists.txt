@@ -14,8 +14,9 @@ find_package(vision_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(manipulation_msgs REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs video)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 add_library(visual_servo_utils
   src/visual_servo_utils.cpp
@@ -33,6 +34,7 @@ target_link_libraries(visual_servo_utils
 
 ament_target_dependencies(visual_servo_utils
   sensor_msgs
+  geometry_msgs
 )
 
 add_executable(visual_servo_node
@@ -54,6 +56,7 @@ ament_target_dependencies(visual_servo_node
   rclcpp
   sensor_msgs
   geometry_msgs
+  std_msgs
   vision_msgs
   tf2
   tf2_ros
@@ -97,6 +100,7 @@ if(BUILD_TESTING)
     )
     ament_target_dependencies(test_visual_servo_utils
       sensor_msgs
+      geometry_msgs
     )
   endif()
 endif()
