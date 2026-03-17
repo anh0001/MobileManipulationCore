@@ -250,6 +250,21 @@ TEST(GraspPoseTest, NormalizesNonUnitQuaternion)
   EXPECT_NEAR(pose.orientation.w, 0.0, 1e-6);
 }
 
+TEST(OffsetPoseTest, RetractsTargetAlongToolAxis)
+{
+  geometry_msgs::msg::Point pos;
+  pos.x = 0.3;
+  pos.y = 0.0;
+  pos.z = 0.2;
+
+  const auto grasp = make_grasp_pose(pos, 1.0, 0.0, 0.0, 0.0);
+  const auto offset = offset_pose_along_tool_z(grasp, 0.10);
+
+  EXPECT_NEAR(offset.position.x, 0.3, 1e-6);
+  EXPECT_NEAR(offset.position.y, 0.0, 1e-6);
+  EXPECT_NEAR(offset.position.z, 0.30, 1e-6);
+}
+
 // --- Pre-grasp pose synthesis ---
 
 TEST(PregraspPoseTest, RetractsAlongToolZAxis)

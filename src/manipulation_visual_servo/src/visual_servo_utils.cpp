@@ -306,29 +306,36 @@ geometry_msgs::msg::Pose make_grasp_pose(
   return pose;
 }
 
-geometry_msgs::msg::Pose make_pregrasp_pose(
-  const geometry_msgs::msg::Pose & grasp_pose,
-  double pregrasp_offset_m)
+geometry_msgs::msg::Pose offset_pose_along_tool_z(
+  const geometry_msgs::msg::Pose & pose,
+  double offset_m)
 {
-  // Retract along the tool approach axis (local Z) by pregrasp_offset_m.
+  // Retract along the tool approach axis (local Z) by offset_m.
   // The approach axis in the arm base frame is derived from the grasp orientation.
   // For quaternion q, the local Z axis is:
   //   z_axis = q * [0,0,1] * q_inv
-  const double qx = grasp_pose.orientation.x;
-  const double qy = grasp_pose.orientation.y;
-  const double qz = grasp_pose.orientation.z;
-  const double qw = grasp_pose.orientation.w;
+  const double qx = pose.orientation.x;
+  const double qy = pose.orientation.y;
+  const double qz = pose.orientation.z;
+  const double qw = pose.orientation.w;
 
   // Rotate [0, 0, 1] by quaternion
   const double az_x = 2.0 * (qx * qz + qw * qy);
   const double az_y = 2.0 * (qy * qz - qw * qx);
   const double az_z = 1.0 - 2.0 * (qx * qx + qy * qy);
 
-  geometry_msgs::msg::Pose pregrasp = grasp_pose;
-  pregrasp.position.x -= pregrasp_offset_m * az_x;
-  pregrasp.position.y -= pregrasp_offset_m * az_y;
-  pregrasp.position.z -= pregrasp_offset_m * az_z;
-  return pregrasp;
+  geometry_msgs::msg::Pose offset_pose = pose;
+  offset_pose.position.x -= offset_m * az_x;
+  offset_pose.position.y -= offset_m * az_y;
+  offset_pose.position.z -= offset_m * az_z;
+  return offset_pose;
+}
+
+geometry_msgs::msg::Pose make_pregrasp_pose(
+  const geometry_msgs::msg::Pose & grasp_pose,
+  double pregrasp_offset_m)
+{
+  return offset_pose_along_tool_z(grasp_pose, pregrasp_offset_m);
 }
 
 CenteringUpdate update_centering_streak(int current_streak, bool centered, int required_cycles)

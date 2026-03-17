@@ -258,7 +258,7 @@ def generate_launch_description():
     # Load visual servo config
     vs_cfg_full = load_yaml(resolve_config_path('visual_servo_params.yaml'))
     vs_cfg = vs_cfg_full.get('visual_servo', {})
-    vs_control_cfg = vs_cfg.get('control', {})
+    vs_control_cfg = vs_cfg.get('servo_control', vs_cfg.get('control', {}))
     vs_debug_cfg = vs_cfg.get('debug', {})
     detection_cfg_full = load_yaml(resolve_config_path('detection_params.yaml'))
     detection_cfg = detection_cfg_full.get('detection', {})
@@ -601,14 +601,34 @@ def generate_launch_description():
                 vs_cfg.get('centering_stable_cycles', 3)),
             'close_depth_stable_frames': int(
                 vs_cfg.get('close_depth_stable_frames', 3)),
+            'pregrasp_offset_m': float(vs_cfg.get('pregrasp_offset_m', 0.08)),
+            'eef_link_to_grasp_offset_m': float(
+                vs_cfg.get('eef_link_to_grasp_offset_m', 0.10)),
+            'final_servo_distance_m': float(
+                vs_cfg.get('final_servo_distance_m', 0.04)),
             'grasp_settle_sec': float(vs_cfg.get('grasp_settle_sec', 0.75)),
             'lift_distance_m': float(vs_cfg.get('lift_distance_m', 0.08)),
+            'retreat_distance_m': float(vs_cfg.get('retreat_distance_m', 0.05)),
             'max_approach_distance_m': float(
                 vs_cfg.get('max_approach_distance_m', 0.50)),
             'approach_stall_window_sec': float(
                 vs_cfg.get('approach_stall_window_sec', 1.0)),
             'approach_min_progress_m': float(
                 vs_cfg.get('approach_min_progress_m', 0.01)),
+            'bottle_grasp_orientation_x': float(
+                vs_cfg.get('bottle_grasp_orientation_x', 1.0)),
+            'bottle_grasp_orientation_y': float(
+                vs_cfg.get('bottle_grasp_orientation_y', 0.0)),
+            'bottle_grasp_orientation_z': float(
+                vs_cfg.get('bottle_grasp_orientation_z', 0.0)),
+            'bottle_grasp_orientation_w': float(
+                vs_cfg.get('bottle_grasp_orientation_w', 0.0)),
+            'final_position_tolerance_m': float(
+                vs_cfg.get('final_position_tolerance_m', 0.008)),
+            'final_image_tolerance_px': float(
+                vs_cfg.get('final_image_tolerance_px', 12.0)),
+            'final_convergence_cycles': int(
+                vs_cfg.get('final_convergence_cycles', 3)),
             'open_gripper_command': float(
                 vs_cfg.get('open_gripper_command', 1.0)),
             'close_gripper_command': float(
@@ -624,14 +644,13 @@ def generate_launch_description():
             'klt_min_distance': float(vs_cfg.get('klt_min_distance', 5.0)),
             'klt_window_size': int(vs_cfg.get('klt_window_size', 10)),
             'klt_pyramid_levels': int(vs_cfg.get('klt_pyramid_levels', 3)),
-            'control.lambda_xy': float(vs_control_cfg.get('lambda_xy', 0.3)),
-            'control.lambda_z': float(vs_control_cfg.get('lambda_z', 0.1)),
-            'control.lambda_rz': float(vs_control_cfg.get('lambda_rz', 0.1)),
-            'control.max_linear_velocity': float(
+            'servo_control.lambda_xy': float(vs_control_cfg.get('lambda_xy', 0.3)),
+            'servo_control.lambda_z': float(vs_control_cfg.get('lambda_z', 0.1)),
+            'servo_control.max_linear_velocity': float(
                 vs_control_cfg.get('max_linear_velocity', 0.08)),
-            'control.max_angular_velocity': float(
+            'servo_control.max_angular_velocity': float(
                 vs_control_cfg.get('max_angular_velocity', 0.30)),
-            'control.ramp_up_steps': int(
+            'servo_control.ramp_up_steps': int(
                 vs_control_cfg.get('ramp_up_steps', 5)),
             'debug.publish_overlay': bool(
                 vs_debug_cfg.get('publish_overlay', True)),

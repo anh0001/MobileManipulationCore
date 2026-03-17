@@ -140,6 +140,9 @@ private:
   rclcpp::Time state_entry_time_;
   bool pregrasp_sent_{false};
   bool pregrasp_goal_active_{false};
+  double pregrasp_best_residual_{0.0};
+  rclcpp::Time pregrasp_best_residual_time_;
+  int pregrasp_retry_count_{0};
   int convergence_streak_{0};
   int ramp_step_{0};
 
@@ -172,6 +175,7 @@ private:
   std::optional<BottleEstimate3D> bottle_estimate_;
   geometry_msgs::msg::Pose grasp_pose_;
   geometry_msgs::msg::Pose pregrasp_pose_;
+  cv::Rect2d cached_estimate_roi_;  // Cached detection ROI for depth retries
 
   // Lift/retreat tracking
   geometry_msgs::msg::PoseStamped ee_pose_at_lift_start_;
@@ -216,6 +220,7 @@ private:
 
   // Parameters — hybrid pick
   double pregrasp_offset_m_;
+  double eef_link_to_grasp_offset_m_;
   double final_servo_distance_m_;
   double grasp_settle_sec_;
   double lift_distance_m_;

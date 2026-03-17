@@ -37,14 +37,25 @@ visual_servo:
   depth_stale_timeout_sec: 1.0         # Allow for depth gaps (D405 at ~8 Hz + single-threaded executor delays)
   centering_stable_cycles: 3           # Number of consecutive centered control cycles before grasp sequence starts
   close_depth_stable_frames: 3         # Number of consecutive in-band depth samples before closing the gripper
+  eef_link_to_grasp_offset_m: 0.10     # Retract the commanded EEF link from the bottle center along tool Z
+  pregrasp_offset_m: 0.08              # Distance to retract along approach axis for pre-grasp pose
+  final_servo_distance_m: 0.04         # Switch to Servo for the last N meters of approach
   grasp_settle_sec: 1.5                # Wait time after open/close gripper commands before next state
   lift_distance_m: 0.08                # Upward lift distance after grasp completion
+  retreat_distance_m: 0.05             # Backward retreat after lift
   max_approach_distance_m: 1.00        # Safety cap on total forward approach distance during one pick attempt
   approach_stall_window_sec: 1.0       # Abort if depth fails to improve enough over this rolling window while approaching
   approach_min_progress_m: 0.01        # Minimum depth improvement required over the stall window
   blind_approach_depth_threshold_m: 0.30  # Switch to blind approach when last good depth was below this
   blind_approach_velocity_fraction: 0.5   # Fraction of max_linear_velocity for blind forward motion
   blind_approach_max_distance_m: 0.20     # Safety cap on total blind approach distance
+  bottle_grasp_orientation_x: 1.0
+  bottle_grasp_orientation_y: 0.0
+  bottle_grasp_orientation_z: 0.0
+  bottle_grasp_orientation_w: 0.0
+  final_position_tolerance_m: 0.008
+  final_image_tolerance_px: 12.0
+  final_convergence_cycles: 3
   open_gripper_command: 1.0            # Normalized gripper command sent before approach (1.0 = open)
   close_gripper_command: 0.0           # Normalized gripper command sent at grasp depth (0.0 = closed)
 

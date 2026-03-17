@@ -110,6 +110,10 @@ geometry_msgs::msg::Pose make_grasp_pose(
   const geometry_msgs::msg::Point & bottle_position_arm_base,
   double orient_x, double orient_y, double orient_z, double orient_w);
 
+geometry_msgs::msg::Pose offset_pose_along_tool_z(
+  const geometry_msgs::msg::Pose & pose,
+  double offset_m);
+
 geometry_msgs::msg::Pose make_pregrasp_pose(
   const geometry_msgs::msg::Pose & grasp_pose,
   double pregrasp_offset_m);

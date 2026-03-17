@@ -101,6 +101,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 
   // Declare parameters — hybrid pick
   this->declare_parameter("pregrasp_offset_m", 0.08);
+  this->declare_parameter("eef_link_to_grasp_offset_m", 0.10);
   this->declare_parameter("final_servo_distance_m", 0.04);
   this->declare_parameter("grasp_settle_sec", 1.0);
   this->declare_parameter("lift_distance_m", 0.08);
@@ -176,6 +177,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 
   // Read parameters — hybrid pick
   pregrasp_offset_m_ = this->get_parameter("pregrasp_offset_m").as_double();
+  eef_link_to_grasp_offset_m_ = this->get_parameter("eef_link_to_grasp_offset_m").as_double();
   final_servo_distance_m_ = this->get_parameter("final_servo_distance_m").as_double();
   grasp_settle_sec_ = this->get_parameter("grasp_settle_sec").as_double();
   lift_distance_m_ = this->get_parameter("lift_distance_m").as_double();
@@ -265,8 +267,10 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     control_rate_hz_);
   RCLCPP_INFO(
     this->get_logger(),
-    "Pick config: pregrasp_offset=%.3f final_servo_dist=%.3f lift=%.3f retreat=%.3f",
-    pregrasp_offset_m_, final_servo_distance_m_, lift_distance_m_, retreat_distance_m_);
+    "Pick config: eef_to_grasp=%.3f pregrasp_offset=%.3f "
+    "final_servo_dist=%.3f lift=%.3f retreat=%.3f",
+    eef_link_to_grasp_offset_m_, pregrasp_offset_m_,
+    final_servo_distance_m_, lift_distance_m_, retreat_distance_m_);
   RCLCPP_INFO(
     this->get_logger(),
     "Grasp orient: [%.3f, %.3f, %.3f, %.3f] pos_tol=%.4f img_tol=%.1f conv_cycles=%d",
@@ -447,6 +451,8 @@ void VisualServoNode::transition_to(ServoState new_state)
     bottle_estimate_.reset();
     convergence_streak_ = 0;
     pregrasp_sent_ = false;
+    pregrasp_retry_count_ = 0;
+    cached_estimate_roi_ = cv::Rect2d();
     lift_phase_done_ = false;
   } else if (new_state == ServoState::FINAL_SERVO) {
     convergence_streak_ = 0;
@@ -594,16 +600,20 @@ void VisualServoNode::handle_estimate_bottle_3d()
     return;
   }
 
-  // Get latest detection ROI
+  // Get latest detection ROI — keep a cached copy so that depth retries
+  // do not have to wait for the next (slow, ~1 Hz) detection message.
   cv::Rect2d det_roi;
   {
     std::lock_guard<std::mutex> lock(detection_mutex_);
-    if (!detection_available_) {
-      return;  // Wait for a detection
+    if (detection_available_) {
+      cached_estimate_roi_ = latest_detection_roi_;
+      detection_available_ = false;
     }
-    det_roi = latest_detection_roi_;
-    detection_available_ = false;
   }
+  if (cached_estimate_roi_.width <= 0.0 || cached_estimate_roi_.height <= 0.0) {
+    return;  // No detection yet
+  }
+  det_roi = cached_estimate_roi_;
 
   // Get latest depth
   cv::Mat depth;
@@ -631,9 +641,26 @@ void VisualServoNode::handle_estimate_bottle_3d()
     depth_sample_max_iqr_m_);
 
   if (!estimate.has_value()) {
+    const cv::Rect body_roi = compute_body_roi(
+      det_roi, depth_roi_body_top_frac_, depth_roi_body_bottom_frac_,
+      depth_roi_body_left_frac_, depth_roi_body_right_frac_,
+      depth.cols, depth.rows);
+    // Count valid depth pixels for diagnostics
+    int valid_px = 0;
+    for (int row = body_roi.y; row < body_roi.y + body_roi.height; ++row) {
+      const auto * row_ptr = depth.ptr<uint16_t>(row);
+      for (int col = body_roi.x; col < body_roi.x + body_roi.width; ++col) {
+        if (row_ptr[col] > 0U) {++valid_px;}
+      }
+    }
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 500,
-      "3D estimation failed: insufficient depth or high IQR");
+      "3D estimation failed: body_roi=(%d,%d,%dx%d) valid_depth_px=%d/%d (need %d) "
+      "depth_size=%dx%d det_roi=(%.0f,%.0f,%.0fx%.0f)",
+      body_roi.x, body_roi.y, body_roi.width, body_roi.height,
+      valid_px, body_roi.area(), min_valid_depth_pixels_,
+      depth.cols, depth.rows,
+      det_roi.x, det_roi.y, det_roi.width, det_roi.height);
     return;
   }
 
@@ -654,16 +681,19 @@ void VisualServoNode::handle_estimate_bottle_3d()
   bottle_estimate_ = estimate;
 
   // Synthesize grasp and pre-grasp poses
-  grasp_pose_ = make_grasp_pose(
+  const auto bottle_center_pose = make_grasp_pose(
     bottle_in_arm_base,
     bottle_grasp_orient_x_, bottle_grasp_orient_y_,
     bottle_grasp_orient_z_, bottle_grasp_orient_w_);
+  grasp_pose_ = offset_pose_along_tool_z(bottle_center_pose, eef_link_to_grasp_offset_m_);
 
   pregrasp_pose_ = make_pregrasp_pose(grasp_pose_, pregrasp_offset_m_);
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Grasp pose: [%.3f,%.3f,%.3f] Pre-grasp: [%.3f,%.3f,%.3f]",
+    "Bottle center: [%.3f,%.3f,%.3f] EEF grasp target: [%.3f,%.3f,%.3f] "
+    "Pre-grasp: [%.3f,%.3f,%.3f]",
+    bottle_center_pose.position.x, bottle_center_pose.position.y, bottle_center_pose.position.z,
     grasp_pose_.position.x, grasp_pose_.position.y, grasp_pose_.position.z,
     pregrasp_pose_.position.x, pregrasp_pose_.position.y, pregrasp_pose_.position.z);
 
@@ -719,6 +749,44 @@ void VisualServoNode::handle_exec_pregrasp()
   }
 
   const double residual = compute_position_residual(current_ee, pregrasp_pose_);
+
+  // Stall detection: if the residual hasn't decreased meaningfully, the MoveIt
+  // goal likely failed (e.g. planning failure / ABORTED).  Detect this early
+  // instead of waiting for the full timeout.
+  constexpr double kStallThreshold = 0.002;   // metres
+  constexpr double kStallWindowSec = 3.0;     // seconds without progress
+  if (elapsed < 0.5) {
+    // Seed the baseline on first evaluation
+    pregrasp_best_residual_ = residual;
+    pregrasp_best_residual_time_ = this->now();
+  } else {
+    if (residual < pregrasp_best_residual_ - kStallThreshold) {
+      pregrasp_best_residual_ = residual;
+      pregrasp_best_residual_time_ = this->now();
+    }
+    const double stall_elapsed =
+      (this->now() - pregrasp_best_residual_time_).seconds();
+    if (stall_elapsed > kStallWindowSec) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Pre-grasp stall detected: residual=%.4f unchanged for %.1f sec "
+        "(MoveIt goal may have failed). Retrying.",
+        residual, stall_elapsed);
+      // Re-send the MoveGroup goal once, then reset the stall timer
+      publish_move_group_target(pregrasp_pose_);
+      pregrasp_best_residual_ = residual;
+      pregrasp_best_residual_time_ = this->now();
+      pregrasp_retry_count_++;
+      if (pregrasp_retry_count_ > 1) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Pre-grasp failed after %d retries, giving up.",
+          pregrasp_retry_count_);
+        transition_to(ServoState::LOST);
+        return;
+      }
+    }
+  }
 
   RCLCPP_INFO_THROTTLE(
     this->get_logger(), *this->get_clock(), 1000,
@@ -962,13 +1030,34 @@ void VisualServoNode::handle_lost()
 
 void VisualServoNode::publish_move_group_target(const geometry_msgs::msg::Pose & target_pose)
 {
+  // The adapter runs with eef_target_is_delta=true, so we must send the
+  // delta from the current EE pose to the desired target, not the absolute pose.
+  geometry_msgs::msg::PoseStamped current_ee;
+  geometry_msgs::msg::Pose delta_pose;
+  if (get_current_ee_pose(current_ee)) {
+    delta_pose.position.x = target_pose.position.x - current_ee.pose.position.x;
+    delta_pose.position.y = target_pose.position.y - current_ee.pose.position.y;
+    delta_pose.position.z = target_pose.position.z - current_ee.pose.position.z;
+
+    // Compute delta rotation: q_delta = q_target * q_current^-1
+    tf2::Quaternion q_current, q_target;
+    tf2::fromMsg(current_ee.pose.orientation, q_current);
+    tf2::fromMsg(target_pose.orientation, q_target);
+    tf2::Quaternion q_delta = q_target * q_current.inverse();
+    q_delta.normalize();
+    delta_pose.orientation = tf2::toMsg(q_delta);
+  } else {
+    RCLCPP_WARN(this->get_logger(), "Cannot compute delta for MoveGroup target: TF lookup failed");
+    return;
+  }
+
   manipulation_msgs::msg::PolicyOutput msg;
   msg.header.stamp = this->now();
   msg.header.frame_id = reference_frame_;
   msg.reference_frame = reference_frame_;
   msg.confidence = 1.0;
   msg.has_eef_target = true;
-  msg.eef_target_pose = target_pose;
+  msg.eef_target_pose = delta_pose;
   msg.has_joint_deltas = false;
   msg.gripper_active = true;
   msg.gripper_command = open_gripper_command_;

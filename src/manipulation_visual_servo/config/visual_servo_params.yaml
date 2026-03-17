@@ -20,7 +20,7 @@ visual_servo:
   # State machine timeouts
   lost_target_timeout_sec: 2.0
   acquire_timeout_sec: 5.0
-  estimate_timeout_sec: 3.0
+  estimate_timeout_sec: 5.0
   pregrasp_timeout_sec: 15.0
   final_servo_timeout_sec: 10.0
   verify_timeout_sec: 2.0
@@ -42,6 +42,7 @@ visual_servo:
   depth_stale_timeout_sec: 1.0
 
   # Hybrid pick parameters
+  eef_link_to_grasp_offset_m: 0.10     # Retract the commanded EEF link from the bottle center along tool Z
   pregrasp_offset_m: 0.08             # Distance to retract along approach axis for pre-grasp pose
   final_servo_distance_m: 0.04        # Switch to Servo for the last N meters of approach
   grasp_settle_sec: 1.0               # Wait time after gripper open/close before next state
