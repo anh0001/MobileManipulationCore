@@ -461,10 +461,16 @@ private:
       return false;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Processing EEF target at [%.4f, %.4f, %.4f]",
+    RCLCPP_DEBUG(this->get_logger(), "Processing EEF target at [%.4f, %.4f, %.4f]",
                 target_out.pose.position.x,
                 target_out.pose.position.y,
                 target_out.pose.position.z);
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                "[EEF] target=[%.4f, %.4f, %.4f] frame=%s",
+                target_out.pose.position.x,
+                target_out.pose.position.y,
+                target_out.pose.position.z,
+                target_out.header.frame_id.c_str());
 
     // Per-message arm_command_mode override takes precedence over the global
     // arm_execution_mode parameter, allowing a single pick sequence to mix
@@ -538,7 +544,7 @@ private:
 
   void processGripperCommand(double command)
   {
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
       "[GRIPPER] processGripperCommand called with command=%.4f last=%s",
       command,
       last_gripper_command_.has_value() ?
@@ -566,12 +572,20 @@ private:
       return;
     }
 
-    RCLCPP_INFO(this->get_logger(),
-      "[GRIPPER] Processing command=%.4f (last=%s) -> action=%s",
-      clamped,
-      last_gripper_command_.has_value() ?
-        std::to_string(last_gripper_command_.value()).c_str() : "none",
-      gripper_follow_joint_trajectory_action_.c_str());
+    const bool is_change = !last_gripper_command_.has_value() ||
+      std::abs(last_gripper_command_.value() - clamped) >= gripper_command_epsilon_;
+    if (is_change) {
+      RCLCPP_INFO(this->get_logger(),
+        "[GRIPPER] command=%.4f (was=%s) -> action=%s",
+        clamped,
+        last_gripper_command_.has_value() ?
+          std::to_string(last_gripper_command_.value()).c_str() : "none",
+        gripper_follow_joint_trajectory_action_.c_str());
+    } else {
+      RCLCPP_DEBUG(this->get_logger(),
+        "[GRIPPER] re-sending command=%.4f (periodic keep-alive)",
+        clamped);
+    }
 
     bool sent = false;
     if (!gripper_joint_names_.empty()) {
@@ -603,7 +617,9 @@ private:
     }
 
     if (sent) {
-      RCLCPP_INFO(this->get_logger(), "[GRIPPER] Goal sent successfully, command=%.4f", clamped);
+      if (is_change) {
+        RCLCPP_INFO(this->get_logger(), "[GRIPPER] Goal sent OK, command=%.4f", clamped);
+      }
       last_gripper_command_ = clamped;
       last_gripper_send_time_ = now;
     } else {
@@ -1461,6 +1477,13 @@ private:
       tf2::Vector3 target_translation = current_ee.getOrigin() + delta_translation;
       tf2::Quaternion target_rotation = delta_rotation * current_ee.getRotation();
       target_rotation.normalize();
+
+      RCLCPP_DEBUG(this->get_logger(),
+        "[EEF_DELTA] ee=[%.4f,%.4f,%.4f] + delta=[%.4f,%.4f,%.4f] = target=[%.4f,%.4f,%.4f] in %s",
+        current_ee.getOrigin().x(), current_ee.getOrigin().y(), current_ee.getOrigin().z(),
+        delta_translation.x(), delta_translation.y(), delta_translation.z(),
+        target_translation.x(), target_translation.y(), target_translation.z(),
+        reference_frame.c_str());
 
       pose_in_ref.pose.position.x = target_translation.x();
       pose_in_ref.pose.position.y = target_translation.y();

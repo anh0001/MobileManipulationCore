@@ -863,8 +863,12 @@ void VisualServoNode::handle_exec_pregrasp()
 
   RCLCPP_INFO_THROTTLE(
     this->get_logger(), *this->get_clock(), 1000,
-    "[EXEC_PREGRASP] residual=%.4f threshold=%.4f elapsed=%.1f",
-    residual, final_servo_distance_m_, elapsed);
+    "[EXEC_PREGRASP] residual=%.4f (threshold=%.4f) ee=[%.3f,%.3f,%.3f] target=[%.3f,%.3f,%.3f] t=%.1fs%s",
+    residual, final_servo_distance_m_,
+    current_ee.pose.position.x, current_ee.pose.position.y, current_ee.pose.position.z,
+    pregrasp_pose_.position.x, pregrasp_pose_.position.y, pregrasp_pose_.position.z,
+    elapsed,
+    (residual < final_servo_distance_m_) ? " [CLOSE - switching soon]" : "");
 
   // When EE is within final_servo_distance of the grasp pose, switch to servo
   const double dist_to_grasp = compute_position_residual(current_ee, grasp_pose_);
@@ -911,11 +915,13 @@ void VisualServoNode::handle_final_servo()
   }
 
   RCLCPP_INFO_THROTTLE(
-    this->get_logger(), *this->get_clock(), 500,
-    "[FINAL_SERVO] pos_residual=%.4f (tol=%.4f) img_err=%.1f (tol=%.1f) streak=%d/%d",
+    this->get_logger(), *this->get_clock(), 1000,
+    "[FINAL_SERVO] pos_err=%.4f/%.4f dx=%.4f dy=%.4f dz=%.4f | img_err=%.1f/%.1f | streak=%d/%d | t=%.1fs",
     pos_residual, final_position_tolerance_m_,
+    pos_error.x, pos_error.y, pos_error.z,
     image_err, final_image_tolerance_px_,
-    convergence_streak_, final_convergence_cycles_);
+    convergence_streak_, final_convergence_cycles_,
+    elapsed);
 
   // Check convergence
   const bool pos_ok = pos_residual <= final_position_tolerance_m_;
@@ -1123,6 +1129,12 @@ void VisualServoNode::publish_move_group_target(const geometry_msgs::msg::Pose &
     RCLCPP_WARN(this->get_logger(), "Cannot compute delta for MoveGroup target: TF lookup failed");
     return;
   }
+
+  RCLCPP_INFO(this->get_logger(),
+    "[MOVE_GROUP] target=[%.3f,%.3f,%.3f] current_ee=[%.3f,%.3f,%.3f] delta=[%.3f,%.3f,%.3f]",
+    target_pose.position.x, target_pose.position.y, target_pose.position.z,
+    current_ee.pose.position.x, current_ee.pose.position.y, current_ee.pose.position.z,
+    delta_pose.position.x, delta_pose.position.y, delta_pose.position.z);
 
   manipulation_msgs::msg::PolicyOutput msg;
   msg.header.stamp = this->now();
