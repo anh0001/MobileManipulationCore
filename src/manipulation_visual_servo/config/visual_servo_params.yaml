@@ -29,7 +29,7 @@ visual_servo:
   # TF frames
   reference_frame: "piper_base_link"
   camera_optical_frame: "piper_camera_optical_frame"
-  ee_frame: "piper_link6"
+  ee_frame: "piper_tcp"
   arm_base_frame: "piper_base_link"
 
   # Depth sampling for 3D estimation
@@ -42,7 +42,7 @@ visual_servo:
   depth_stale_timeout_sec: 1.0
 
   # Hybrid pick parameters
-  eef_link_to_grasp_offset_m: 0.10     # Retract the commanded EEF link from the bottle center along the approach axis
+  eef_link_to_grasp_offset_m: 0.0      # Start with no extra EEF-to-grasp offset while validating TCP alignment
   pregrasp_offset_m: 0.08             # Additional retreat distance along the approach axis for pre-grasp pose
   grasp_approach_axis_x: 0.0          # Approach axis in arm_base_frame; default is top-down over a table
   grasp_approach_axis_y: 0.0
@@ -53,13 +53,11 @@ visual_servo:
   retreat_distance_m: 0.05            # Backward retreat after lift
 
   # Fixed bottle grasp orientation (quaternion xyzw in arm_base_frame)
-  # Ranger MoveIt uses piper_link6 as the wrist/gripper frame. Match the
-  # ranger pose commander orientation so tool +Z points roughly along
-  # arm-base +X and grasp/pre-grasp offsets retract along the approach axis.
-  bottle_grasp_orientation_x: 0.0
-  bottle_grasp_orientation_y: 0.70710678
+  # Top-down grasp for piper_tcp: tool +Z points along arm-base -Z.
+  bottle_grasp_orientation_x: 1.0
+  bottle_grasp_orientation_y: 0.0
   bottle_grasp_orientation_z: 0.0
-  bottle_grasp_orientation_w: 0.70710678
+  bottle_grasp_orientation_w: 0.0
 
   # Convergence thresholds
   final_position_tolerance_m: 0.008   # Cartesian residual threshold for close command

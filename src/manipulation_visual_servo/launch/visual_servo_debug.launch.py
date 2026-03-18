@@ -111,7 +111,7 @@ def generate_launch_description():
                 # Frames
                 'reference_frame': LaunchConfiguration('reference_frame'),
                 'camera_optical_frame': LaunchConfiguration('camera_optical_frame'),
-                'ee_frame': str(vs_cfg.get('ee_frame', 'piper_link6')),
+                'ee_frame': str(vs_cfg.get('ee_frame', 'piper_tcp')),
                 'arm_base_frame': str(vs_cfg.get('arm_base_frame', 'piper_base_link')),
                 # General
                 'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
@@ -152,7 +152,7 @@ def generate_launch_description():
                 'pregrasp_offset_m': float(
                     vs_cfg.get('pregrasp_offset_m', 0.08)),
                 'eef_link_to_grasp_offset_m': float(
-                    vs_cfg.get('eef_link_to_grasp_offset_m', 0.10)),
+                    vs_cfg.get('eef_link_to_grasp_offset_m', 0.0)),
                 'grasp_approach_axis_x': float(
                     vs_cfg.get('grasp_approach_axis_x', 0.0)),
                 'grasp_approach_axis_y': float(

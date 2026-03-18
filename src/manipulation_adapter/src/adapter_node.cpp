@@ -125,7 +125,7 @@ public:
   {
     // Declare parameters
     this->declare_parameter<std::string>("base_frame", "base_link");
-    this->declare_parameter<std::string>("ee_frame", "piper_gripper_base");
+    this->declare_parameter<std::string>("ee_frame", "piper_tcp");
     this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
     this->declare_parameter<std::string>("navigate_to_pose_action", "/navigate_to_pose");
     this->declare_parameter<std::string>(
@@ -133,7 +133,7 @@ public:
     this->declare_parameter<bool>("use_moveit", true);
     this->declare_parameter<std::string>("move_group_action", "/move_action");
     this->declare_parameter<std::string>("move_group_name", "arm");
-    this->declare_parameter<std::string>("move_group_eef_link", "piper_link6");
+    this->declare_parameter<std::string>("move_group_eef_link", "piper_tcp");
     this->declare_parameter<double>("moveit_action_wait_sec", 1.0);
     this->declare_parameter<double>("moveit_planning_time", 2.0);
     this->declare_parameter<int>("moveit_planning_attempts", 3);

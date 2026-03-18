@@ -73,7 +73,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // Declare parameters — frames
   this->declare_parameter("reference_frame", "piper_base_link");
   this->declare_parameter("camera_optical_frame", "piper_camera_optical_frame");
-  this->declare_parameter("ee_frame", "piper_link6");
+  this->declare_parameter("ee_frame", "piper_tcp");
   this->declare_parameter("arm_base_frame", "piper_base_link");
 
   // Declare parameters — general
@@ -101,7 +101,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 
   // Declare parameters — hybrid pick
   this->declare_parameter("pregrasp_offset_m", 0.08);
-  this->declare_parameter("eef_link_to_grasp_offset_m", 0.10);
+  this->declare_parameter("eef_link_to_grasp_offset_m", 0.0);
   this->declare_parameter("grasp_approach_axis_x", 0.0);
   this->declare_parameter("grasp_approach_axis_y", 0.0);
   this->declare_parameter("grasp_approach_axis_z", -1.0);
