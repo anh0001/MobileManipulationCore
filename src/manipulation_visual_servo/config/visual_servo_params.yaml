@@ -57,8 +57,8 @@ visual_servo:
   # piper_base_link, not relative to the object.
   # Convention: standard ROS fixed-axis roll, pitch, yaw about base-frame +X, +Y, +Z.
   # With piper_tcp local +Z as tool-forward, roll=180 points the TCP down.
-  object_grasp_roll_deg: 180.0
-  object_grasp_pitch_deg: 0.0
+  object_grasp_roll_deg: 0.0
+  object_grasp_pitch_deg: 120.0
   object_grasp_yaw_deg: 0.0
 
   # Convergence thresholds

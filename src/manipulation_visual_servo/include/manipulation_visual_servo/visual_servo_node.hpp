@@ -105,6 +105,7 @@ private:
   double compute_position_residual(
     const geometry_msgs::msg::PoseStamped & current_ee,
     const geometry_msgs::msg::Pose & target);
+  bool is_pose_position_within_workspace(const geometry_msgs::msg::Pose & pose) const;
 
   // Publishing
   void publish_move_group_target(const geometry_msgs::msg::Pose & target_pose);
@@ -239,6 +240,14 @@ private:
   double final_position_tolerance_m_;
   double final_image_tolerance_px_;
   int final_convergence_cycles_;
+
+  // Parameters - workspace guard in arm_base_frame
+  double workspace_x_min_;
+  double workspace_x_max_;
+  double workspace_y_min_;
+  double workspace_y_max_;
+  double workspace_z_min_;
+  double workspace_z_max_;
 
   // Parameters — gripper
   double open_gripper_command_;

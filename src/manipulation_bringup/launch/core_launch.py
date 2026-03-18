@@ -663,6 +663,12 @@ def generate_launch_description():
             'arm_base_frame': str(vs_cfg.get(
                 'arm_base_frame',
                 robot_frames.get('arm_base', 'piper_base_link'))),
+            'workspace_x_min': float(workspace_cfg.get('x_min', -0.1)),
+            'workspace_x_max': float(workspace_cfg.get('x_max', 0.9)),
+            'workspace_y_min': float(workspace_cfg.get('y_min', -0.6)),
+            'workspace_y_max': float(workspace_cfg.get('y_max', 0.6)),
+            'workspace_z_min': float(workspace_cfg.get('z_min', -0.2)),
+            'workspace_z_max': float(workspace_cfg.get('z_max', 1.0)),
             'tracker_type': str(vs_cfg.get('tracker_type', 'klt')),
             'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
             'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),

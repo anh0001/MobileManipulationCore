@@ -134,6 +134,14 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("final_image_tolerance_px", 12.0);
   this->declare_parameter("final_convergence_cycles", 3);
 
+  // Declare parameters — workspace guard in arm_base_frame
+  this->declare_parameter("workspace_x_min", -0.1);
+  this->declare_parameter("workspace_x_max", 0.9);
+  this->declare_parameter("workspace_y_min", -0.6);
+  this->declare_parameter("workspace_y_max", 0.6);
+  this->declare_parameter("workspace_z_min", -0.2);
+  this->declare_parameter("workspace_z_max", 1.0);
+
   // Declare parameters — gripper
   this->declare_parameter("open_gripper_command", 1.0);
   this->declare_parameter("close_gripper_command", 0.0);
@@ -239,12 +247,14 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
       object_grasp_quat.normalize();
       RCLCPP_WARN(
         this->get_logger(),
-        "Deprecated quaternion grasp parameters were invalid; falling back to Euler grasp parameters.");
+        "Deprecated quaternion grasp parameters were invalid; "
+        "falling back to Euler grasp parameters.");
     } else {
       object_grasp_quat.normalize();
       RCLCPP_WARN(
         this->get_logger(),
-        "Using deprecated quaternion grasp parameters. Prefer object_grasp_roll_deg / pitch_deg / yaw_deg.");
+        "Using deprecated quaternion grasp parameters. "
+        "Prefer object_grasp_roll_deg / pitch_deg / yaw_deg.");
     }
   }
 
@@ -257,6 +267,14 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   final_position_tolerance_m_ = this->get_parameter("final_position_tolerance_m").as_double();
   final_image_tolerance_px_ = this->get_parameter("final_image_tolerance_px").as_double();
   final_convergence_cycles_ = this->get_parameter("final_convergence_cycles").as_int();
+
+  // Read parameters — workspace guard in arm_base_frame
+  workspace_x_min_ = this->get_parameter("workspace_x_min").as_double();
+  workspace_x_max_ = this->get_parameter("workspace_x_max").as_double();
+  workspace_y_min_ = this->get_parameter("workspace_y_min").as_double();
+  workspace_y_max_ = this->get_parameter("workspace_y_max").as_double();
+  workspace_z_min_ = this->get_parameter("workspace_z_min").as_double();
+  workspace_z_max_ = this->get_parameter("workspace_z_max").as_double();
 
   // Read parameters — gripper
   open_gripper_command_ = this->get_parameter("open_gripper_command").as_double();
@@ -344,6 +362,13 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     object_grasp_orient_x_, object_grasp_orient_y_,
     object_grasp_orient_z_, object_grasp_orient_w_,
     final_position_tolerance_m_, final_image_tolerance_px_, final_convergence_cycles_);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Workspace guard (%s): x=[%.3f,%.3f] y=[%.3f,%.3f] z=[%.3f,%.3f]",
+    arm_base_frame_.c_str(),
+    workspace_x_min_, workspace_x_max_,
+    workspace_y_min_, workspace_y_max_,
+    workspace_z_min_, workspace_z_max_);
 }
 
 // --- Sensor callbacks ---
@@ -623,6 +648,15 @@ double VisualServoNode::compute_position_residual(
   return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+bool VisualServoNode::is_pose_position_within_workspace(
+  const geometry_msgs::msg::Pose & pose) const
+{
+  return
+    pose.position.x >= workspace_x_min_ && pose.position.x <= workspace_x_max_ &&
+    pose.position.y >= workspace_y_min_ && pose.position.y <= workspace_y_max_ &&
+    pose.position.z >= workspace_z_min_ && pose.position.z <= workspace_z_max_;
+}
+
 // --- State handlers ---
 
 void VisualServoNode::handle_idle()
@@ -745,8 +779,6 @@ void VisualServoNode::handle_estimate_bottle_3d()
     bottle_in_arm_base.x, bottle_in_arm_base.y, bottle_in_arm_base.z,
     estimate->valid_pixels, estimate->depth_iqr_m);
 
-  bottle_estimate_ = estimate;
-
   // Synthesize grasp and pre-grasp poses
   const auto bottle_center_pose = make_grasp_pose(
     bottle_in_arm_base,
@@ -761,6 +793,23 @@ void VisualServoNode::handle_estimate_bottle_3d()
     bottle_center_pose, grasp_approach_axis, eef_link_to_grasp_offset_m_);
   pregrasp_pose_ = offset_pose_along_axis(
     grasp_pose_, grasp_approach_axis, pregrasp_offset_m_);
+
+  if (!is_pose_position_within_workspace(pregrasp_pose_)) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Rejecting 3D estimate outside workspace (%s): bottle=[%.3f,%.3f,%.3f] "
+      "pregrasp=[%.3f,%.3f,%.3f] bounds x=[%.2f,%.2f] y=[%.2f,%.2f] z=[%.2f,%.2f]",
+      arm_base_frame_.c_str(),
+      bottle_center_pose.position.x, bottle_center_pose.position.y, bottle_center_pose.position.z,
+      pregrasp_pose_.position.x, pregrasp_pose_.position.y, pregrasp_pose_.position.z,
+      workspace_x_min_, workspace_x_max_,
+      workspace_y_min_, workspace_y_max_,
+      workspace_z_min_, workspace_z_max_);
+    transition_to(ServoState::LOST);
+    return;
+  }
+
+  bottle_estimate_ = estimate;
 
   RCLCPP_INFO(
     this->get_logger(),
@@ -822,6 +871,18 @@ void VisualServoNode::handle_exec_pregrasp()
   }
 
   const double residual = compute_position_residual(current_ee, pregrasp_pose_);
+  const double dist_to_grasp = compute_position_residual(current_ee, grasp_pose_);
+
+  const double pregrasp_handoff_distance = std::max(final_servo_distance_m_, 0.005);
+  if (residual <= pregrasp_handoff_distance || dist_to_grasp <= final_servo_distance_m_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Pre-grasp handoff reached: pregrasp_residual=%.4f grasp_residual=%.4f "
+      "handoff=%.4f -> switching to FINAL_SERVO",
+      residual, dist_to_grasp, pregrasp_handoff_distance);
+    transition_to(ServoState::FINAL_SERVO);
+    return;
+  }
 
   // Stall detection: if the residual hasn't decreased meaningfully, the MoveIt
   // goal likely failed (e.g. planning failure / ABORTED).  Detect this early
@@ -862,19 +923,15 @@ void VisualServoNode::handle_exec_pregrasp()
   }
 
   RCLCPP_INFO_THROTTLE(
-    this->get_logger(), *this->get_clock(), 1000,
-    "[EXEC_PREGRASP] residual=%.4f (threshold=%.4f) ee=[%.3f,%.3f,%.3f] target=[%.3f,%.3f,%.3f] t=%.1fs%s",
+    this->get_logger(),
+    *this->get_clock(), 1000,
+    "[EXEC_PREGRASP] residual=%.4f (threshold=%.4f) ee=[%.3f,%.3f,%.3f] "
+    "target=[%.3f,%.3f,%.3f] t=%.1fs%s",
     residual, final_servo_distance_m_,
     current_ee.pose.position.x, current_ee.pose.position.y, current_ee.pose.position.z,
     pregrasp_pose_.position.x, pregrasp_pose_.position.y, pregrasp_pose_.position.z,
     elapsed,
     (residual < final_servo_distance_m_) ? " [CLOSE - switching soon]" : "");
-
-  // When EE is within final_servo_distance of the grasp pose, switch to servo
-  const double dist_to_grasp = compute_position_residual(current_ee, grasp_pose_);
-  if (dist_to_grasp <= final_servo_distance_m_ || residual < 0.005) {
-    transition_to(ServoState::FINAL_SERVO);
-  }
 }
 
 void VisualServoNode::handle_final_servo()
@@ -915,8 +972,10 @@ void VisualServoNode::handle_final_servo()
   }
 
   RCLCPP_INFO_THROTTLE(
-    this->get_logger(), *this->get_clock(), 1000,
-    "[FINAL_SERVO] pos_err=%.4f/%.4f dx=%.4f dy=%.4f dz=%.4f | img_err=%.1f/%.1f | streak=%d/%d | t=%.1fs",
+    this->get_logger(),
+    *this->get_clock(), 1000,
+    "[FINAL_SERVO] pos_err=%.4f/%.4f dx=%.4f dy=%.4f dz=%.4f | "
+    "img_err=%.1f/%.1f | streak=%d/%d | t=%.1fs",
     pos_residual, final_position_tolerance_m_,
     pos_error.x, pos_error.y, pos_error.z,
     image_err, final_image_tolerance_px_,
@@ -1126,11 +1185,14 @@ void VisualServoNode::publish_move_group_target(const geometry_msgs::msg::Pose &
     q_delta.normalize();
     delta_pose.orientation = tf2::toMsg(q_delta);
   } else {
-    RCLCPP_WARN(this->get_logger(), "Cannot compute delta for MoveGroup target: TF lookup failed");
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Cannot compute delta for MoveGroup target: TF lookup failed");
     return;
   }
 
-  RCLCPP_INFO(this->get_logger(),
+  RCLCPP_INFO(
+    this->get_logger(),
     "[MOVE_GROUP] target=[%.3f,%.3f,%.3f] current_ee=[%.3f,%.3f,%.3f] delta=[%.3f,%.3f,%.3f]",
     target_pose.position.x, target_pose.position.y, target_pose.position.z,
     current_ee.pose.position.x, current_ee.pose.position.y, current_ee.pose.position.z,
