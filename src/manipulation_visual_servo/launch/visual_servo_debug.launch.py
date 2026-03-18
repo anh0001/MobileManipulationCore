@@ -83,8 +83,16 @@ def generate_launch_description():
             description='Reference frame for output poses'),
         DeclareLaunchArgument(
             'camera_optical_frame',
-            default_value='piper_camera_optical_frame',
+            default_value=vs_cfg.get('camera_optical_frame', 'piper_camera_optical_frame'),
             description='Camera optical frame for TF'),
+        DeclareLaunchArgument(
+            'ee_frame',
+            default_value=vs_cfg.get('ee_frame', 'piper_tcp'),
+            description='End-effector tool frame'),
+        DeclareLaunchArgument(
+            'arm_base_frame',
+            default_value=vs_cfg.get('arm_base_frame', 'piper_base_link'),
+            description='Arm base frame for output and TF'),
         DeclareLaunchArgument(
             'control_rate_hz',
             default_value=str(vs_cfg.get('control_rate_hz', 20.0)),
@@ -103,6 +111,8 @@ def generate_launch_description():
                 'output_topic': LaunchConfiguration('output_topic'),
                 'reference_frame': LaunchConfiguration('reference_frame'),
                 'camera_optical_frame': LaunchConfiguration('camera_optical_frame'),
+                'ee_frame': LaunchConfiguration('ee_frame'),
+                'arm_base_frame': LaunchConfiguration('arm_base_frame'),
                 'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
                 'output_delta_horizon_sec': float(vs_cfg.get('output_delta_horizon_sec', 0.0)),
                 'use_depth': bool(vs_cfg.get('use_depth', False)),
@@ -147,7 +157,7 @@ def generate_launch_description():
                     vs_cfg.get('open_gripper_command', 1.0)),
                 'close_gripper_command': float(
                     vs_cfg.get('close_gripper_command', 0.0)),
-                'tracker_type': str(vs_cfg.get('tracker_type', 'klt')),
+                'tracker_type': str(vs_cfg.get('tracker_type', 'mil')),
                 'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
                 'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),
                 'klt_min_distance': float(vs_cfg.get('klt_min_distance', 5.0)),

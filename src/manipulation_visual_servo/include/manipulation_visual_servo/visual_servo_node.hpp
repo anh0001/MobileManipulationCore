@@ -68,7 +68,7 @@ private:
   void detection_callback(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg);
   void control_timer_callback();
 
-  void transition_to(ServoState new_state);
+  void transition_to(ServoState new_state, const std::string & reason = "");
   void handle_idle();
   void handle_acquire();
   void handle_track();

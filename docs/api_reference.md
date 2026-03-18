@@ -245,7 +245,7 @@ ros2 run manipulation_policy policy_node \
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `base_frame` | string | `base_link` | Base reference frame |
-| `ee_frame` | string | `piper_gripper_base` | End-effector frame |
+| `ee_frame` | string | `piper_tcp` | End-effector frame |
 | `joint_states_topic` | string | `/joint_states` | Joint states topic |
 | `navigate_to_pose_action` | string | `/navigate_to_pose` | Nav2 action name |
 | `follow_joint_trajectory_action` | string | `/arm_controller/follow_joint_trajectory` | Arm trajectory action name |
@@ -253,7 +253,7 @@ ros2 run manipulation_policy policy_node \
 | `use_moveit` | bool | true | Use MoveIt for EEF pose targets |
 | `move_group_action` | string | `/move_action` | MoveIt MoveGroup action name |
 | `move_group_name` | string | `arm` | MoveIt planning group |
-| `move_group_eef_link` | string | `piper_link6` | Link constrained for MoveIt goals |
+| `move_group_eef_link` | string | `piper_tcp` | Link constrained for MoveIt goals |
 | `moveit_action_wait_sec` | double | 1.0 | MoveIt action wait time (s) |
 | `moveit_planning_time` | double | 2.0 | Planning time (s) |
 | `moveit_planning_attempts` | int | 3 | Planning attempts |
@@ -477,7 +477,7 @@ def generate_launch_description():
 - **camera_optical_frame**: Camera optical center (ROS convention: +X right, +Y down, +Z forward)
 - **piper_link_0**: Arm base (coincident with base_link)
 - **piper_link_1..6**: Arm links
-- **piper_gripper_base**: End-effector (gripper center point)
+- **piper_tcp**: Tool center point mounted after `piper_link6`
 
 ### Transform Relationships
 
@@ -490,7 +490,8 @@ map
          └─ piper_link_0
              └─ piper_link_1
                  └─ ...
-                     └─ piper_gripper_base
+                     └─ piper_link6
+                         └─ piper_tcp
 ```
 
 ---

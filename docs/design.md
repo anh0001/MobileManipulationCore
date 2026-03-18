@@ -185,7 +185,7 @@ Required frames:
 - `odom` - odometry frame
 - `base_link` - robot base
 - `piper_link_*` - arm links
-- `piper_gripper_base` - end-effector
+- `piper_tcp` - end-effector TCP mounted after `piper_link6`
 - `camera_link` - camera mount
 - `camera_color_optical_frame` - camera optical frame
 

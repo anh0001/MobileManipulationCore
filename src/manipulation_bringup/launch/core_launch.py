@@ -406,7 +406,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'base_frame': robot_frames.get('base_link', 'base_link'),
-            'ee_frame': robot_frames.get('ee_link', 'piper_gripper_base'),
+            'ee_frame': robot_frames.get('ee_link', 'piper_tcp'),
             'joint_states_topic': robot_topics.get('joint_states', '/joint_states'),
             'navigate_to_pose_action': robot_actions.get('navigate_to_pose', '/navigate_to_pose'),
             'follow_joint_trajectory_action': robot_actions.get(
@@ -418,7 +418,7 @@ def generate_launch_description():
             'use_moveit': bool(moveit_cfg.get('enabled', False)),
             'move_group_action': moveit_cfg.get('move_group_action', '/move_action'),
             'move_group_name': moveit_cfg.get('move_group_name', 'arm'),
-            'move_group_eef_link': moveit_cfg.get('eef_link', 'piper_link6'),
+            'move_group_eef_link': moveit_cfg.get('eef_link', 'piper_tcp'),
             'moveit_action_wait_sec': float(moveit_cfg.get('action_wait_sec', 1.0)),
             'moveit_planning_time': float(moveit_cfg.get('planning_time', 2.0)),
             'moveit_planning_attempts': int(moveit_cfg.get('planning_attempts', 3)),
@@ -613,12 +613,19 @@ def generate_launch_description():
                 vs_cfg.get('open_gripper_command', 1.0)),
             'close_gripper_command': float(
                 vs_cfg.get('close_gripper_command', 0.0)),
-            'reference_frame': robot_frames.get('arm_base', 'piper_base_link'),
-            'camera_optical_frame': robot_frames.get('camera_optical',
-                'piper_camera_optical_frame'),
-            'ee_frame': robot_frames.get('ee_link', 'piper_link6'),
-            'arm_base_frame': robot_frames.get('arm_base', 'piper_base_link'),
-            'tracker_type': str(vs_cfg.get('tracker_type', 'klt')),
+            'reference_frame': str(vs_cfg.get(
+                'reference_frame',
+                robot_frames.get('arm_base', 'piper_base_link'))),
+            'camera_optical_frame': str(vs_cfg.get(
+                'camera_optical_frame',
+                robot_frames.get('camera_optical', 'piper_camera_optical_frame'))),
+            'ee_frame': str(vs_cfg.get(
+                'ee_frame',
+                robot_frames.get('ee_link', 'piper_tcp'))),
+            'arm_base_frame': str(vs_cfg.get(
+                'arm_base_frame',
+                robot_frames.get('arm_base', 'piper_base_link'))),
+            'tracker_type': str(vs_cfg.get('tracker_type', 'mil')),
             'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
             'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),
             'klt_min_distance': float(vs_cfg.get('klt_min_distance', 5.0)),

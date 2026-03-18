@@ -48,6 +48,22 @@
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Transform.h>
 
+namespace
+{
+
+std::string describeNormalizedGripperCommand(double command)
+{
+  if (command >= 0.95) {
+    return "open";
+  }
+  if (command <= 0.05) {
+    return "close";
+  }
+  return "partial";
+}
+
+}  // namespace
+
 /**
  * @brief Adapter node that maps policy outputs to hardware commands
  *
@@ -67,7 +83,7 @@ public:
   {
     // Declare parameters
     this->declare_parameter<std::string>("base_frame", "base_link");
-    this->declare_parameter<std::string>("ee_frame", "piper_gripper_base");
+    this->declare_parameter<std::string>("ee_frame", "piper_tcp");
     this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
     this->declare_parameter<std::string>("navigate_to_pose_action", "/navigate_to_pose");
     this->declare_parameter<std::string>(
@@ -75,7 +91,7 @@ public:
     this->declare_parameter<bool>("use_moveit", true);
     this->declare_parameter<std::string>("move_group_action", "/move_action");
     this->declare_parameter<std::string>("move_group_name", "arm");
-    this->declare_parameter<std::string>("move_group_eef_link", "piper_link6");
+    this->declare_parameter<std::string>("move_group_eef_link", "piper_tcp");
     this->declare_parameter<double>("moveit_action_wait_sec", 1.0);
     this->declare_parameter<double>("moveit_planning_time", 2.0);
     this->declare_parameter<int>("moveit_planning_attempts", 3);
@@ -308,34 +324,45 @@ public:
       }
     }
 
-    RCLCPP_INFO(this->get_logger(), "Adapter node initialized");
-    RCLCPP_INFO(this->get_logger(), "  Base frame: %s", base_frame_.c_str());
-    RCLCPP_INFO(this->get_logger(), "  EE frame: %s", ee_frame_.c_str());
-    RCLCPP_INFO(this->get_logger(), "  MoveIt enabled: %s", use_moveit_ ? "true" : "false");
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[INIT] Adapter ready | base=%s arm_base=%s ee=%s workspace=%s",
+      base_frame_.c_str(), arm_base_frame_.c_str(), ee_frame_.c_str(), workspace_frame_id_.c_str());
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[INIT] Control | mode=%s moveit=%s delta_targets=%s",
+      arm_execution_mode_.c_str(), use_moveit_ ? "true" : "false",
+      eef_target_is_delta_ ? "true" : "false");
     if (use_moveit_) {
-      RCLCPP_INFO(this->get_logger(), "  MoveIt action: %s", move_group_action_.c_str());
-      RCLCPP_INFO(this->get_logger(), "  MoveIt group: %s", move_group_name_.c_str());
-      RCLCPP_INFO(this->get_logger(), "  MoveIt EEF link: %s", move_group_eef_link_.c_str());
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[INIT] MoveIt | action=%s group=%s eef_link=%s",
+        move_group_action_.c_str(), move_group_name_.c_str(), move_group_eef_link_.c_str());
     }
-    RCLCPP_INFO(this->get_logger(), "  EEF target is delta: %s", eef_target_is_delta_ ? "true" : "false");
-    RCLCPP_INFO(this->get_logger(), "  Arm base frame: %s", arm_base_frame_.c_str());
-    RCLCPP_INFO(this->get_logger(), "  Arm execution mode: %s", arm_execution_mode_.c_str());
-    RCLCPP_INFO(this->get_logger(), "  Startup ready pose enabled: %s",
-                move_to_ready_on_startup_ ? "true" : "false");
+    if (use_moveit_ && move_group_eef_link_ != ee_frame_) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[INIT] ee_frame='%s' differs from move_group_eef_link='%s'. "
+        "Use this only when TF and MoveIt are intentionally targeting different tool frames.",
+        ee_frame_.c_str(), move_group_eef_link_.c_str());
+    }
+    RCLCPP_INFO(
+      this->get_logger(), "[INIT] Startup ready pose=%s",
+      move_to_ready_on_startup_ ? "true" : "false");
     if (move_to_ready_on_startup_) {
       RCLCPP_INFO(
         this->get_logger(),
-        "  Startup ready pose: %zu joints, start delay %.2fs, retry period %.2fs, max attempts %d",
+        "[INIT] Ready pose | joints=%zu start_delay=%.2fs retry=%.2fs max_attempts=%d",
         ready_pose_joint_names_.size(), ready_pose_start_delay_sec_,
         ready_pose_retry_period_sec_, ready_pose_max_attempts_);
     }
     if (isServoMode()) {
-      RCLCPP_INFO(this->get_logger(), "  Servo cartesian topic: %s", servo_cartesian_topic_.c_str());
-      RCLCPP_INFO(this->get_logger(), "  Servo command horizon: %.3fs", servo_command_horizon_sec_);
-      RCLCPP_INFO(this->get_logger(), "  Servo publish rate: %.1fHz", servo_publish_rate_hz_);
-      RCLCPP_INFO(this->get_logger(), "  Pause base during servo: %s", pause_base_during_servo_ ? "true" : "false");
-      RCLCPP_INFO(this->get_logger(), "  Wait for Servo ready: %s", wait_for_servo_ready_ ? "true" : "false");
-      RCLCPP_INFO(this->get_logger(), "  Servo ready timeout: %.1fs", servo_ready_timeout_sec_);
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[INIT] Servo | topic=%s horizon=%.3fs rate=%.1fHz pause_base=%s wait_ready=%s timeout=%.1fs",
+        servo_cartesian_topic_.c_str(), servo_command_horizon_sec_, servo_publish_rate_hz_,
+        pause_base_during_servo_ ? "true" : "false",
+        wait_for_servo_ready_ ? "true" : "false", servo_ready_timeout_sec_);
     }
 
     // Initialize safety timestamp to avoid large "no policy output" elapsed time at startup.
@@ -350,7 +377,7 @@ private:
     if (move_to_ready_on_startup_ && !startup_ready_pose_completed_.load()) {
       RCLCPP_DEBUG_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
-        "Dropping policy output while startup ready pose is pending");
+        "[READY] dropping policy output while startup ready pose is pending");
       return;
     }
 
@@ -396,17 +423,24 @@ private:
     if (!isWithinWorkspace(target_out)) {
       RCLCPP_WARN(
         this->get_logger(),
-        "EEF target outside workspace bounds (in %s) [%.2f, %.2f] [%.2f, %.2f] [%.2f, %.2f]",
+        "[WORKSPACE] rejecting EEF target frame=%s xyz=(%.4f, %.4f, %.4f) outside %s "
+        "bounds x[%.2f, %.2f] y[%.2f, %.2f] z[%.2f, %.2f]",
+        target_out.header.frame_id.c_str(),
+        target_out.pose.position.x, target_out.pose.position.y, target_out.pose.position.z,
         workspace_frame_id_.c_str(),
         workspace_x_min_, workspace_x_max_, workspace_y_min_, workspace_y_max_,
         workspace_z_min_, workspace_z_max_);
       return false;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Processing EEF target at [%.4f, %.4f, %.4f]",
-                target_out.pose.position.x,
-                target_out.pose.position.y,
-                target_out.pose.position.z);
+    const std::string source_frame =
+      msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[EEF][%s] source=%s target=%s xyz=(%.4f, %.4f, %.4f)",
+      isServoMode() ? "SERVO" : "MOVEIT",
+      source_frame.c_str(), target_out.header.frame_id.c_str(),
+      target_out.pose.position.x, target_out.pose.position.y, target_out.pose.position.z);
 
     if (isServoMode()) {
       return queueServoCommand(target_out);
@@ -414,7 +448,7 @@ private:
 
     if (!use_moveit_) {
       RCLCPP_WARN_ONCE(this->get_logger(),
-                       "MoveIt disabled; cannot execute EEF pose targets without IK.");
+                       "[MOVEIT] disabled; cannot execute EEF pose targets without IK.");
       return false;
     }
 
@@ -473,16 +507,10 @@ private:
 
   void processGripperCommand(double command)
   {
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-      "[GRIPPER] processGripperCommand called with command=%.4f last=%s",
-      command,
-      last_gripper_command_.has_value() ?
-        std::to_string(last_gripper_command_.value()).c_str() : "none");
-
     if (command < 0.0 || command > 1.0) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 5000,
-        "Received out-of-range gripper_command=%.4f; expected normalized [0, 1]. "
+        "[GRIPPER] received out-of-range command=%.4f; expected normalized [0, 1]. "
         "Clamping before mapping to gripper joint position.",
         command);
     }
@@ -496,16 +524,14 @@ private:
         std::abs(last_gripper_command_.value() - clamped) < gripper_command_epsilon_ &&
         since_last_send < 2.0) {
       RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-        "Gripper command %.4f unchanged from last (%.4f), skipping",
-        clamped, last_gripper_command_.value());
+        "[GRIPPER] duplicate %s command %.4f skipped (last %.2fs ago)",
+        describeNormalizedGripperCommand(clamped).c_str(), clamped, since_last_send);
       return;
     }
 
     RCLCPP_INFO(this->get_logger(),
-      "[GRIPPER] Processing command=%.4f (last=%s) -> action=%s",
-      clamped,
-      last_gripper_command_.has_value() ?
-        std::to_string(last_gripper_command_.value()).c_str() : "none",
+      "[GRIPPER] sending %s command=%.2f via %s",
+      describeNormalizedGripperCommand(clamped).c_str(), clamped,
       gripper_follow_joint_trajectory_action_.c_str());
 
     bool sent = false;
@@ -513,7 +539,7 @@ private:
       if (gripper_open_positions_.size() != gripper_joint_names_.size() ||
           gripper_closed_positions_.size() != gripper_joint_names_.size()) {
         RCLCPP_WARN(this->get_logger(),
-                    "Gripper joint names/positions size mismatch (names=%zu, open=%zu, closed=%zu)",
+                    "[GRIPPER][CONFIG] joint names/positions size mismatch (names=%zu, open=%zu, closed=%zu)",
                     gripper_joint_names_.size(),
                     gripper_open_positions_.size(),
                     gripper_closed_positions_.size());
@@ -538,11 +564,15 @@ private:
     }
 
     if (sent) {
-      RCLCPP_INFO(this->get_logger(), "[GRIPPER] Goal sent successfully, command=%.4f", clamped);
+      RCLCPP_INFO(
+        this->get_logger(), "[GRIPPER] %s goal accepted | command=%.2f",
+        describeNormalizedGripperCommand(clamped).c_str(), clamped);
       last_gripper_command_ = clamped;
       last_gripper_send_time_ = now;
     } else {
-      RCLCPP_WARN(this->get_logger(), "[GRIPPER] Failed to send goal for command=%.4f", clamped);
+      RCLCPP_WARN(
+        this->get_logger(), "[GRIPPER] failed to send %s command %.2f",
+        describeNormalizedGripperCommand(clamped).c_str(), clamped);
     }
   }
 
@@ -610,13 +640,13 @@ private:
     if (servo_ready_timeout_sec_ > 0.0 && elapsed_sec > servo_ready_timeout_sec_) {
       RCLCPP_ERROR_THROTTLE(
         this->get_logger(), *this->get_clock(), 5000,
-        "Timed out waiting for MoveIt Servo readiness (%.1fs > %.1fs). "
+        "[SERVO] timed out waiting for readiness (%.1fs > %.1fs). "
         "Dropping servo command until ready.",
         elapsed_sec, servo_ready_timeout_sec_);
     } else {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 5000,
-        "Waiting for MoveIt Servo readiness before sending commands (elapsed %.1fs).",
+        "[SERVO] waiting for readiness before sending commands (elapsed %.1fs).",
         elapsed_sec);
     }
     return false;
@@ -637,7 +667,7 @@ private:
     if (!servo_start_client_->service_is_ready()) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 5000,
-        "Servo start service '%s' not available yet; continuing to publish commands",
+        "[SERVO] start service '%s' not available yet; commands will queue locally",
         servo_start_service_.c_str());
       return;
     }
@@ -655,20 +685,21 @@ private:
           if (started) {
             if (!servo_started_.load()) {
               RCLCPP_INFO(
-                this->get_logger(), "MoveIt Servo started: %s", response->message.c_str());
+                this->get_logger(), "[SERVO] ready via %s: %s",
+                servo_start_service_.c_str(), response->message.c_str());
             }
             servo_started_.store(true);
             servo_wait_started_.store(false);
           } else {
             RCLCPP_WARN_THROTTLE(
               this->get_logger(), *this->get_clock(), 5000,
-              "Failed to start MoveIt Servo via '%s'",
+              "[SERVO] failed to start via '%s'",
               servo_start_service_.c_str());
           }
         } catch (const std::exception& ex) {
           RCLCPP_WARN_THROTTLE(
             this->get_logger(), *this->get_clock(), 5000,
-            "MoveIt Servo start call failed: %s", ex.what());
+            "[SERVO] start call failed: %s", ex.what());
         }
       });
   }
@@ -686,7 +717,8 @@ private:
         arm_base_frame_, ee_frame_, tf2::TimePointZero);
     } catch (const tf2::TransformException& ex) {
       RCLCPP_WARN(this->get_logger(),
-                  "TF lookup for current EEF in arm base '%s' failed: %s",
+                  "[TF][SERVO] lookup current EEF '%s' in arm base '%s' failed: %s",
+                  ee_frame_.c_str(),
                   arm_base_frame_.c_str(), ex.what());
       return false;
     }
@@ -757,6 +789,28 @@ private:
       servo_command_active_.store(true);
       servo_zero_sent_.store(false);
     }
+
+    const double linear_speed = std::sqrt(
+      target_twist.linear.x * target_twist.linear.x +
+      target_twist.linear.y * target_twist.linear.y +
+      target_twist.linear.z * target_twist.linear.z);
+    const double angular_speed = std::sqrt(
+      target_twist.angular.x * target_twist.angular.x +
+      target_twist.angular.y * target_twist.angular.y +
+      target_twist.angular.z * target_twist.angular.z);
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[SERVO] current=(%.4f, %.4f, %.4f) target=(%.4f, %.4f, %.4f) "
+      "cmd_lin=(%.3f, %.3f, %.3f) |v|=%.3f cmd_ang=(%.3f, %.3f, %.3f) |w|=%.3f horizon=%.2fs",
+      current_ee_tf.transform.translation.x,
+      current_ee_tf.transform.translation.y,
+      current_ee_tf.transform.translation.z,
+      target_in_arm_base.pose.position.x,
+      target_in_arm_base.pose.position.y,
+      target_in_arm_base.pose.position.z,
+      target_twist.linear.x, target_twist.linear.y, target_twist.linear.z, linear_speed,
+      target_twist.angular.x, target_twist.angular.y, target_twist.angular.z, angular_speed,
+      horizon_sec);
 
     return true;
   }
@@ -927,7 +981,7 @@ private:
       }
       RCLCPP_ERROR(
         this->get_logger(),
-        "Failed to move to startup ready pose after %d attempts. "
+        "[READY] failed after %d attempts. "
         "Continuing without startup ready move.",
         ready_pose_max_attempts_);
       return;
@@ -949,7 +1003,7 @@ private:
     if (moveit_goal_active_.load()) {
       RCLCPP_DEBUG_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
-        "MoveIt goal already active; deferring startup ready pose");
+        "[READY] MoveIt goal already active; deferring startup ready pose");
       return false;
     }
 
@@ -981,7 +1035,7 @@ private:
         if (!goal_handle) {
           RCLCPP_WARN(
             this->get_logger(),
-            "Startup ready pose goal rejected on attempt %d/%d",
+            "[READY] goal rejected on attempt %d/%d",
             attempt_number, ready_pose_max_attempts_);
           moveit_goal_active_.store(false);
           startup_ready_pose_goal_active_.store(false);
@@ -1010,13 +1064,13 @@ private:
           if (ready_pose_timer_) {
             ready_pose_timer_->cancel();
           }
-          RCLCPP_INFO(this->get_logger(), "Startup ready pose reached");
+          RCLCPP_INFO(this->get_logger(), "[READY] startup ready pose reached");
           return;
         }
 
         RCLCPP_WARN(
           this->get_logger(),
-          "Startup ready pose failed with code %d on attempt %d/%d",
+          "[READY] failed with code %d on attempt %d/%d",
           static_cast<int>(result.code), attempt_number, ready_pose_max_attempts_);
         if (attempt_number >= ready_pose_max_attempts_) {
           startup_ready_pose_completed_.store(true);
@@ -1025,7 +1079,7 @@ private:
           }
           RCLCPP_ERROR(
             this->get_logger(),
-            "Failed to move to startup ready pose after %d attempts. "
+            "[READY] failed after %d attempts. "
             "Continuing without startup ready move.",
             ready_pose_max_attempts_);
         }
@@ -1033,7 +1087,7 @@ private:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Sending startup ready pose goal via MoveIt (%d/%d)",
+      "[READY] sending startup ready pose via MoveIt (%d/%d)",
       attempt_number, ready_pose_max_attempts_);
     moveit_goal_active_.store(true);
     startup_ready_pose_goal_active_.store(true);
@@ -1062,14 +1116,14 @@ private:
         move_group_action_ = fallback_action;
         move_group_client_ = fallback_client;
         RCLCPP_WARN(this->get_logger(),
-                    "MoveIt action server not found on configured name; using fallback '%s'",
+                    "[MOVEIT] action server not found on configured name; using fallback '%s'",
                     move_group_action_.c_str());
         return true;
       }
     }
 
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                         "MoveIt action server not available on '%s'",
+                         "[MOVEIT] action server not available on '%s'",
                          move_group_action_.c_str());
     return false;
   }
@@ -1082,7 +1136,7 @@ private:
 
     if (moveit_goal_active_.load()) {
       RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                            "MoveIt goal already active; skipping new target");
+                            "[MOVEIT] goal already active; skipping new target");
       return false;
     }
 
@@ -1107,7 +1161,7 @@ private:
     send_goal_options.goal_response_callback =
       [this](rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle) {
         if (!goal_handle) {
-          RCLCPP_WARN(this->get_logger(), "MoveIt goal was rejected");
+          RCLCPP_WARN(this->get_logger(), "[MOVEIT] goal was rejected");
           moveit_goal_active_.store(false);
           std::lock_guard<std::mutex> lock(goal_mutex_);
           moveit_goal_handle_.reset();
@@ -1128,13 +1182,19 @@ private:
           moveit_goal_handle_.reset();
         }
         if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
-          RCLCPP_WARN(this->get_logger(), "MoveIt goal failed with code %d",
+          RCLCPP_WARN(this->get_logger(), "[MOVEIT] goal failed with code %d",
                       static_cast<int>(result.code));
         } else {
-          RCLCPP_INFO(this->get_logger(), "MoveIt goal succeeded");
+          RCLCPP_INFO(this->get_logger(), "[MOVEIT] goal succeeded");
         }
       };
 
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[MOVEIT] sending pose goal frame=%s xyz=(%.4f, %.4f, %.4f) eef_link=%s",
+      target.header.frame_id.c_str(),
+      target.pose.position.x, target.pose.position.y, target.pose.position.z,
+      move_group_eef_link_.c_str());
     moveit_goal_active_.store(true);
     move_group_client_->async_send_goal(goal, send_goal_options);
     return true;
@@ -1249,8 +1309,8 @@ private:
     if (time_since_last_policy > safety_timeout_sec_) {
       // No policy output received recently - stop the robot
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                           "No policy output received for %.2f seconds - stopping robot",
-                           time_since_last_policy);
+                           "[SAFETY] no policy output for %.2fs (> %.2fs); stopping robot",
+                           time_since_last_policy, safety_timeout_sec_);
 
       geometry_msgs::msg::Twist zero_twist;
       cmd_vel_pub_->publish(zero_twist);
@@ -1283,7 +1343,7 @@ private:
         tf2::doTransform(point_in, point_ws, transform);
       } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN(this->get_logger(),
-                    "TF transform for workspace check failed: %s", ex.what());
+                    "[TF][WORKSPACE] transform failed: %s", ex.what());
         return false;
       }
     } else {
@@ -1318,8 +1378,8 @@ private:
           reference_frame, ee_frame_, tf2::TimePointZero);
       } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN(this->get_logger(),
-                    "TF lookup for current EEF in '%s' failed: %s",
-                    reference_frame.c_str(), ex.what());
+                    "[TF][EEF] lookup current EEF '%s' in '%s' failed: %s",
+                    ee_frame_.c_str(), reference_frame.c_str(), ex.what());
         return false;
       }
 
@@ -1368,7 +1428,7 @@ private:
       target_out.header.stamp = msg->header.stamp;
     } catch (const tf2::TransformException& ex) {
       RCLCPP_WARN(this->get_logger(),
-                  "TF transform from '%s' to arm base frame '%s' failed: %s",
+                  "[TF][EEF] transform from '%s' to arm base '%s' failed: %s",
                   reference_frame.c_str(), arm_base_frame_.c_str(), ex.what());
       return false;
     }

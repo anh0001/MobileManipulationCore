@@ -22,7 +22,7 @@ visual_servo:
   min_tracking_confidence: 0.5
 
   # Tracker parameters
-  tracker_type: "klt"                 # klt or blob
+  tracker_type: "mil"                 # Current build supports OpenCV MIL tracker
   klt_max_features: 200
   klt_quality_level: 0.01
   klt_min_distance: 5.0
@@ -35,7 +35,10 @@ visual_servo:
 
   # Image-space convergence
   image_center_tolerance_px: 8.0       # Pixel error threshold to treat the target as centered
-  grasp_standoff_m: 0.115              # Desired bottle distance from wrist camera for a ~10 cm D405-to-fingertip offset plus clearance
+  camera_optical_frame: "piper_camera_optical_frame"
+  ee_frame: "piper_tcp"                # Tool center point mounted after piper_link6
+  arm_base_frame: "piper_base_link"
+  grasp_standoff_m: 0.115              # Desired bottle distance from wrist camera when grasping with piper_tcp; retune if camera-to-TCP offset changes
   grasp_depth_tolerance_m: 0.02        # Tolerance band for depth convergence
   depth_sample_anchor_x: 0.50          # Normalized ROI x anchor (width fraction, right-positive)
   depth_sample_anchor_y: 0.50          # Normalized ROI y anchor (height fraction, down-positive); centered to avoid edge/background mixing at close range
