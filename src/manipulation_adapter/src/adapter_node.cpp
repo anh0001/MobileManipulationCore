@@ -470,6 +470,8 @@ private:
     // arm_execution_mode parameter, allowing a single pick sequence to mix
     // MoveGroup (pre-grasp) and MoveIt Servo (final correction) commands.
     const bool use_servo = resolveServoMode(msg->arm_command_mode);
+    const bool position_only_move_group =
+      resolveMoveGroupPositionOnly(msg->arm_command_mode);
 
     if (use_servo) {
       return queueServoCommand(target_out);
@@ -481,7 +483,7 @@ private:
       return false;
     }
 
-    return sendMoveGroupGoal(target_out);
+    return sendMoveGroupGoal(target_out, !position_only_move_group);
   }
 
   bool processJointDeltas(const std::vector<double>& joint_deltas)
@@ -649,11 +651,23 @@ private:
     if (mode == "move_group") {
       return false;
     }
+    if (mode == "move_group_position_only") {
+      return false;
+    }
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 5000,
       "Unknown per-message arm_command_mode='%s'; falling back to global mode '%s'",
       per_message_mode.c_str(), arm_execution_mode_.c_str());
     return isServoMode();
+  }
+
+  bool resolveMoveGroupPositionOnly(const std::string& per_message_mode) const
+  {
+    std::string mode = per_message_mode;
+    std::transform(
+      mode.begin(), mode.end(), mode.begin(),
+      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return mode == "move_group_position_only";
   }
 
   bool isServoCommandActive()
@@ -921,7 +935,8 @@ private:
   }
 
   moveit_msgs::msg::Constraints buildPoseGoalConstraints(
-    const geometry_msgs::msg::PoseStamped& target) const
+    const geometry_msgs::msg::PoseStamped& target,
+    bool include_orientation_constraint) const
   {
     moveit_msgs::msg::Constraints constraints;
     moveit_msgs::msg::PositionConstraint position_constraint;
@@ -940,6 +955,10 @@ private:
     region_pose.orientation.w = 1.0;
     position_constraint.constraint_region.primitive_poses.push_back(region_pose);
     constraints.position_constraints.push_back(position_constraint);
+
+    if (!include_orientation_constraint) {
+      return constraints;
+    }
 
     // Only add orientation constraint when the target has a meaningful orientation
     // (non-identity quaternion). Policy outputs typically have position-only targets;
@@ -1158,7 +1177,9 @@ private:
     return false;
   }
 
-  bool sendMoveGroupGoal(const geometry_msgs::msg::PoseStamped& target)
+  bool sendMoveGroupGoal(
+    const geometry_msgs::msg::PoseStamped& target,
+    bool include_orientation_constraint = true)
   {
     if (!ensureMoveGroupClientReady()) {
       return false;
@@ -1176,7 +1197,8 @@ private:
     goal.request.allowed_planning_time = moveit_planning_time_;
     goal.request.max_velocity_scaling_factor = moveit_velocity_scaling_;
     goal.request.max_acceleration_scaling_factor = moveit_accel_scaling_;
-    goal.request.goal_constraints.push_back(buildPoseGoalConstraints(target));
+    goal.request.goal_constraints.push_back(
+      buildPoseGoalConstraints(target, include_orientation_constraint));
     goal.request.start_state.is_diff = true;
 
     goal.planning_options.plan_only = false;

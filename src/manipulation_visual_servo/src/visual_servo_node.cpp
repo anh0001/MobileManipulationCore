@@ -1135,7 +1135,7 @@ void VisualServoNode::publish_move_group_target(const geometry_msgs::msg::Pose &
   msg.gripper_active = true;
   msg.gripper_command = open_gripper_command_;
   msg.has_base_hint = false;
-  msg.arm_command_mode = "move_group";
+  msg.arm_command_mode = "move_group_position_only";
   policy_output_pub_->publish(msg);
 }
 
