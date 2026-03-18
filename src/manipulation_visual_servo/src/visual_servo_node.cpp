@@ -36,6 +36,16 @@ T clamp_value(T value, T lower, T upper)
   return std::max(lower, std::min(upper, value));
 }
 
+double deg_to_rad(double degrees)
+{
+  return degrees * 3.14159265358979323846 / 180.0;
+}
+
+bool nearly_equal(double lhs, double rhs, double eps = 1e-6)
+{
+  return std::abs(lhs - rhs) <= eps;
+}
+
 }  // namespace
 
 std::string state_to_string(ServoState state)
@@ -111,10 +121,13 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("retreat_distance_m", 0.05);
 
   // Declare parameters — grasp orientation template
-  this->declare_parameter("bottle_grasp_orientation_x", 1.0);
-  this->declare_parameter("bottle_grasp_orientation_y", 0.0);
-  this->declare_parameter("bottle_grasp_orientation_z", 0.0);
-  this->declare_parameter("bottle_grasp_orientation_w", 0.0);
+  this->declare_parameter("object_grasp_roll_deg", 180.0);
+  this->declare_parameter("object_grasp_pitch_deg", 0.0);
+  this->declare_parameter("object_grasp_yaw_deg", 0.0);
+  this->declare_parameter("object_grasp_orientation_x", 1.0);
+  this->declare_parameter("object_grasp_orientation_y", 0.0);
+  this->declare_parameter("object_grasp_orientation_z", 0.0);
+  this->declare_parameter("object_grasp_orientation_w", 0.0);
 
   // Declare parameters — convergence
   this->declare_parameter("final_position_tolerance_m", 0.008);
@@ -190,10 +203,55 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   retreat_distance_m_ = this->get_parameter("retreat_distance_m").as_double();
 
   // Read parameters — grasp orientation
-  bottle_grasp_orient_x_ = this->get_parameter("bottle_grasp_orientation_x").as_double();
-  bottle_grasp_orient_y_ = this->get_parameter("bottle_grasp_orientation_y").as_double();
-  bottle_grasp_orient_z_ = this->get_parameter("bottle_grasp_orientation_z").as_double();
-  bottle_grasp_orient_w_ = this->get_parameter("bottle_grasp_orientation_w").as_double();
+  const double object_grasp_roll_deg = this->get_parameter("object_grasp_roll_deg").as_double();
+  const double object_grasp_pitch_deg = this->get_parameter("object_grasp_pitch_deg").as_double();
+  const double object_grasp_yaw_deg = this->get_parameter("object_grasp_yaw_deg").as_double();
+  const double legacy_grasp_qx = this->get_parameter("object_grasp_orientation_x").as_double();
+  const double legacy_grasp_qy = this->get_parameter("object_grasp_orientation_y").as_double();
+  const double legacy_grasp_qz = this->get_parameter("object_grasp_orientation_z").as_double();
+  const double legacy_grasp_qw = this->get_parameter("object_grasp_orientation_w").as_double();
+
+  const bool custom_rpy =
+    !nearly_equal(object_grasp_roll_deg, 180.0) ||
+    !nearly_equal(object_grasp_pitch_deg, 0.0) ||
+    !nearly_equal(object_grasp_yaw_deg, 0.0);
+  const bool custom_legacy_quat =
+    !nearly_equal(legacy_grasp_qx, 1.0) ||
+    !nearly_equal(legacy_grasp_qy, 0.0) ||
+    !nearly_equal(legacy_grasp_qz, 0.0) ||
+    !nearly_equal(legacy_grasp_qw, 0.0);
+
+  tf2::Quaternion object_grasp_quat;
+  if (custom_rpy || !custom_legacy_quat) {
+    object_grasp_quat.setRPY(
+      deg_to_rad(object_grasp_roll_deg),
+      deg_to_rad(object_grasp_pitch_deg),
+      deg_to_rad(object_grasp_yaw_deg));
+    object_grasp_quat.normalize();
+  } else {
+    object_grasp_quat.setValue(
+      legacy_grasp_qx, legacy_grasp_qy, legacy_grasp_qz, legacy_grasp_qw);
+    if (object_grasp_quat.length2() < 1e-12) {
+      object_grasp_quat.setRPY(
+        deg_to_rad(object_grasp_roll_deg),
+        deg_to_rad(object_grasp_pitch_deg),
+        deg_to_rad(object_grasp_yaw_deg));
+      object_grasp_quat.normalize();
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Deprecated quaternion grasp parameters were invalid; falling back to Euler grasp parameters.");
+    } else {
+      object_grasp_quat.normalize();
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Using deprecated quaternion grasp parameters. Prefer object_grasp_roll_deg / pitch_deg / yaw_deg.");
+    }
+  }
+
+  object_grasp_orient_x_ = object_grasp_quat.x();
+  object_grasp_orient_y_ = object_grasp_quat.y();
+  object_grasp_orient_z_ = object_grasp_quat.z();
+  object_grasp_orient_w_ = object_grasp_quat.w();
 
   // Read parameters — convergence
   final_position_tolerance_m_ = this->get_parameter("final_position_tolerance_m").as_double();
@@ -280,9 +338,11 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     final_servo_distance_m_, lift_distance_m_, retreat_distance_m_);
   RCLCPP_INFO(
     this->get_logger(),
-    "Grasp orient: [%.3f, %.3f, %.3f, %.3f] pos_tol=%.4f img_tol=%.1f conv_cycles=%d",
-    bottle_grasp_orient_x_, bottle_grasp_orient_y_,
-    bottle_grasp_orient_z_, bottle_grasp_orient_w_,
+    "Grasp RPY deg: [%.1f, %.1f, %.1f] quat=[%.3f, %.3f, %.3f, %.3f] "
+    "pos_tol=%.4f img_tol=%.1f conv_cycles=%d",
+    object_grasp_roll_deg, object_grasp_pitch_deg, object_grasp_yaw_deg,
+    object_grasp_orient_x_, object_grasp_orient_y_,
+    object_grasp_orient_z_, object_grasp_orient_w_,
     final_position_tolerance_m_, final_image_tolerance_px_, final_convergence_cycles_);
 }
 
@@ -690,8 +750,8 @@ void VisualServoNode::handle_estimate_bottle_3d()
   // Synthesize grasp and pre-grasp poses
   const auto bottle_center_pose = make_grasp_pose(
     bottle_in_arm_base,
-    bottle_grasp_orient_x_, bottle_grasp_orient_y_,
-    bottle_grasp_orient_z_, bottle_grasp_orient_w_);
+    object_grasp_orient_x_, object_grasp_orient_y_,
+    object_grasp_orient_z_, object_grasp_orient_w_);
   geometry_msgs::msg::Vector3 grasp_approach_axis;
   grasp_approach_axis.x = grasp_approach_axis_x_;
   grasp_approach_axis.y = grasp_approach_axis_y_;

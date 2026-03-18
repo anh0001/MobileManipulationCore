@@ -168,14 +168,20 @@ def generate_launch_description():
                 'retreat_distance_m': float(
                     vs_cfg.get('retreat_distance_m', 0.05)),
                 # Grasp orientation
-                'bottle_grasp_orientation_x': float(
-                    vs_cfg.get('bottle_grasp_orientation_x', 1.0)),
-                'bottle_grasp_orientation_y': float(
-                    vs_cfg.get('bottle_grasp_orientation_y', 0.0)),
-                'bottle_grasp_orientation_z': float(
-                    vs_cfg.get('bottle_grasp_orientation_z', 0.0)),
-                'bottle_grasp_orientation_w': float(
-                    vs_cfg.get('bottle_grasp_orientation_w', 0.0)),
+                'object_grasp_roll_deg': float(
+                    vs_cfg.get('object_grasp_roll_deg', 180.0)),
+                'object_grasp_pitch_deg': float(
+                    vs_cfg.get('object_grasp_pitch_deg', 0.0)),
+                'object_grasp_yaw_deg': float(
+                    vs_cfg.get('object_grasp_yaw_deg', 0.0)),
+                'object_grasp_orientation_x': float(
+                    vs_cfg.get('object_grasp_orientation_x', 1.0)),
+                'object_grasp_orientation_y': float(
+                    vs_cfg.get('object_grasp_orientation_y', 0.0)),
+                'object_grasp_orientation_z': float(
+                    vs_cfg.get('object_grasp_orientation_z', 0.0)),
+                'object_grasp_orientation_w': float(
+                    vs_cfg.get('object_grasp_orientation_w', 0.0)),
                 # Convergence
                 'final_position_tolerance_m': float(
                     vs_cfg.get('final_position_tolerance_m', 0.008)),

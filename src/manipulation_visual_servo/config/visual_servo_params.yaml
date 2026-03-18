@@ -52,12 +52,14 @@ visual_servo:
   lift_distance_m: 0.08               # Upward lift distance after grasp
   retreat_distance_m: 0.05            # Backward retreat after lift
 
-  # Fixed bottle grasp orientation (quaternion xyzw in arm_base_frame)
-  # Top-down grasp for piper_tcp: tool +Z points along arm-base -Z.
-  bottle_grasp_orientation_x: 1.0
-  bottle_grasp_orientation_y: 0.0
-  bottle_grasp_orientation_z: 0.0
-  bottle_grasp_orientation_w: 0.0
+  # Object grasp orientation for piper_tcp using Euler angles in degrees.
+  # Reference: absolute piper_tcp orientation expressed in arm_base_frame /
+  # piper_base_link, not relative to the object.
+  # Convention: standard ROS fixed-axis roll, pitch, yaw about base-frame +X, +Y, +Z.
+  # With piper_tcp local +Z as tool-forward, roll=180 points the TCP down.
+  object_grasp_roll_deg: 180.0
+  object_grasp_pitch_deg: 0.0
+  object_grasp_yaw_deg: 0.0
 
   # Convergence thresholds
   final_position_tolerance_m: 0.008   # Cartesian residual threshold for close command

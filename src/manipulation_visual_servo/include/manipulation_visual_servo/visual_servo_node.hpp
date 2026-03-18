@@ -230,10 +230,10 @@ private:
   double retreat_distance_m_;
 
   // Parameters — grasp orientation template
-  double bottle_grasp_orient_x_;
-  double bottle_grasp_orient_y_;
-  double bottle_grasp_orient_z_;
-  double bottle_grasp_orient_w_;
+  double object_grasp_orient_x_;
+  double object_grasp_orient_y_;
+  double object_grasp_orient_z_;
+  double object_grasp_orient_w_;
 
   // Parameters — convergence
   double final_position_tolerance_m_;

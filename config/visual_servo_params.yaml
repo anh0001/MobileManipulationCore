@@ -55,12 +55,14 @@ visual_servo:
   blind_approach_depth_threshold_m: 0.30  # Switch to blind approach when last good depth was below this
   blind_approach_velocity_fraction: 0.5   # Fraction of max_linear_velocity for blind forward motion
   blind_approach_max_distance_m: 0.20     # Safety cap on total blind approach distance
-  # Top-down grasp orientation for piper_tcp (quaternion xyzw in arm_base_frame).
-  # This makes the tool +Z axis point along arm-base -Z, so the TCP points down.
-  bottle_grasp_orientation_x: 1.0
-  bottle_grasp_orientation_y: 0.0
-  bottle_grasp_orientation_z: 0.0
-  bottle_grasp_orientation_w: 0.0
+  # Object grasp orientation for piper_tcp using Euler angles in degrees.
+  # Reference: absolute piper_tcp orientation expressed in arm_base_frame /
+  # piper_base_link, not relative to the object.
+  # Convention: standard ROS fixed-axis roll, pitch, yaw about base-frame +X, +Y, +Z.
+  # With piper_tcp local +Z as the tool-forward axis, roll=180 points the TCP down.
+  object_grasp_roll_deg: 180.0
+  object_grasp_pitch_deg: 0.0
+  object_grasp_yaw_deg: 0.0
   final_position_tolerance_m: 0.008
   final_image_tolerance_px: 12.0
   final_convergence_cycles: 3

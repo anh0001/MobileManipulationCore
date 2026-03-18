@@ -627,14 +627,20 @@ def generate_launch_description():
                 vs_cfg.get('approach_stall_window_sec', 1.0)),
             'approach_min_progress_m': float(
                 vs_cfg.get('approach_min_progress_m', 0.01)),
-            'bottle_grasp_orientation_x': float(
-                vs_cfg.get('bottle_grasp_orientation_x', 1.0)),
-            'bottle_grasp_orientation_y': float(
-                vs_cfg.get('bottle_grasp_orientation_y', 0.0)),
-            'bottle_grasp_orientation_z': float(
-                vs_cfg.get('bottle_grasp_orientation_z', 0.0)),
-            'bottle_grasp_orientation_w': float(
-                vs_cfg.get('bottle_grasp_orientation_w', 0.0)),
+            'object_grasp_roll_deg': float(
+                vs_cfg.get('object_grasp_roll_deg', 180.0)),
+            'object_grasp_pitch_deg': float(
+                vs_cfg.get('object_grasp_pitch_deg', 0.0)),
+            'object_grasp_yaw_deg': float(
+                vs_cfg.get('object_grasp_yaw_deg', 0.0)),
+            'object_grasp_orientation_x': float(
+                vs_cfg.get('object_grasp_orientation_x', 1.0)),
+            'object_grasp_orientation_y': float(
+                vs_cfg.get('object_grasp_orientation_y', 0.0)),
+            'object_grasp_orientation_z': float(
+                vs_cfg.get('object_grasp_orientation_z', 0.0)),
+            'object_grasp_orientation_w': float(
+                vs_cfg.get('object_grasp_orientation_w', 0.0)),
             'final_position_tolerance_m': float(
                 vs_cfg.get('final_position_tolerance_m', 0.008)),
             'final_image_tolerance_px': float(
