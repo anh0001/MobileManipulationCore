@@ -22,6 +22,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/twist.hpp>
@@ -32,6 +33,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
 
@@ -65,6 +67,7 @@ private:
   void image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg);
   void depth_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg);
   void camera_info_callback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr & msg);
+  void joint_states_callback(const sensor_msgs::msg::JointState::ConstSharedPtr & msg);
   void detection_callback(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg);
   void control_timer_callback();
 
@@ -85,6 +88,9 @@ private:
   bool fetch_latest_frame(cv::Mat & frame);
   bool acquire_from_detection(const cv::Mat & frame);
   bool update_tracking(const cv::Mat & frame);
+  std::optional<size_t> find_joint_state_index(
+    const sensor_msgs::msg::JointState & joint_state, const std::string & joint_name) const;
+  std::optional<double> max_gripper_open_error();
   void reset_pick_progress();
   void apply_ramp(geometry_msgs::msg::Twist & twist);
   void publish_zero_motion(float confidence = 1.0F);
@@ -119,6 +125,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rgb_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detection_sub_;
 
   rclcpp::Publisher<manipulation_msgs::msg::PolicyOutput>::SharedPtr policy_output_pub_;
@@ -143,6 +150,10 @@ private:
   rclcpp::Time latest_frame_stamp_;
   bool frame_available_{false};
   rclcpp::Time last_processed_frame_stamp_;
+
+  std::mutex joint_state_mutex_;
+  sensor_msgs::msg::JointState latest_joint_state_;
+  bool joint_state_available_{false};
 
   std::mutex depth_mutex_;
   cv::Mat latest_depth_frame_;
@@ -179,11 +190,17 @@ private:
   std::string depth_topic_;
   std::string detection_topic_;
   std::string output_topic_;
+  std::string joint_states_topic_;
   std::string reference_frame_;
   std::string camera_optical_frame_;
   std::string ee_frame_;
   std::string arm_base_frame_;
   std::string target_class_;
+  std::string gripper_joint_name_;
+  std::vector<std::string> gripper_joint_names_;
+  double gripper_open_position_;
+  std::vector<double> gripper_open_positions_;
+  double gripper_open_position_tolerance_;
 
   bool use_depth_;
   double control_rate_hz_;
@@ -212,6 +229,7 @@ private:
   double blind_approach_velocity_fraction_;
   double blind_approach_max_distance_m_;
   double open_gripper_command_;
+  double open_gripper_settle_sec_;
   double close_gripper_command_;
 
   std::string tracker_type_;

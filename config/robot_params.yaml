@@ -27,7 +27,6 @@ robot:
   actions:
     navigate_to_pose: "/navigate_to_pose"
     follow_joint_trajectory: "/piper_arm_controller/follow_joint_trajectory"
-    gripper_follow_joint_trajectory: "/piper_gripper_controller/follow_joint_trajectory"
 
 bridge_v2_virtual_frames:
   enabled: false
@@ -88,7 +87,6 @@ gripper:
   closed_position: 0.0
   open_positions: [0.75]
   closed_positions: [0.0]
-  command_duration_sec: 0.75
   command_epsilon: 0.01
 
 # MoveIt parameters for the PiPER arm
@@ -97,6 +95,8 @@ moveit:
   arm_execution_mode: "moveit_servo"  # Options: moveit_servo, move_group
   move_group_action: "/move_action"
   move_group_name: "piper_arm"
+  gripper_move_group_name: "piper_gripper"
+  gripper_move_group_timeout_sec: 15.0
   eef_link: "piper_tcp"
   action_wait_sec: 1.0
   planning_time: 2.0

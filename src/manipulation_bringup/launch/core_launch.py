@@ -412,13 +412,16 @@ def generate_launch_description():
             'follow_joint_trajectory_action': robot_actions.get(
                 'follow_joint_trajectory', '/arm_controller/follow_joint_trajectory'
             ),
-            'gripper_follow_joint_trajectory_action': robot_actions.get(
-                'gripper_follow_joint_trajectory', '/gripper_controller/follow_joint_trajectory'
-            ),
             'use_moveit': bool(moveit_cfg.get('enabled', False)),
             'move_group_action': moveit_cfg.get('move_group_action', '/move_action'),
             'move_group_name': moveit_cfg.get('move_group_name', 'arm'),
             'move_group_eef_link': moveit_cfg.get('eef_link', 'piper_tcp'),
+            'gripper_move_group_name': moveit_cfg.get(
+                'gripper_move_group_name', 'piper_gripper'
+            ),
+            'gripper_move_group_timeout_sec': float(
+                moveit_cfg.get('gripper_move_group_timeout_sec', 15.0)
+            ),
             'moveit_action_wait_sec': float(moveit_cfg.get('action_wait_sec', 1.0)),
             'moveit_planning_time': float(moveit_cfg.get('planning_time', 2.0)),
             'moveit_planning_attempts': int(moveit_cfg.get('planning_attempts', 3)),
@@ -457,11 +460,10 @@ def generate_launch_description():
             'arm_command_duration_sec': float(arm_cfg.get('command_duration_sec', 1.5)),
             'gripper_joint_name': gripper_cfg.get('joint_name', 'piper_joint7'),
             'gripper_joint_names': gripper_cfg.get('joint_names', []),
-            'gripper_open_position': float(gripper_cfg.get('open_position', 0.035)),
+            'gripper_open_position': float(gripper_cfg.get('open_position', 0.75)),
             'gripper_closed_position': float(gripper_cfg.get('closed_position', 0.0)),
             'gripper_open_positions': gripper_cfg.get('open_positions', []),
             'gripper_closed_positions': gripper_cfg.get('closed_positions', []),
-            'gripper_command_duration_sec': float(gripper_cfg.get('command_duration_sec', 0.75)),
             'gripper_command_epsilon': float(gripper_cfg.get('command_epsilon', 0.01)),
             'max_base_velocity': float(base_cfg.get('max_linear_velocity', 0.5)),
             'max_arm_velocity': float(arm_cfg.get('max_joint_velocity', 1.0)),
@@ -569,6 +571,7 @@ def generate_launch_description():
                 '/piper/wrist_camera/piper_d405/depth/image_rect_raw'),
             'detection_topic': visual_servo_detection_topic,
             'output_topic': '/manipulation/policy_output',
+            'joint_states_topic': joint_states_topic,
             'use_depth': bool(vs_cfg.get('use_depth', False)),
             'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
             'output_delta_horizon_sec': float(effective_servo_horizon_sec),
@@ -611,8 +614,16 @@ def generate_launch_description():
                 vs_cfg.get('approach_min_progress_m', 0.01)),
             'open_gripper_command': float(
                 vs_cfg.get('open_gripper_command', 1.0)),
+            'open_gripper_settle_sec': float(
+                vs_cfg.get('open_gripper_settle_sec', 3.0)),
             'close_gripper_command': float(
                 vs_cfg.get('close_gripper_command', 0.0)),
+            'gripper_joint_name': gripper_cfg.get('joint_name', 'piper_joint7'),
+            'gripper_joint_names': gripper_cfg.get('joint_names', []),
+            'gripper_open_position': float(gripper_cfg.get('open_position', 0.75)),
+            'gripper_open_positions': gripper_cfg.get('open_positions', []),
+            'gripper_open_position_tolerance': float(
+                vs_cfg.get('gripper_open_position_tolerance', 0.02)),
             'reference_frame': str(vs_cfg.get(
                 'reference_frame',
                 robot_frames.get('arm_base', 'piper_base_link'))),

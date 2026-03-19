@@ -66,6 +66,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("depth_topic", "/piper/wrist_camera/piper_d405/depth/image_rect_raw");
   this->declare_parameter("detection_topic", "/manipulation/target_detections");
   this->declare_parameter("output_topic", "/manipulation/policy_output");
+  this->declare_parameter("joint_states_topic", "/joint_states");
   this->declare_parameter("use_depth", true);
   this->declare_parameter("control_rate_hz", 20.0);
   this->declare_parameter("output_delta_horizon_sec", 0.0);
@@ -98,7 +99,15 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("blind_approach_velocity_fraction", 0.5);
   this->declare_parameter("blind_approach_max_distance_m", 0.20);
   this->declare_parameter("open_gripper_command", 1.0);
+  this->declare_parameter("open_gripper_settle_sec", 3.0);
   this->declare_parameter("close_gripper_command", 0.0);
+  this->declare_parameter("gripper_joint_name", "piper_joint7");
+  this->declare_parameter<std::vector<std::string>>(
+    "gripper_joint_names", std::vector<std::string>{});
+  this->declare_parameter("gripper_open_position", 0.75);
+  this->declare_parameter<std::vector<double>>(
+    "gripper_open_positions", std::vector<double>{});
+  this->declare_parameter("gripper_open_position_tolerance", 0.02);
 
   this->declare_parameter("tracker_type", "mil");
   this->declare_parameter("klt_max_features", 200);
@@ -124,6 +133,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   depth_topic_ = this->get_parameter("depth_topic").as_string();
   detection_topic_ = this->get_parameter("detection_topic").as_string();
   output_topic_ = this->get_parameter("output_topic").as_string();
+  joint_states_topic_ = this->get_parameter("joint_states_topic").as_string();
   use_depth_ = this->get_parameter("use_depth").as_bool();
   control_rate_hz_ = this->get_parameter("control_rate_hz").as_double();
   output_delta_horizon_sec_ = this->get_parameter("output_delta_horizon_sec").as_double();
@@ -159,7 +169,30 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   blind_approach_max_distance_m_ =
     this->get_parameter("blind_approach_max_distance_m").as_double();
   open_gripper_command_ = this->get_parameter("open_gripper_command").as_double();
+  open_gripper_settle_sec_ = this->get_parameter("open_gripper_settle_sec").as_double();
   close_gripper_command_ = this->get_parameter("close_gripper_command").as_double();
+  gripper_joint_name_ = this->get_parameter("gripper_joint_name").as_string();
+  gripper_joint_names_ = this->get_parameter("gripper_joint_names").as_string_array();
+  gripper_open_position_ = this->get_parameter("gripper_open_position").as_double();
+  gripper_open_positions_ = this->get_parameter("gripper_open_positions").as_double_array();
+  gripper_open_position_tolerance_ =
+    this->get_parameter("gripper_open_position_tolerance").as_double();
+
+  if (gripper_joint_names_.empty() && !gripper_joint_name_.empty()) {
+    gripper_joint_names_.push_back(gripper_joint_name_);
+  }
+  if (gripper_open_positions_.empty()) {
+    gripper_open_positions_.push_back(gripper_open_position_);
+  }
+  if (gripper_joint_names_.size() != gripper_open_positions_.size()) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[INIT][GRIPPER] joint/open target size mismatch (names=%zu, open=%zu); "
+      "using primary gripper joint only",
+      gripper_joint_names_.size(), gripper_open_positions_.size());
+    gripper_joint_names_ = {gripper_joint_name_};
+    gripper_open_positions_ = {gripper_open_position_};
+  }
 
   tracker_type_ = this->get_parameter("tracker_type").as_string();
   klt_max_features_ = this->get_parameter("klt_max_features").as_int();
@@ -196,6 +229,10 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
     camera_info_topic_, rclcpp::SensorDataQoS(),
     std::bind(&VisualServoNode::camera_info_callback, this, std::placeholders::_1));
+
+  joint_states_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+    joint_states_topic_, 10,
+    std::bind(&VisualServoNode::joint_states_callback, this, std::placeholders::_1));
 
   detection_sub_ = this->create_subscription<vision_msgs::msg::Detection2DArray>(
     detection_topic_, 10,
@@ -235,7 +272,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     "[INIT] Tracker=%s use_depth=%s target_class=%s delta_horizon=%.3fs",
     tracker_type_.c_str(), use_depth_ ? "true" : "false",
     target_class_.empty() ? "<any>" : target_class_.c_str(),
-    output_delta_horizon_sec_ > 0.0 ? output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_));
+    output_delta_horizon_sec_ >
+    0.0 ? output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_));
   RCLCPP_INFO(
     this->get_logger(),
     "[INIT] Pick | use_depth=%s standoff=%.3f tol=%.3f lift=%.3f max_approach=%.3f",
@@ -248,6 +286,12 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     depth_sample_anchor_x_, depth_sample_anchor_y_, depth_roi_half_size_px_,
     min_valid_depth_pixels_, depth_sample_max_iqr_m_, close_depth_stable_frames_,
     approach_stall_window_sec_, approach_min_progress_m_);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[INIT] Gripper verify | joint_states=%s joints=%zu open=%.3f open_tol=%.3f "
+    "open_settle=%.2fs",
+    joint_states_topic_.c_str(), gripper_joint_names_.size(), gripper_open_position_,
+    gripper_open_position_tolerance_, open_gripper_settle_sec_);
 }
 
 void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
@@ -338,6 +382,14 @@ void VisualServoNode::camera_info_callback(
       "[CAMERA] intrinsics fx=%.1f fy=%.1f cx=%.1f cy=%.1f size=%dx%d",
       px, py, u0, v0, image_width_, image_height_);
   }
+}
+
+void VisualServoNode::joint_states_callback(
+  const sensor_msgs::msg::JointState::ConstSharedPtr & msg)
+{
+  std::lock_guard<std::mutex> lock(joint_state_mutex_);
+  latest_joint_state_ = *msg;
+  joint_state_available_ = true;
 }
 
 void VisualServoNode::detection_callback(
@@ -661,17 +713,56 @@ void VisualServoNode::handle_open_gripper()
     }
   }
 
-  RCLCPP_INFO_THROTTLE(
-    this->get_logger(), *this->get_clock(), 500,
-    "[GRIPPER][OPEN] command=%.2f settle=%.2f/%.2f",
-    open_gripper_command_,
-    (this->now() - state_entry_time_).seconds(), grasp_settle_sec_);
+  const double elapsed = (this->now() - state_entry_time_).seconds();
+  const bool settle_elapsed = elapsed >= open_gripper_settle_sec_;
+  const auto open_error = max_gripper_open_error();
+  const bool gripper_fully_open =
+    open_error.has_value() && *open_error <= gripper_open_position_tolerance_;
 
+  if (open_error.has_value()) {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[GRIPPER][OPEN] command=%.2f feedback=%s max_err=%.3f tol=%.3f settle=%.2f/%.2f",
+      open_gripper_command_,
+      gripper_fully_open ? "ready" : "waiting",
+      *open_error, gripper_open_position_tolerance_, elapsed, open_gripper_settle_sec_);
+  } else {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[GRIPPER][OPEN] command=%.2f feedback=waiting joint_states=%s settle=%.2f/%.2f",
+      open_gripper_command_, joint_states_topic_.c_str(), elapsed, open_gripper_settle_sec_);
+  }
+
+  // Do NOT include an arm target (has_eef_target=false) so the adapter does not
+  // feed MoveIt Servo, which would cause the servo-to-piper bridge to publish
+  // a competing JointState that resets the gripper to its current position.
   publish_policy_output(
-    geometry_msgs::msg::Twist(), tracking_confidence_, true, true, open_gripper_command_);
+    geometry_msgs::msg::Twist(), tracking_confidence_, false, true, open_gripper_command_);
 
-  if ((this->now() - state_entry_time_).seconds() >= grasp_settle_sec_) {
-    transition_to(ServoState::APPROACH_DEPTH, "gripper opened; starting depth approach");
+  if (gripper_fully_open) {
+    transition_to(
+      ServoState::APPROACH_DEPTH,
+      "gripper fully opened; starting depth approach");
+    return;
+  }
+
+  if (settle_elapsed) {
+    if (open_error.has_value()) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRIPPER][OPEN] settle elapsed without confirmed open feedback "
+        "(max_err=%.3f tol=%.3f); continuing to depth approach",
+        *open_error, gripper_open_position_tolerance_);
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRIPPER][OPEN] settle elapsed without gripper feedback on %s; "
+        "continuing to depth approach",
+        joint_states_topic_.c_str());
+    }
+    transition_to(
+      ServoState::APPROACH_DEPTH,
+      "open command settled; starting depth approach");
   }
 }
 
@@ -748,8 +839,10 @@ void VisualServoNode::handle_approach_depth()
     }
 
     if (depth_in_band) {
-      publish_policy_output(
-        geometry_msgs::msg::Twist(), tracking_confidence_, true, true, open_gripper_command_);
+      // The gripper was already opened in OPEN_GRIPPER. Do not keep re-sending the
+      // same open command while waiting for depth stability, or the adapter will
+      // periodically issue fresh trajectory goals during approach.
+      publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_);
       if (publish_overlay_) {
         publish_debug_overlay(frame, tracked_roi_);
       }
@@ -873,8 +966,9 @@ void VisualServoNode::handle_approach_depth()
     }
   }
 
-  // Keep gripper open during approach
-  publish_policy_output(twist, tracking_confidence_, true, true, open_gripper_command_);
+  // Keep moving with the gripper state latched from OPEN_GRIPPER. Avoid reasserting
+  // the same open command every control cycle during approach.
+  publish_policy_output(twist, tracking_confidence_);
   if (publish_overlay_) {
     publish_debug_overlay(frame, tracked_roi_);
   }
@@ -935,6 +1029,62 @@ void VisualServoNode::handle_lost()
   if (detection_available_) {
     transition_to(ServoState::ACQUIRE, "new detection available");
   }
+}
+
+std::optional<size_t> VisualServoNode::find_joint_state_index(
+  const sensor_msgs::msg::JointState & joint_state, const std::string & joint_name) const
+{
+  const auto is_gripper_alias = [](const std::string & name) {
+      return name == "gripper" || name == "joint7" || name == "piper_joint7";
+    };
+
+  for (size_t i = 0; i < joint_state.name.size(); ++i) {
+    if (joint_state.name[i] == joint_name) {
+      return i;
+    }
+  }
+
+  if (!is_gripper_alias(joint_name)) {
+    return std::nullopt;
+  }
+
+  for (size_t i = 0; i < joint_state.name.size(); ++i) {
+    if (is_gripper_alias(joint_state.name[i])) {
+      return i;
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<double> VisualServoNode::max_gripper_open_error()
+{
+  if (gripper_joint_names_.empty() || gripper_open_positions_.empty()) {
+    return std::nullopt;
+  }
+
+  std::lock_guard<std::mutex> lock(joint_state_mutex_);
+  if (!joint_state_available_) {
+    return std::nullopt;
+  }
+
+  const size_t position_count =
+    std::min(latest_joint_state_.name.size(), latest_joint_state_.position.size());
+  if (position_count == 0) {
+    return std::nullopt;
+  }
+
+  double max_error = 0.0;
+  for (size_t i = 0; i < gripper_joint_names_.size(); ++i) {
+    const auto idx = find_joint_state_index(latest_joint_state_, gripper_joint_names_[i]);
+    if (!idx.has_value() || *idx >= position_count) {
+      return std::nullopt;
+    }
+    const double actual = latest_joint_state_.position[*idx];
+    max_error = std::max(max_error, std::abs(actual - gripper_open_positions_[i]));
+  }
+
+  return max_error;
 }
 
 bool VisualServoNode::init_tracker(const cv::Mat & frame, const cv::Rect2d & roi)

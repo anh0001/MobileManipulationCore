@@ -12,41 +12,42 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <rclcpp/rclcpp.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Transform.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <geometry_msgs/msg/twist.hpp>
-#include <geometry_msgs/msg/twist_stamped.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
-#include <geometry_msgs/msg/point_stamped.hpp>
-#include <sensor_msgs/msg/joint_state.hpp>
-#include <trajectory_msgs/msg/joint_trajectory.hpp>
-#include <manipulation_msgs/msg/policy_output.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
-#include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <manipulation_msgs/msg/policy_output.hpp>
 #include <moveit_msgs/action/move_group.hpp>
 #include <moveit_msgs/msg/constraints.hpp>
 #include <moveit_msgs/msg/joint_constraint.hpp>
 #include <moveit_msgs/msg/orientation_constraint.hpp>
 #include <moveit_msgs/msg/position_constraint.hpp>
 #include <moveit_msgs/msg/planning_options.hpp>
+#include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <std_srvs/srv/trigger.hpp>
-#include <tf2_ros/buffer.h>
-#include <tf2_ros/transform_listener.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <tf2/LinearMath/Matrix3x3.h>
-#include <tf2/LinearMath/Transform.h>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 
 namespace
 {
@@ -61,6 +62,8 @@ std::string describeNormalizedGripperCommand(double command)
   }
   return "partial";
 }
+
+constexpr double kDefaultGripperMoveGroupTimeoutSec = 15.0;
 
 }  // namespace
 
@@ -92,6 +95,8 @@ public:
     this->declare_parameter<std::string>("move_group_action", "/move_action");
     this->declare_parameter<std::string>("move_group_name", "arm");
     this->declare_parameter<std::string>("move_group_eef_link", "piper_tcp");
+    this->declare_parameter<std::string>("gripper_move_group_name", "piper_gripper");
+    this->declare_parameter<double>("gripper_move_group_timeout_sec", 15.0);
     this->declare_parameter<double>("moveit_action_wait_sec", 1.0);
     this->declare_parameter<double>("moveit_planning_time", 2.0);
     this->declare_parameter<int>("moveit_planning_attempts", 3);
@@ -103,28 +108,30 @@ public:
     this->declare_parameter<std::vector<std::string>>(
       "ready_pose_joint_names",
       std::vector<std::string>{
-        "piper_joint1", "piper_joint2", "piper_joint3",
-        "piper_joint4", "piper_joint5", "piper_joint6"});
+      "piper_joint1", "piper_joint2", "piper_joint3",
+      "piper_joint4", "piper_joint5", "piper_joint6"});
     this->declare_parameter<std::vector<double>>(
       "ready_pose_joint_positions",
       std::vector<double>{0.0, 1.2, -0.2, 0.0, -0.8, 0.0});
     this->declare_parameter<double>("ready_pose_start_delay_sec", 1.0);
     this->declare_parameter<double>("ready_pose_retry_period_sec", 1.0);
     this->declare_parameter<int>("ready_pose_max_attempts", 3);
-    this->declare_parameter<std::vector<std::string>>("arm_joint_names", std::vector<std::string>{});
+    this->declare_parameter<std::vector<std::string>>(
+      "arm_joint_names",
+      std::vector<std::string>{});
     this->declare_parameter<double>("arm_command_duration_sec", 1.5);
-    this->declare_parameter<std::string>(
-      "gripper_follow_joint_trajectory_action", "/gripper_controller/follow_joint_trajectory");
     this->declare_parameter<std::string>("gripper_joint_name", "piper_joint7");
-    this->declare_parameter<std::vector<std::string>>("gripper_joint_names",
-                                                      std::vector<std::string>{});
-    this->declare_parameter<double>("gripper_open_position", 0.035);
+    this->declare_parameter<std::vector<std::string>>(
+      "gripper_joint_names",
+      std::vector<std::string>{});
+    this->declare_parameter<double>("gripper_open_position", 0.75);
     this->declare_parameter<double>("gripper_closed_position", 0.0);
-    this->declare_parameter<std::vector<double>>("gripper_open_positions",
-                                                 std::vector<double>{});
-    this->declare_parameter<std::vector<double>>("gripper_closed_positions",
-                                                 std::vector<double>{});
-    this->declare_parameter<double>("gripper_command_duration_sec", 0.75);
+    this->declare_parameter<std::vector<double>>(
+      "gripper_open_positions",
+      std::vector<double>{});
+    this->declare_parameter<std::vector<double>>(
+      "gripper_closed_positions",
+      std::vector<double>{});
     this->declare_parameter<double>("gripper_command_epsilon", 0.01);
     this->declare_parameter<double>("max_base_velocity", 0.5);
     this->declare_parameter<double>("max_arm_velocity", 1.0);
@@ -160,6 +167,9 @@ public:
     move_group_action_ = this->get_parameter("move_group_action").as_string();
     move_group_name_ = this->get_parameter("move_group_name").as_string();
     move_group_eef_link_ = this->get_parameter("move_group_eef_link").as_string();
+    gripper_move_group_name_ = this->get_parameter("gripper_move_group_name").as_string();
+    gripper_move_group_timeout_sec_ =
+      this->get_parameter("gripper_move_group_timeout_sec").as_double();
     moveit_action_wait_sec_ = this->get_parameter("moveit_action_wait_sec").as_double();
     moveit_planning_time_ = this->get_parameter("moveit_planning_time").as_double();
     moveit_planning_attempts_ = this->get_parameter("moveit_planning_attempts").as_int();
@@ -170,22 +180,19 @@ public:
       this->get_parameter("moveit_orientation_tolerance").as_double();
     move_to_ready_on_startup_ = this->get_parameter("move_to_ready_on_startup").as_bool();
     ready_pose_joint_names_ = this->get_parameter("ready_pose_joint_names").as_string_array();
-    ready_pose_joint_positions_ = this->get_parameter("ready_pose_joint_positions").as_double_array();
+    ready_pose_joint_positions_ =
+      this->get_parameter("ready_pose_joint_positions").as_double_array();
     ready_pose_start_delay_sec_ = this->get_parameter("ready_pose_start_delay_sec").as_double();
     ready_pose_retry_period_sec_ = this->get_parameter("ready_pose_retry_period_sec").as_double();
     ready_pose_max_attempts_ = this->get_parameter("ready_pose_max_attempts").as_int();
     arm_joint_names_ = this->get_parameter("arm_joint_names").as_string_array();
     arm_command_duration_sec_ = this->get_parameter("arm_command_duration_sec").as_double();
-    gripper_follow_joint_trajectory_action_ =
-      this->get_parameter("gripper_follow_joint_trajectory_action").as_string();
     gripper_joint_name_ = this->get_parameter("gripper_joint_name").as_string();
     gripper_joint_names_ = this->get_parameter("gripper_joint_names").as_string_array();
     gripper_open_position_ = this->get_parameter("gripper_open_position").as_double();
     gripper_closed_position_ = this->get_parameter("gripper_closed_position").as_double();
     gripper_open_positions_ = this->get_parameter("gripper_open_positions").as_double_array();
     gripper_closed_positions_ = this->get_parameter("gripper_closed_positions").as_double_array();
-    gripper_command_duration_sec_ =
-      this->get_parameter("gripper_command_duration_sec").as_double();
     gripper_command_epsilon_ = this->get_parameter("gripper_command_epsilon").as_double();
     max_base_velocity_ = this->get_parameter("max_base_velocity").as_double();
     max_arm_velocity_ = this->get_parameter("max_arm_velocity").as_double();
@@ -236,6 +243,9 @@ public:
     if (servo_ready_timeout_sec_ < 0.0) {
       servo_ready_timeout_sec_ = 0.0;
     }
+    if (gripper_move_group_timeout_sec_ <= 0.0) {
+      gripper_move_group_timeout_sec_ = kDefaultGripperMoveGroupTimeoutSec;
+    }
     if (ready_pose_start_delay_sec_ < 0.0) {
       ready_pose_start_delay_sec_ = 0.0;
     }
@@ -246,7 +256,8 @@ public:
       ready_pose_max_attempts_ = 1;
     }
     if (move_to_ready_on_startup_ &&
-        ready_pose_joint_names_.size() != ready_pose_joint_positions_.size()) {
+      ready_pose_joint_names_.size() != ready_pose_joint_positions_.size())
+    {
       RCLCPP_ERROR(
         this->get_logger(),
         "ready_pose_joint_names (%zu) and ready_pose_joint_positions (%zu) length mismatch. "
@@ -257,7 +268,8 @@ public:
     if (move_to_ready_on_startup_ && ready_pose_joint_names_.empty()) {
       RCLCPP_ERROR(
         this->get_logger(),
-        "Startup ready pose enabled but no ready_pose_joint_names provided. Disabling startup ready pose.");
+        "Startup ready pose enabled but no ready_pose_joint_names provided. "
+        "Disabling startup ready pose.");
       move_to_ready_on_startup_ = false;
     }
 
@@ -283,9 +295,6 @@ public:
       this, navigate_to_pose_action_);
     arm_client_ = rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
       this, follow_joint_trajectory_action_);
-    gripper_client_ =
-      rclcpp_action::create_client<control_msgs::action::FollowJointTrajectory>(
-        this, gripper_follow_joint_trajectory_action_);
     if (use_moveit_ && (!isServoMode() || move_to_ready_on_startup_)) {
       move_group_client_ = rclcpp_action::create_client<moveit_msgs::action::MoveGroup>(
         this, move_group_action_);
@@ -336,8 +345,9 @@ public:
     if (use_moveit_) {
       RCLCPP_INFO(
         this->get_logger(),
-        "[INIT] MoveIt | action=%s group=%s eef_link=%s",
-        move_group_action_.c_str(), move_group_name_.c_str(), move_group_eef_link_.c_str());
+        "[INIT] MoveIt | action=%s arm_group=%s gripper_group=%s eef_link=%s",
+        move_group_action_.c_str(), move_group_name_.c_str(),
+        gripper_move_group_name_.c_str(), move_group_eef_link_.c_str());
     }
     if (use_moveit_ && move_group_eef_link_ != ee_frame_) {
       RCLCPP_WARN(
@@ -359,7 +369,8 @@ public:
     if (isServoMode()) {
       RCLCPP_INFO(
         this->get_logger(),
-        "[INIT] Servo | topic=%s horizon=%.3fs rate=%.1fHz pause_base=%s wait_ready=%s timeout=%.1fs",
+        "[INIT] Servo | topic=%s horizon=%.3fs rate=%.1fHz "
+        "pause_base=%s wait_ready=%s timeout=%.1fs",
         servo_cartesian_topic_.c_str(), servo_command_horizon_sec_, servo_publish_rate_hz_,
         pause_base_during_servo_ ? "true" : "false",
         wait_for_servo_ready_ ? "true" : "false", servo_ready_timeout_sec_);
@@ -370,9 +381,218 @@ public:
   }
 
 private:
+  struct GripperCommandDecision
+  {
+    bool skip_arm_this_cycle = false;
+  };
+
+  bool isGripperJointName(const std::string & joint_name) const
+  {
+    if (joint_name == gripper_joint_name_) {
+      return true;
+    }
+    return std::find(
+      gripper_joint_names_.begin(), gripper_joint_names_.end(),
+      joint_name) != gripper_joint_names_.end();
+  }
+
+  bool buildGripperJointTargets(
+    double normalized_command,
+    std::vector<std::string> & joint_names,
+    std::vector<double> & target_positions) const
+  {
+    if (!gripper_joint_names_.empty()) {
+      if (
+        gripper_open_positions_.size() != gripper_joint_names_.size() ||
+        gripper_closed_positions_.size() != gripper_joint_names_.size())
+      {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "[GRIPPER][CONFIG] joint names/positions size mismatch (names=%zu, open=%zu, closed=%zu)",
+          gripper_joint_names_.size(),
+          gripper_open_positions_.size(),
+          gripper_closed_positions_.size());
+        return false;
+      }
+      joint_names = gripper_joint_names_;
+      target_positions.reserve(joint_names.size());
+      for (size_t i = 0; i < joint_names.size(); ++i) {
+        target_positions.push_back(
+          gripper_closed_positions_[i] +
+          normalized_command * (gripper_open_positions_[i] - gripper_closed_positions_[i]));
+      }
+      return true;
+    }
+
+    joint_names = {gripper_joint_name_};
+    target_positions = {
+      gripper_closed_position_ +
+      normalized_command * (gripper_open_position_ - gripper_closed_position_)};
+    return true;
+  }
+
+  void releaseServoSuppressionForGripper()
+  {
+    servo_suppressed_for_gripper_.store(false);
+  }
+
+  void suppressServoForGripperTransition()
+  {
+    stopServoCommand();
+    servo_suppressed_for_gripper_.store(true);
+  }
+
+  bool isServoSuppressedForGripper() const
+  {
+    return servo_suppressed_for_gripper_.load();
+  }
+
+  bool isCurrentGripperMoveGroupGoal(uint64_t generation) const
+  {
+    return gripper_goal_generation_.load() == generation;
+  }
+
+  void resetGripperMoveGroupHandle()
+  {
+    std::lock_guard<std::mutex> lock(goal_mutex_);
+    gripper_moveit_goal_handle_.reset();
+  }
+
+  void checkGripperMoveGroupTimeout()
+  {
+    if (!gripper_moveit_goal_active_.load()) {
+      return;
+    }
+
+    const double elapsed_sec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - gripper_goal_start_steady_).count();
+    if (elapsed_sec < gripper_move_group_timeout_sec_) {
+      return;
+    }
+
+    gripper_goal_generation_.fetch_add(1);
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex_);
+      if (move_group_client_ && gripper_moveit_goal_handle_) {
+        move_group_client_->async_cancel_goal(gripper_moveit_goal_handle_);
+      }
+      gripper_moveit_goal_handle_.reset();
+    }
+    gripper_moveit_goal_active_.store(false);
+    latched_gripper_command_.reset();
+    releaseServoSuppressionForGripper();
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[GRIPPER] MoveGroup goal timed out after %.1fs; released servo suppression",
+      elapsed_sec);
+  }
+
+  bool sendGripperMoveGroupGoal(
+    const std::vector<std::string> & joint_names,
+    const std::vector<double> & joint_positions,
+    double normalized_command)
+  {
+    if (!use_moveit_) {
+      RCLCPP_WARN_ONCE(
+        this->get_logger(),
+        "[GRIPPER] MoveIt is disabled; cannot execute gripper goals via MoveGroup.");
+      return false;
+    }
+    if (gripper_move_group_name_.empty()) {
+      RCLCPP_WARN(this->get_logger(), "[GRIPPER] gripper_move_group_name is empty");
+      return false;
+    }
+    if (!ensureMoveGroupClientReady()) {
+      return false;
+    }
+
+    const uint64_t generation = gripper_goal_generation_.fetch_add(1) + 1;
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex_);
+      if (move_group_client_ && gripper_moveit_goal_handle_) {
+        move_group_client_->async_cancel_goal(gripper_moveit_goal_handle_);
+      }
+      gripper_moveit_goal_handle_.reset();
+    }
+
+    moveit_msgs::action::MoveGroup::Goal goal;
+    goal.request.group_name = gripper_move_group_name_;
+    goal.request.num_planning_attempts = moveit_planning_attempts_;
+    goal.request.allowed_planning_time = moveit_planning_time_;
+    goal.request.max_velocity_scaling_factor = moveit_velocity_scaling_;
+    goal.request.max_acceleration_scaling_factor = moveit_accel_scaling_;
+    goal.request.goal_constraints.push_back(
+      buildJointGoalConstraints(joint_names, joint_positions, "gripper_goal"));
+    goal.request.start_state.is_diff = true;
+
+    goal.planning_options.plan_only = false;
+    goal.planning_options.look_around = false;
+    goal.planning_options.replan = false;
+    goal.planning_options.planning_scene_diff.is_diff = true;
+    goal.planning_options.planning_scene_diff.robot_state.is_diff = true;
+
+    auto send_goal_options =
+      rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SendGoalOptions();
+
+    send_goal_options.goal_response_callback =
+      [this, generation](
+      rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle) {
+        if (!isCurrentGripperMoveGroupGoal(generation)) {
+          if (goal_handle && move_group_client_) {
+            move_group_client_->async_cancel_goal(goal_handle);
+          }
+          return;
+        }
+
+        if (!goal_handle) {
+          RCLCPP_WARN(this->get_logger(), "[GRIPPER] MoveGroup goal was rejected");
+          gripper_moveit_goal_active_.store(false);
+          latched_gripper_command_.reset();
+          releaseServoSuppressionForGripper();
+          resetGripperMoveGroupHandle();
+          return;
+        }
+
+        std::lock_guard<std::mutex> lock(goal_mutex_);
+        gripper_moveit_goal_handle_ = goal_handle;
+      };
+
+    send_goal_options.result_callback =
+      [this, generation](const auto & result) {
+        if (!isCurrentGripperMoveGroupGoal(generation)) {
+          return;
+        }
+
+        gripper_moveit_goal_active_.store(false);
+        releaseServoSuppressionForGripper();
+        resetGripperMoveGroupHandle();
+        if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+          latched_gripper_command_.reset();
+          RCLCPP_WARN(
+            this->get_logger(),
+            "[GRIPPER] MoveGroup goal failed with code %d",
+            static_cast<int>(result.code));
+        } else {
+          RCLCPP_INFO(this->get_logger(), "[GRIPPER] MoveGroup goal succeeded");
+        }
+      };
+
+    latched_gripper_command_ = normalized_command;
+    gripper_moveit_goal_active_.store(true);
+    gripper_goal_start_steady_ = std::chrono::steady_clock::now();
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[GRIPPER] sending %s command=%.2f via MoveGroup group=%s joints=%zu",
+      describeNormalizedGripperCommand(normalized_command).c_str(),
+      normalized_command, gripper_move_group_name_.c_str(), joint_names.size());
+    move_group_client_->async_send_goal(goal, send_goal_options);
+    return true;
+  }
+
   void policyCallback(const manipulation_msgs::msg::PolicyOutput::SharedPtr msg)
   {
     last_policy_time_ = this->now();
+    checkGripperMoveGroupTimeout();
 
     if (move_to_ready_on_startup_ && !startup_ready_pose_completed_.load()) {
       RCLCPP_DEBUG_THROTTLE(
@@ -383,22 +603,24 @@ private:
 
     RCLCPP_DEBUG(this->get_logger(), "Received policy output");
 
+    bool skip_arm_this_cycle = false;
+    if (msg->gripper_active) {
+      const auto gripper_decision = processGripperCommand(msg->gripper_command);
+      skip_arm_this_cycle = gripper_decision.skip_arm_this_cycle;
+    }
+
     bool arm_command_sent = false;
-    if (msg->has_eef_target) {
+    if (!skip_arm_this_cycle && msg->has_eef_target) {
       if (msg->has_joint_deltas) {
-        RCLCPP_DEBUG(this->get_logger(),
-                     "Policy output has both EEF target and joint deltas; prioritizing EEF target");
+        RCLCPP_DEBUG(
+          this->get_logger(),
+          "Policy output has both EEF target and joint deltas; prioritizing EEF target");
       }
       arm_command_sent = processEndEffectorTarget(msg);
     }
 
-    if (!arm_command_sent && msg->has_joint_deltas) {
+    if (!skip_arm_this_cycle && !arm_command_sent && msg->has_joint_deltas) {
       arm_command_sent = processJointDeltas(msg->joint_deltas);
-    }
-
-    // Process gripper command if active
-    if (msg->gripper_active) {
-      processGripperCommand(msg->gripper_command);
     }
 
     // Process base hint if available
@@ -433,6 +655,10 @@ private:
       return false;
     }
 
+    if (!gripper_moveit_goal_active_.load()) {
+      releaseServoSuppressionForGripper();
+    }
+
     const std::string source_frame =
       msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
     RCLCPP_INFO_THROTTLE(
@@ -447,19 +673,28 @@ private:
     }
 
     if (!use_moveit_) {
-      RCLCPP_WARN_ONCE(this->get_logger(),
-                       "[MOVEIT] disabled; cannot execute EEF pose targets without IK.");
+      RCLCPP_WARN_ONCE(
+        this->get_logger(),
+        "[MOVEIT] disabled; cannot execute EEF pose targets without IK.");
       return false;
     }
 
     return sendMoveGroupGoal(target_out);
   }
 
-  bool processJointDeltas(const std::vector<double>& joint_deltas)
+  bool processJointDeltas(const std::vector<double> & joint_deltas)
   {
     if (!last_joint_state_) {
       RCLCPP_WARN(this->get_logger(), "Joint deltas received but no joint state available yet");
       return false;
+    }
+
+    std::unordered_map<std::string, double> joint_map;
+    joint_map.reserve(last_joint_state_->name.size());
+    for (size_t i = 0; i < last_joint_state_->name.size(); ++i) {
+      if (i < last_joint_state_->position.size()) {
+        joint_map[last_joint_state_->name[i]] = last_joint_state_->position[i];
+      }
     }
 
     std::vector<std::string> joint_names = arm_joint_names_;
@@ -467,30 +702,46 @@ private:
     current_positions.reserve(joint_names.size());
 
     if (!joint_names.empty()) {
-      std::unordered_map<std::string, double> joint_map;
-      joint_map.reserve(last_joint_state_->name.size());
-      for (size_t i = 0; i < last_joint_state_->name.size(); ++i) {
-        if (i < last_joint_state_->position.size()) {
-          joint_map[last_joint_state_->name[i]] = last_joint_state_->position[i];
+      std::vector<std::string> filtered_joint_names;
+      filtered_joint_names.reserve(joint_names.size());
+      for (const auto & name : joint_names) {
+        if (isGripperJointName(name)) {
+          continue;
         }
-      }
-      for (const auto& name : joint_names) {
         auto it = joint_map.find(name);
         if (it == joint_map.end()) {
           RCLCPP_WARN(this->get_logger(), "Joint '%s' not found in joint states", name.c_str());
           return false;
         }
+        filtered_joint_names.push_back(name);
         current_positions.push_back(it->second);
       }
+      joint_names = filtered_joint_names;
     } else {
-      joint_names = last_joint_state_->name;
-      current_positions = last_joint_state_->position;
+      joint_names.clear();
+      current_positions.clear();
+      for (size_t i = 0; i < last_joint_state_->name.size(); ++i) {
+        if (i >= last_joint_state_->position.size()) {
+          continue;
+        }
+        if (isGripperJointName(last_joint_state_->name[i])) {
+          continue;
+        }
+        joint_names.push_back(last_joint_state_->name[i]);
+        current_positions.push_back(last_joint_state_->position[i]);
+      }
+    }
+
+    if (joint_names.empty()) {
+      RCLCPP_WARN(this->get_logger(), "No non-gripper arm joints available for joint deltas");
+      return false;
     }
 
     if (joint_deltas.size() != joint_names.size()) {
-      RCLCPP_WARN(this->get_logger(),
-                  "Joint delta length mismatch (expected %zu, got %zu)",
-                  joint_names.size(), joint_deltas.size());
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Joint delta length mismatch (expected %zu, got %zu)",
+        joint_names.size(), joint_deltas.size());
       return false;
     }
 
@@ -505,8 +756,9 @@ private:
       &arm_goal_active_, &arm_goal_handle_);
   }
 
-  void processGripperCommand(double command)
+  GripperCommandDecision processGripperCommand(double command)
   {
+    GripperCommandDecision decision;
     if (command < 0.0 || command > 1.0) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 5000,
@@ -515,68 +767,36 @@ private:
         command);
     }
 
-    double clamped = std::clamp(command, 0.0, 1.0);
-    const auto now = this->now();
-    const double since_last_send = last_gripper_send_time_.has_value() ?
-      (now - last_gripper_send_time_.value()).seconds() : std::numeric_limits<double>::max();
-    // Skip duplicate commands unless it's been more than 2 seconds (allows re-send after state changes)
-    if (last_gripper_command_.has_value() &&
-        std::abs(last_gripper_command_.value() - clamped) < gripper_command_epsilon_ &&
-        since_last_send < 2.0) {
-      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-        "[GRIPPER] duplicate %s command %.4f skipped (last %.2fs ago)",
-        describeNormalizedGripperCommand(clamped).c_str(), clamped, since_last_send);
-      return;
+    const double clamped = std::clamp(command, 0.0, 1.0);
+    if (
+      latched_gripper_command_.has_value() &&
+      std::abs(latched_gripper_command_.value() - clamped) < gripper_command_epsilon_)
+    {
+      return decision;
     }
 
-    RCLCPP_INFO(this->get_logger(),
-      "[GRIPPER] sending %s command=%.2f via %s",
-      describeNormalizedGripperCommand(clamped).c_str(), clamped,
-      gripper_follow_joint_trajectory_action_.c_str());
-
-    bool sent = false;
-    if (!gripper_joint_names_.empty()) {
-      if (gripper_open_positions_.size() != gripper_joint_names_.size() ||
-          gripper_closed_positions_.size() != gripper_joint_names_.size()) {
-        RCLCPP_WARN(this->get_logger(),
-                    "[GRIPPER][CONFIG] joint names/positions size mismatch (names=%zu, open=%zu, closed=%zu)",
-                    gripper_joint_names_.size(),
-                    gripper_open_positions_.size(),
-                    gripper_closed_positions_.size());
-        return;
-      }
-      std::vector<double> target_positions;
-      target_positions.reserve(gripper_joint_names_.size());
-      for (size_t i = 0; i < gripper_joint_names_.size(); ++i) {
-        double target_position = gripper_closed_positions_[i] +
-          clamped * (gripper_open_positions_[i] - gripper_closed_positions_[i]);
-        target_positions.push_back(target_position);
-      }
-      sent = sendJointTrajectoryGoal(
-        gripper_client_, gripper_joint_names_, target_positions,
-        gripper_command_duration_sec_, "gripper", &gripper_goal_active_, &gripper_goal_handle_);
-    } else {
-      double target_position = gripper_closed_position_ +
-        clamped * (gripper_open_position_ - gripper_closed_position_);
-      sent = sendJointTrajectoryGoal(
-        gripper_client_, {gripper_joint_name_}, {target_position},
-        gripper_command_duration_sec_, "gripper", &gripper_goal_active_, &gripper_goal_handle_);
+    std::vector<std::string> joint_names;
+    std::vector<double> target_positions;
+    if (!buildGripperJointTargets(clamped, joint_names, target_positions)) {
+      return decision;
     }
 
-    if (sent) {
-      RCLCPP_INFO(
-        this->get_logger(), "[GRIPPER] %s goal accepted | command=%.2f",
-        describeNormalizedGripperCommand(clamped).c_str(), clamped);
-      last_gripper_command_ = clamped;
-      last_gripper_send_time_ = now;
-    } else {
+    decision.skip_arm_this_cycle = true;
+    suppressServoForGripperTransition();
+    if (!sendGripperMoveGroupGoal(joint_names, target_positions, clamped)) {
+      if (!gripper_moveit_goal_active_.load()) {
+        releaseServoSuppressionForGripper();
+        latched_gripper_command_.reset();
+      }
       RCLCPP_WARN(
-        this->get_logger(), "[GRIPPER] failed to send %s command %.2f",
+        this->get_logger(),
+        "[GRIPPER] failed to send %s command %.2f via MoveGroup",
         describeNormalizedGripperCommand(clamped).c_str(), clamped);
     }
+    return decision;
   }
 
-  void processBaseCommand(const geometry_msgs::msg::Twist& twist)
+  void processBaseCommand(const geometry_msgs::msg::Twist & twist)
   {
     // Apply safety limits
     geometry_msgs::msg::Twist safe_twist = twist;
@@ -593,8 +813,9 @@ private:
 
     // Publish base command
     cmd_vel_pub_->publish(safe_twist);
-    RCLCPP_DEBUG(this->get_logger(), "Base command: [%.2f, %.2f, %.2f]",
-                 safe_twist.linear.x, safe_twist.linear.y, safe_twist.angular.z);
+    RCLCPP_DEBUG(
+      this->get_logger(), "Base command: [%.2f, %.2f, %.2f]",
+      safe_twist.linear.x, safe_twist.linear.y, safe_twist.angular.z);
   }
 
   bool isServoMode() const
@@ -612,7 +833,7 @@ private:
     return servo_command_active_.load() && this->now() <= servo_command_until_;
   }
 
-  static bool isServoAlreadyRunningMessage(const std::string& message)
+  static bool isServoAlreadyRunningMessage(const std::string & message)
   {
     std::string lowered = message;
     std::transform(
@@ -696,7 +917,7 @@ private:
               "[SERVO] failed to start via '%s'",
               servo_start_service_.c_str());
           }
-        } catch (const std::exception& ex) {
+        } catch (const std::exception & ex) {
           RCLCPP_WARN_THROTTLE(
             this->get_logger(), *this->get_clock(), 5000,
             "[SERVO] start call failed: %s", ex.what());
@@ -704,8 +925,15 @@ private:
       });
   }
 
-  bool queueServoCommand(const geometry_msgs::msg::PoseStamped& target_in_arm_base)
+  bool queueServoCommand(const geometry_msgs::msg::PoseStamped & target_in_arm_base)
   {
+    if (isServoSuppressedForGripper()) {
+      RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[SERVO] dropping arm command while gripper MoveGroup goal is active");
+      return false;
+    }
+
     requestServoStart();
     if (!isServoReadyForCommands()) {
       return false;
@@ -715,11 +943,12 @@ private:
     try {
       current_ee_tf = tf_buffer_->lookupTransform(
         arm_base_frame_, ee_frame_, tf2::TimePointZero);
-    } catch (const tf2::TransformException& ex) {
-      RCLCPP_WARN(this->get_logger(),
-                  "[TF][SERVO] lookup current EEF '%s' in arm base '%s' failed: %s",
-                  ee_frame_.c_str(),
-                  arm_base_frame_.c_str(), ex.what());
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[TF][SERVO] lookup current EEF '%s' in arm base '%s' failed: %s",
+        ee_frame_.c_str(),
+        arm_base_frame_.c_str(), ex.what());
       return false;
     }
 
@@ -761,19 +990,19 @@ private:
     target_twist.angular.y = pitch / horizon_sec;
     target_twist.angular.z = yaw / horizon_sec;
 
-    auto clampVectorMagnitude = [](double& x, double& y, double& z, double max_magnitude) {
-      if (max_magnitude <= 0.0) {
-        return;
-      }
-      const double magnitude = std::sqrt(x * x + y * y + z * z);
-      if (magnitude <= max_magnitude || magnitude < 1e-12) {
-        return;
-      }
-      const double scale = max_magnitude / magnitude;
-      x *= scale;
-      y *= scale;
-      z *= scale;
-    };
+    auto clampVectorMagnitude = [](double & x, double & y, double & z, double max_magnitude) {
+        if (max_magnitude <= 0.0) {
+          return;
+        }
+        const double magnitude = std::sqrt(x * x + y * y + z * z);
+        if (magnitude <= max_magnitude || magnitude < 1e-12) {
+          return;
+        }
+        const double scale = max_magnitude / magnitude;
+        x *= scale;
+        y *= scale;
+        z *= scale;
+      };
 
     clampVectorMagnitude(
       target_twist.linear.x, target_twist.linear.y, target_twist.linear.z,
@@ -818,6 +1047,9 @@ private:
   void publishServoCommand()
   {
     if (!isServoMode()) {
+      return;
+    }
+    if (isServoSuppressedForGripper()) {
       return;
     }
 
@@ -891,7 +1123,7 @@ private:
   }
 
   moveit_msgs::msg::Constraints buildPoseGoalConstraints(
-    const geometry_msgs::msg::PoseStamped& target) const
+    const geometry_msgs::msg::PoseStamped & target) const
   {
     moveit_msgs::msg::Constraints constraints;
     moveit_msgs::msg::PositionConstraint position_constraint;
@@ -937,11 +1169,12 @@ private:
   }
 
   moveit_msgs::msg::Constraints buildJointGoalConstraints(
-    const std::vector<std::string>& joint_names,
-    const std::vector<double>& joint_positions) const
+    const std::vector<std::string> & joint_names,
+    const std::vector<double> & joint_positions,
+    const std::string & constraint_name = "") const
   {
     moveit_msgs::msg::Constraints constraints;
-    constraints.name = "startup_ready_pose";
+    constraints.name = constraint_name;
     const double joint_tolerance = std::max(1e-4, moveit_position_tolerance_);
 
     for (size_t i = 0; i < joint_names.size(); ++i) {
@@ -1017,7 +1250,8 @@ private:
     goal.request.max_velocity_scaling_factor = moveit_velocity_scaling_;
     goal.request.max_acceleration_scaling_factor = moveit_accel_scaling_;
     goal.request.goal_constraints.push_back(
-      buildJointGoalConstraints(ready_pose_joint_names_, ready_pose_joint_positions_));
+      buildJointGoalConstraints(
+        ready_pose_joint_names_, ready_pose_joint_positions_, "startup_ready_pose"));
     goal.request.start_state.is_diff = true;
 
     goal.planning_options.plan_only = false;
@@ -1052,7 +1286,7 @@ private:
       };
 
     send_goal_options.result_callback =
-      [this, attempt_number](const auto& result) {
+      [this, attempt_number](const auto & result) {
         moveit_goal_active_.store(false);
         startup_ready_pose_goal_active_.store(false);
         {
@@ -1115,28 +1349,37 @@ private:
       if (fallback_client->wait_for_action_server(wait_duration)) {
         move_group_action_ = fallback_action;
         move_group_client_ = fallback_client;
-        RCLCPP_WARN(this->get_logger(),
-                    "[MOVEIT] action server not found on configured name; using fallback '%s'",
-                    move_group_action_.c_str());
+        RCLCPP_WARN(
+          this->get_logger(),
+          "[MOVEIT] action server not found on configured name; using fallback '%s'",
+          move_group_action_.c_str());
         return true;
       }
     }
 
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                         "[MOVEIT] action server not available on '%s'",
-                         move_group_action_.c_str());
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "[MOVEIT] action server not available on '%s'",
+      move_group_action_.c_str());
     return false;
   }
 
-  bool sendMoveGroupGoal(const geometry_msgs::msg::PoseStamped& target)
+  bool sendMoveGroupGoal(const geometry_msgs::msg::PoseStamped & target)
   {
     if (!ensureMoveGroupClientReady()) {
       return false;
     }
+    if (gripper_moveit_goal_active_.load()) {
+      RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[MOVEIT] arm goal skipped while gripper MoveGroup goal is active");
+      return false;
+    }
 
     if (moveit_goal_active_.load()) {
-      RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                            "[MOVEIT] goal already active; skipping new target");
+      RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "[MOVEIT] goal already active; skipping new target");
       return false;
     }
 
@@ -1159,7 +1402,8 @@ private:
       rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SendGoalOptions();
 
     send_goal_options.goal_response_callback =
-      [this](rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle) {
+      [this](rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle)
+      {
         if (!goal_handle) {
           RCLCPP_WARN(this->get_logger(), "[MOVEIT] goal was rejected");
           moveit_goal_active_.store(false);
@@ -1175,15 +1419,16 @@ private:
       };
 
     send_goal_options.result_callback =
-      [this](const auto& result) {
+      [this](const auto & result) {
         moveit_goal_active_.store(false);
         {
           std::lock_guard<std::mutex> lock(goal_mutex_);
           moveit_goal_handle_.reset();
         }
         if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
-          RCLCPP_WARN(this->get_logger(), "[MOVEIT] goal failed with code %d",
-                      static_cast<int>(result.code));
+          RCLCPP_WARN(
+            this->get_logger(), "[MOVEIT] goal failed with code %d",
+            static_cast<int>(result.code));
         } else {
           RCLCPP_INFO(this->get_logger(), "[MOVEIT] goal succeeded");
         }
@@ -1201,14 +1446,14 @@ private:
   }
 
   bool sendJointTrajectoryGoal(
-    const rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr& client,
-    const std::vector<std::string>& joint_names,
-    const std::vector<double>& positions,
+    const rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr & client,
+    const std::vector<std::string> & joint_names,
+    const std::vector<double> & positions,
     double duration_sec,
-    const std::string& label,
-    std::atomic<bool>* active_flag = nullptr,
-    rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr*
-      handle_slot = nullptr)
+    const std::string & label,
+    std::atomic<bool> * active_flag = nullptr,
+    rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr *
+    handle_slot = nullptr)
   {
     if (!client) {
       RCLCPP_WARN(this->get_logger(), "No %s trajectory action client available", label.c_str());
@@ -1216,8 +1461,9 @@ private:
     }
 
     if (!client->wait_for_action_server(std::chrono::milliseconds(200))) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                           "%s trajectory action server not available", label.c_str());
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "%s trajectory action server not available", label.c_str());
       return false;
     }
 
@@ -1233,7 +1479,9 @@ private:
       rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SendGoalOptions();
 
     send_goal_options.goal_response_callback =
-      [this, label, active_flag, handle_slot](rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr goal_handle) {
+      [this, label, active_flag,
+        handle_slot](rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::
+        SharedPtr goal_handle) {
         if (!goal_handle) {
           RCLCPP_WARN(this->get_logger(), "%s trajectory goal rejected", label.c_str());
           if (active_flag) {
@@ -1255,7 +1503,7 @@ private:
       };
 
     send_goal_options.result_callback =
-      [this, label, active_flag, handle_slot](const auto& result) {
+      [this, label, active_flag, handle_slot](const auto & result) {
         if (active_flag) {
           active_flag->store(false);
         }
@@ -1264,8 +1512,9 @@ private:
           handle_slot->reset();
         }
         if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
-          RCLCPP_WARN(this->get_logger(), "%s trajectory failed with code %d",
-                      label.c_str(), static_cast<int>(result.code));
+          RCLCPP_WARN(
+            this->get_logger(), "%s trajectory failed with code %d",
+            label.c_str(), static_cast<int>(result.code));
         } else {
           RCLCPP_DEBUG(this->get_logger(), "%s trajectory succeeded", label.c_str());
         }
@@ -1284,20 +1533,22 @@ private:
     if (move_group_client_ && moveit_goal_handle_) {
       move_group_client_->async_cancel_goal(moveit_goal_handle_);
     }
+    if (move_group_client_ && gripper_moveit_goal_handle_) {
+      move_group_client_->async_cancel_goal(gripper_moveit_goal_handle_);
+    }
     if (arm_client_ && arm_goal_handle_) {
       arm_client_->async_cancel_goal(arm_goal_handle_);
-    }
-    if (gripper_client_ && gripper_goal_handle_) {
-      gripper_client_->async_cancel_goal(gripper_goal_handle_);
     }
   }
 
   void safetyCheck()
   {
     auto now = this->now();
+    checkGripperMoveGroupTimeout();
 
     if (move_to_ready_on_startup_ && !startup_ready_pose_completed_.load() &&
-        startup_ready_pose_goal_active_.load()) {
+      startup_ready_pose_goal_active_.load())
+    {
       // Keep startup MoveIt goal alive while policy output is intentionally gated.
       last_policy_time_ = now;
       safety_stop_active_ = false;
@@ -1308,9 +1559,10 @@ private:
 
     if (time_since_last_policy > safety_timeout_sec_) {
       // No policy output received recently - stop the robot
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                           "[SAFETY] no policy output for %.2fs (> %.2fs); stopping robot",
-                           time_since_last_policy, safety_timeout_sec_);
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "[SAFETY] no policy output for %.2fs (> %.2fs); stopping robot",
+        time_since_last_policy, safety_timeout_sec_);
 
       geometry_msgs::msg::Twist zero_twist;
       cmd_vel_pub_->publish(zero_twist);
@@ -1329,7 +1581,7 @@ private:
     last_joint_state_ = msg;
   }
 
-  bool isWithinWorkspace(const geometry_msgs::msg::PoseStamped& target) const
+  bool isWithinWorkspace(const geometry_msgs::msg::PoseStamped & target) const
   {
     geometry_msgs::msg::PointStamped point_in;
     point_in.header = target.header;
@@ -1341,9 +1593,10 @@ private:
         auto transform = tf_buffer_->lookupTransform(
           workspace_frame_id_, target.header.frame_id, tf2::TimePointZero);
         tf2::doTransform(point_in, point_ws, transform);
-      } catch (const tf2::TransformException& ex) {
-        RCLCPP_WARN(this->get_logger(),
-                    "[TF][WORKSPACE] transform failed: %s", ex.what());
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "[TF][WORKSPACE] transform failed: %s", ex.what());
         return false;
       }
     } else {
@@ -1357,7 +1610,7 @@ private:
 
   bool resolveEndEffectorTarget(
     const manipulation_msgs::msg::PolicyOutput::SharedPtr msg,
-    geometry_msgs::msg::PoseStamped& target_out)
+    geometry_msgs::msg::PoseStamped & target_out)
   {
     const std::string reference_frame =
       msg->reference_frame.empty() ? base_frame_ : msg->reference_frame;
@@ -1376,10 +1629,11 @@ private:
       try {
         ee_transform = tf_buffer_->lookupTransform(
           reference_frame, ee_frame_, tf2::TimePointZero);
-      } catch (const tf2::TransformException& ex) {
-        RCLCPP_WARN(this->get_logger(),
-                    "[TF][EEF] lookup current EEF '%s' in '%s' failed: %s",
-                    ee_frame_.c_str(), reference_frame.c_str(), ex.what());
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "[TF][EEF] lookup current EEF '%s' in '%s' failed: %s",
+          ee_frame_.c_str(), reference_frame.c_str(), ex.what());
         return false;
       }
 
@@ -1426,10 +1680,11 @@ private:
       tf2::doTransform(pose_in_ref, target_out, tf_to_arm_base);
       target_out.header.frame_id = arm_base_frame_;
       target_out.header.stamp = msg->header.stamp;
-    } catch (const tf2::TransformException& ex) {
-      RCLCPP_WARN(this->get_logger(),
-                  "[TF][EEF] transform from '%s' to arm base '%s' failed: %s",
-                  reference_frame.c_str(), arm_base_frame_.c_str(), ex.what());
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[TF][EEF] transform from '%s' to arm base '%s' failed: %s",
+        reference_frame.c_str(), arm_base_frame_.c_str(), ex.what());
       return false;
     }
 
@@ -1442,11 +1697,12 @@ private:
   std::string joint_states_topic_;
   std::string navigate_to_pose_action_;
   std::string follow_joint_trajectory_action_;
-  std::string gripper_follow_joint_trajectory_action_;
   bool use_moveit_;
   std::string move_group_action_;
   std::string move_group_name_;
   std::string move_group_eef_link_;
+  std::string gripper_move_group_name_;
+  double gripper_move_group_timeout_sec_;
   double moveit_action_wait_sec_;
   double moveit_planning_time_;
   int moveit_planning_attempts_;
@@ -1468,7 +1724,6 @@ private:
   double gripper_closed_position_;
   std::vector<double> gripper_open_positions_;
   std::vector<double> gripper_closed_positions_;
-  double gripper_command_duration_sec_;
   double gripper_command_epsilon_;
   double max_base_velocity_;
   double max_arm_velocity_;
@@ -1504,7 +1759,6 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr servo_twist_pub_;
   rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr nav_client_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr arm_client_;
-  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr gripper_client_;
   rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SharedPtr move_group_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr servo_start_client_;
   rclcpp::TimerBase::SharedPtr safety_timer_;
@@ -1514,21 +1768,22 @@ private:
   // State
   rclcpp::Time last_policy_time_{0, 0, RCL_ROS_TIME};
   sensor_msgs::msg::JointState::SharedPtr last_joint_state_;
-  std::optional<double> last_gripper_command_;
-  std::optional<rclcpp::Time> last_gripper_send_time_;
+  std::optional<double> latched_gripper_command_;
   std::atomic<bool> moveit_goal_active_{false};
   std::atomic<bool> arm_goal_active_{false};
-  std::atomic<bool> gripper_goal_active_{false};
+  std::atomic<bool> gripper_moveit_goal_active_{false};
+  std::atomic<bool> servo_suppressed_for_gripper_{false};
+  std::atomic<uint64_t> gripper_goal_generation_{0};
   std::atomic<bool> startup_ready_pose_completed_{true};
   std::atomic<bool> startup_ready_pose_goal_active_{false};
   int startup_ready_pose_attempts_{0};
   std::mutex goal_mutex_;
   std::mutex servo_mutex_;
   rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr moveit_goal_handle_;
+  rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr
+    gripper_moveit_goal_handle_;
   rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr
     arm_goal_handle_;
-  rclcpp_action::ClientGoalHandle<control_msgs::action::FollowJointTrajectory>::SharedPtr
-    gripper_goal_handle_;
   geometry_msgs::msg::Twist latest_servo_twist_;
   rclcpp::Time servo_command_until_{0, 0, RCL_ROS_TIME};
   std::atomic<bool> servo_command_active_{false};
@@ -1538,12 +1793,14 @@ private:
   std::atomic<bool> servo_wait_started_{false};
   std::chrono::steady_clock::time_point ready_pose_start_time_steady_{
     std::chrono::steady_clock::time_point::min()};
+  std::chrono::steady_clock::time_point gripper_goal_start_steady_{
+    std::chrono::steady_clock::time_point::min()};
   std::chrono::steady_clock::time_point servo_wait_start_steady_{
     std::chrono::steady_clock::time_point::min()};
   bool safety_stop_active_{false};
 };
 
-int main(int argc, char** argv)
+int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<AdapterNode>();

@@ -57,7 +57,9 @@ visual_servo:
   blind_approach_velocity_fraction: 0.5   # Fraction of max_linear_velocity for blind forward motion
   blind_approach_max_distance_m: 0.20     # Safety cap on total blind approach distance
   open_gripper_command: 1.0            # Normalized gripper command sent before approach (1.0 = open)
+  open_gripper_settle_sec: 3.0         # Wait after issuing the open command so the hardware can finish opening
   close_gripper_command: 0.0           # Normalized gripper command sent at grasp depth (0.0 = closed)
+  gripper_open_position_tolerance: 0.020  # Joint-state tolerance used only to report when the open target is reached
 
   # Reference frame for output PolicyOutput
   reference_frame: "piper_base_link"

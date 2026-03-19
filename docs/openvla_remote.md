@@ -80,8 +80,8 @@ gripper joint range as:
 
 `target = closed_position + gripper_command * (open_position - closed_position)`
 
-For the default Piper config in this repo, `closed_position = 0.0` and `open_position = 0.035`, so:
-- `gripper_command = 1.0` maps to `0.035` (fully open)
+For the default Piper config in this repo, `closed_position = 0.0` and `open_position = 0.75`, so:
+- `gripper_command = 1.0` maps to `0.75` (fully open)
 - `gripper_command = 0.0` maps to `0.0` (fully closed)
 - `gripper_command = 0.996` maps to `0.03486` (effectively fully open)
 

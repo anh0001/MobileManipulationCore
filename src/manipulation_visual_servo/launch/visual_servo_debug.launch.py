@@ -109,6 +109,7 @@ def generate_launch_description():
                 'depth_topic': LaunchConfiguration('depth_topic'),
                 'detection_topic': LaunchConfiguration('detection_topic'),
                 'output_topic': LaunchConfiguration('output_topic'),
+                'joint_states_topic': str(vs_cfg.get('joint_states_topic', '/joint_states')),
                 'reference_frame': LaunchConfiguration('reference_frame'),
                 'camera_optical_frame': LaunchConfiguration('camera_optical_frame'),
                 'ee_frame': LaunchConfiguration('ee_frame'),
@@ -155,8 +156,16 @@ def generate_launch_description():
                     vs_cfg.get('approach_min_progress_m', 0.01)),
                 'open_gripper_command': float(
                     vs_cfg.get('open_gripper_command', 1.0)),
+                'open_gripper_settle_sec': float(
+                    vs_cfg.get('open_gripper_settle_sec', 3.0)),
                 'close_gripper_command': float(
                     vs_cfg.get('close_gripper_command', 0.0)),
+                'gripper_joint_name': str(vs_cfg.get('gripper_joint_name', 'piper_joint7')),
+                'gripper_joint_names': vs_cfg.get('gripper_joint_names', []),
+                'gripper_open_position': float(vs_cfg.get('gripper_open_position', 0.75)),
+                'gripper_open_positions': vs_cfg.get('gripper_open_positions', []),
+                'gripper_open_position_tolerance': float(
+                    vs_cfg.get('gripper_open_position_tolerance', 0.02)),
                 'tracker_type': str(vs_cfg.get('tracker_type', 'mil')),
                 'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
                 'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),

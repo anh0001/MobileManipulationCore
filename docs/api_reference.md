@@ -265,7 +265,7 @@ ros2 run manipulation_policy policy_node \
 | `arm_command_duration_sec` | double | 1.5 | Arm trajectory duration (s) |
 | `gripper_joint_name` | string | `piper_joint7` | Gripper joint name |
 | `gripper_joint_names` | string[] | `[]` | Gripper joint names (multi-joint) |
-| `gripper_open_position` | double | 0.035 | Gripper open position (rad/m) |
+| `gripper_open_position` | double | 0.75 | Gripper open position (rad/m) |
 | `gripper_closed_position` | double | 0.0 | Gripper closed position (rad/m) |
 | `gripper_open_positions` | double[] | `[]` | Gripper open positions per joint |
 | `gripper_closed_positions` | double[] | `[]` | Gripper closed positions per joint |
