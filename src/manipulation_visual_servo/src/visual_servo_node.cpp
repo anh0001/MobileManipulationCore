@@ -98,6 +98,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("blind_approach_depth_threshold_m", 0.30);
   this->declare_parameter("blind_approach_velocity_fraction", 0.5);
   this->declare_parameter("blind_approach_max_distance_m", 0.20);
+  this->declare_parameter("blind_approach_after_standoff_m", 0.03);
+  this->declare_parameter("blind_push_timeout_sec", 7.2);
+  this->declare_parameter("blind_push_close_tolerance_m", 0.006);
   this->declare_parameter("open_gripper_command", 1.0);
   this->declare_parameter("open_gripper_settle_sec", 3.0);
   this->declare_parameter("close_gripper_command", 0.0);
@@ -168,6 +171,12 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     this->get_parameter("blind_approach_velocity_fraction").as_double();
   blind_approach_max_distance_m_ =
     this->get_parameter("blind_approach_max_distance_m").as_double();
+  blind_approach_after_standoff_m_ =
+    this->get_parameter("blind_approach_after_standoff_m").as_double();
+  blind_push_timeout_config_sec_ =
+    this->get_parameter("blind_push_timeout_sec").as_double();
+  blind_push_close_tolerance_m_ =
+    this->get_parameter("blind_push_close_tolerance_m").as_double();
   open_gripper_command_ = this->get_parameter("open_gripper_command").as_double();
   open_gripper_settle_sec_ = this->get_parameter("open_gripper_settle_sec").as_double();
   close_gripper_command_ = this->get_parameter("close_gripper_command").as_double();
@@ -257,6 +266,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   state_entry_time_ = this->now();
   last_track_time_ = this->now();
   last_processed_frame_stamp_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  last_rgb_receive_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  latest_frame_generation_ = 0;
+  last_processed_frame_generation_ = 0;
 
   RCLCPP_INFO(
     this->get_logger(),
@@ -276,9 +288,10 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     0.0 ? output_delta_horizon_sec_ : 1.0 / std::max(1.0, control_rate_hz_));
   RCLCPP_INFO(
     this->get_logger(),
-    "[INIT] Pick | use_depth=%s standoff=%.3f tol=%.3f lift=%.3f max_approach=%.3f",
+    "[INIT] Pick | use_depth=%s standoff=%.3f tol=%.3f lift=%.3f "
+    "max_approach=%.3f blind_after_standoff=%.3f",
     use_depth_ ? "true" : "false", grasp_standoff_m_, grasp_depth_tolerance_m_,
-    lift_distance_m_, max_approach_distance_m_);
+    lift_distance_m_, max_approach_distance_m_, blind_approach_after_standoff_m_);
   RCLCPP_INFO(
     this->get_logger(),
     "[INIT] Depth | anchor=(%.2f, %.2f) half_size=%d min_valid=%d max_iqr=%.3f "
@@ -324,6 +337,8 @@ void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedP
     std::lock_guard<std::mutex> lock(image_mutex_);
     latest_frame_ = converted;
     latest_frame_stamp_ = msg->header.stamp;
+    last_rgb_receive_time_ = this->now();
+    ++latest_frame_generation_;
     frame_available_ = true;
   } catch (const std::exception & e) {
     RCLCPP_WARN_THROTTLE(
@@ -505,7 +520,7 @@ void VisualServoNode::transition_to(ServoState new_state, const std::string & re
   } else if (new_state == ServoState::APPROACH_DEPTH) {
     close_depth_streak_ = 0;
     accumulated_approach_distance_m_ = 0.0;
-    blind_approach_distance_m_ = 0.0;
+    reset_standoff_blind_push();
     depth_progress_history_.clear();
   } else if (new_state == ServoState::LIFT) {
     accumulated_lift_distance_m_ = 0.0;
@@ -518,13 +533,15 @@ bool VisualServoNode::fetch_latest_frame(cv::Mat & frame)
   if (!frame_available_) {
     return false;
   }
-  // Skip if this is the same frame we already processed (prevents
-  // re-running the tracker on stale data and accumulating duplicate deltas).
-  if (latest_frame_stamp_ == last_processed_frame_stamp_) {
+  // Skip if no new callback has arrived since the last processed frame.
+  // Some camera drivers reuse header stamps, so use an internal generation
+  // counter instead of timestamp equality.
+  if (latest_frame_generation_ == last_processed_frame_generation_) {
     return false;
   }
   frame = latest_frame_.clone();
   last_processed_frame_stamp_ = latest_frame_stamp_;
+  last_processed_frame_generation_ = latest_frame_generation_;
   return true;
 }
 
@@ -533,10 +550,241 @@ void VisualServoNode::reset_pick_progress()
   centering_streak_ = 0;
   close_depth_streak_ = 0;
   accumulated_approach_distance_m_ = 0.0;
-  blind_approach_distance_m_ = 0.0;
+  reset_standoff_blind_push();
   accumulated_lift_distance_m_ = 0.0;
   last_depth_sample_.reset();
   depth_progress_history_.clear();
+}
+
+void VisualServoNode::reset_standoff_blind_push()
+{
+  blind_approach_distance_m_ = 0.0;
+  standoff_blind_active_ = false;
+  blind_push_start_position_.reset();
+  blind_push_axis_ = CartesianVector{};
+  blind_push_start_time_ = this->now();
+  blind_push_timeout_sec_ = 0.0;
+  blind_push_start_accumulated_distance_m_ = 0.0;
+}
+
+std::optional<CartesianVector> VisualServoNode::lookup_current_ee_position_in_reference()
+{
+  const std::string target_frame = reference_frame_.empty() ? arm_base_frame_ : reference_frame_;
+  try {
+    const auto transform = tf_buffer_->lookupTransform(target_frame, ee_frame_, tf2::TimePointZero);
+    return CartesianVector{
+      transform.transform.translation.x,
+      transform.transform.translation.y,
+      transform.transform.translation.z};
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[TF] lookup %s -> %s failed during blind push: %s",
+      ee_frame_.c_str(), target_frame.c_str(), ex.what());
+    return std::nullopt;
+  }
+}
+
+std::optional<CartesianVector> VisualServoNode::lookup_eef_positive_z_axis_in_reference()
+{
+  const std::string target_frame = reference_frame_.empty() ? arm_base_frame_ : reference_frame_;
+  if (ee_frame_.empty() || target_frame.empty()) {
+    return std::nullopt;
+  }
+  if (ee_frame_ == target_frame) {
+    return CartesianVector{0.0, 0.0, 1.0};
+  }
+
+  try {
+    const auto transform = tf_buffer_->lookupTransform(
+      target_frame, ee_frame_, tf2::TimePointZero);
+    const auto & q = transform.transform.rotation;
+    const double qx = q.x;
+    const double qy = q.y;
+    const double qz = q.z;
+    const double qw = q.w;
+    const double vx = 0.0;
+    const double vy = 0.0;
+    const double vz = 1.0;
+    const double t2 = qw * vx + qy * vz - qz * vy;
+    const double t3 = qw * vy + qz * vx - qx * vz;
+    const double t4 = qw * vz + qx * vy - qy * vx;
+    const double t5 = -qx * vx - qy * vy - qz * vz;
+    CartesianVector axis;
+    axis.x = t2 * qw - t5 * qx - t3 * qz + t4 * qy;
+    axis.y = t3 * qw - t5 * qy - t4 * qx + t2 * qz;
+    axis.z = t4 * qw - t5 * qz - t2 * qy + t3 * qx;
+
+    const double axis_norm = std::sqrt(
+      axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+    if (axis_norm < 1e-9) {
+      return std::nullopt;
+    }
+    axis.x /= axis_norm;
+    axis.y /= axis_norm;
+    axis.z /= axis_norm;
+    return axis;
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[TF] lookup %s -> %s failed while latching blind axis: %s",
+      ee_frame_.c_str(), target_frame.c_str(), ex.what());
+    return std::nullopt;
+  }
+}
+
+bool VisualServoNode::start_standoff_blind_push(double depth_m)
+{
+  const double blind_speed_mps = blind_approach_velocity_fraction_ * max_linear_velocity_;
+  if (blind_approach_after_standoff_m_ <= 0.0 || blind_speed_mps <= 1e-6) {
+    return false;
+  }
+
+  reset_standoff_blind_push();
+
+  const auto start_position = lookup_current_ee_position_in_reference();
+  const auto blind_axis = lookup_eef_positive_z_axis_in_reference();
+  if (!start_position.has_value() || !blind_axis.has_value()) {
+    return false;
+  }
+
+  blind_push_start_position_ = start_position;
+  blind_push_axis_ = blind_axis.value();
+  blind_push_start_time_ = this->now();
+  blind_push_timeout_sec_ = std::max(0.1, blind_push_timeout_config_sec_);
+  blind_push_start_accumulated_distance_m_ = accumulated_approach_distance_m_;
+  blind_approach_distance_m_ = 0.0;
+  standoff_blind_active_ = true;
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[APPROACH] depth reached standoff (%.3fm); blind push (eef +Z) "
+    "start=(%.4f, %.4f, %.4f) axis=(%.3f, %.3f, %.3f) "
+    "dist=%.3fm vel=%.3fm/s timeout=%.2fs",
+    depth_m,
+    blind_push_start_position_->x, blind_push_start_position_->y, blind_push_start_position_->z,
+    blind_push_axis_.x, blind_push_axis_.y, blind_push_axis_.z,
+    blind_approach_after_standoff_m_, blind_speed_mps, blind_push_timeout_sec_);
+  return true;
+}
+
+void VisualServoNode::handle_standoff_blind_push(const cv::Mat * frame)
+{
+  const double blind_speed_mps = blind_approach_velocity_fraction_ * max_linear_velocity_;
+  if (!blind_push_start_position_.has_value() || blind_speed_mps <= 1e-6) {
+    publish_zero_motion(tracking_confidence_);
+    transition_to(ServoState::LOST, "standoff blind push state invalid");
+    if (publish_overlay_ && frame != nullptr) {
+      publish_debug_overlay(*frame, tracked_roi_);
+    }
+    return;
+  }
+
+  const auto current_position = lookup_current_ee_position_in_reference();
+  if (!current_position.has_value()) {
+    publish_zero_motion(tracking_confidence_);
+    transition_to(ServoState::LOST, "blind push TF unavailable");
+    if (publish_overlay_ && frame != nullptr) {
+      publish_debug_overlay(*frame, tracked_roi_);
+    }
+    return;
+  }
+
+  const CartesianVector translation{
+    current_position->x - blind_push_start_position_->x,
+    current_position->y - blind_push_start_position_->y,
+    current_position->z - blind_push_start_position_->z};
+  blind_approach_distance_m_ = std::max(
+    0.0, project_translation_onto_axis(translation, blind_push_axis_));
+  accumulated_approach_distance_m_ =
+    blind_push_start_accumulated_distance_m_ + blind_approach_distance_m_;
+
+  if (blind_approach_distance_m_ > blind_approach_max_distance_m_) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[APPROACH] aborting pick: blind actual distance %.3fm exceeded limit %.3fm",
+      blind_approach_distance_m_, blind_approach_max_distance_m_);
+    publish_zero_motion(tracking_confidence_);
+    transition_to(ServoState::LOST, "blind push distance limit exceeded");
+    if (publish_overlay_ && frame != nullptr) {
+      publish_debug_overlay(*frame, tracked_roi_);
+    }
+    return;
+  }
+
+  if (accumulated_approach_distance_m_ > max_approach_distance_m_) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[APPROACH] aborting pick: total distance %.3fm exceeded limit %.3fm",
+      accumulated_approach_distance_m_, max_approach_distance_m_);
+    publish_zero_motion(tracking_confidence_);
+    transition_to(ServoState::LOST, "approach distance limit exceeded during blind push");
+    if (publish_overlay_ && frame != nullptr) {
+      publish_debug_overlay(*frame, tracked_roi_);
+    }
+    return;
+  }
+
+  if (blind_approach_distance_m_ >= blind_approach_after_standoff_m_) {
+    publish_zero_motion(tracking_confidence_);
+    transition_to(ServoState::CLOSE_GRIPPER, "standoff blind push completed");
+    if (publish_overlay_ && frame != nullptr) {
+      publish_debug_overlay(*frame, tracked_roi_);
+    }
+    return;
+  }
+
+  const double remaining = std::max(
+    0.0,
+    blind_approach_after_standoff_m_ - blind_approach_distance_m_);
+  const double elapsed_sec = (this->now() - blind_push_start_time_).seconds();
+  if (elapsed_sec >= blind_push_timeout_sec_) {
+    if (remaining <= std::max(0.0, blind_push_close_tolerance_m_)) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[APPROACH] blind push timed out after %.2fs but remaining %.3fm is within "
+        "close tolerance %.3fm; closing gripper",
+        elapsed_sec, remaining, blind_push_close_tolerance_m_);
+      publish_zero_motion(tracking_confidence_);
+      transition_to(ServoState::CLOSE_GRIPPER, "blind push timeout within close tolerance");
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[APPROACH] aborting pick: blind push timed out after %.2fs "
+        "(actual=%.3fm target=%.3fm remaining=%.3fm tol=%.3fm)",
+        elapsed_sec, blind_approach_distance_m_, blind_approach_after_standoff_m_,
+        remaining, blind_push_close_tolerance_m_);
+      publish_zero_motion(tracking_confidence_);
+      transition_to(ServoState::LOST, "blind push timed out");
+    }
+    if (publish_overlay_ && frame != nullptr) {
+      publish_debug_overlay(*frame, tracked_roi_);
+    }
+    return;
+  }
+
+  const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
+  const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
+    output_delta_horizon_sec_ : cycle_dt;
+  const double velocity = std::min(blind_speed_mps, remaining / cycle_dt);
+  const double step_distance = velocity * delta_horizon_sec;
+
+  RCLCPP_INFO_THROTTLE(
+    this->get_logger(), *this->get_clock(), 500,
+    "[APPROACH] standoff blind push (eef +Z): actual=%.3f/%.3f remaining=%.3f "
+    "elapsed=%.2f/%.2f axis=(%.3f, %.3f, %.3f)",
+    blind_approach_distance_m_, blind_approach_after_standoff_m_, remaining,
+    elapsed_sec, blind_push_timeout_sec_,
+    blind_push_axis_.x, blind_push_axis_.y, blind_push_axis_.z);
+
+  publish_reference_frame_delta(
+    blind_push_axis_.x * step_distance,
+    blind_push_axis_.y * step_distance,
+    blind_push_axis_.z * step_distance,
+    tracking_confidence_);
+  if (publish_overlay_ && frame != nullptr) {
+    publish_debug_overlay(*frame, tracked_roi_);
+  }
 }
 
 bool VisualServoNode::acquire_from_detection(const cv::Mat & frame)
@@ -650,6 +898,26 @@ void VisualServoNode::handle_track()
 {
   cv::Mat frame;
   if (!fetch_latest_frame(frame)) {
+    std::uint64_t latest_generation = 0;
+    std::uint64_t processed_generation = 0;
+    rclcpp::Time latest_stamp(0, 0, this->get_clock()->get_clock_type());
+    rclcpp::Time last_rgb_receive(0, 0, this->get_clock()->get_clock_type());
+    {
+      std::lock_guard<std::mutex> lock(image_mutex_);
+      latest_generation = latest_frame_generation_;
+      processed_generation = last_processed_frame_generation_;
+      latest_stamp = latest_frame_stamp_;
+      last_rgb_receive = last_rgb_receive_time_;
+    }
+    const double since_rgb_sec =
+      last_rgb_receive.nanoseconds() > 0 ? (this->now() - last_rgb_receive).seconds() : -1.0;
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[TRACK] waiting for fresh RGB frame: latest_gen=%llu processed_gen=%llu "
+      "latest_stamp=%.3f since_rgb=%.3fs",
+      static_cast<unsigned long long>(latest_generation),
+      static_cast<unsigned long long>(processed_generation),
+      latest_stamp.seconds(), since_rgb_sec);
     return;
   }
 
@@ -768,6 +1036,11 @@ void VisualServoNode::handle_open_gripper()
 
 void VisualServoNode::handle_approach_depth()
 {
+  if (standoff_blind_active_) {
+    handle_standoff_blind_push();
+    return;
+  }
+
   cv::Mat frame;
   if (!fetch_latest_frame(frame)) {
     return;
@@ -810,7 +1083,7 @@ void VisualServoNode::handle_approach_depth()
       "[DEPTH] use_depth=false; depth-guided approach disabled");
   }
 
-  if (depth_sample.has_value()) {
+  if (!standoff_blind_active_ && depth_sample.has_value()) {
     last_depth_sample_ = depth_sample;
     const bool depth_in_band = depth_within_standoff(
       depth_sample->depth_m, grasp_standoff_m_, grasp_depth_tolerance_m_);
@@ -830,15 +1103,29 @@ void VisualServoNode::handle_approach_depth()
       close_depth_streak_, close_depth_stable_frames_);
 
     if (depth_in_band && close_update.stable) {
-      publish_zero_motion(tracking_confidence_);
-      transition_to(ServoState::CLOSE_GRIPPER, "depth reached grasp band");
-      if (publish_overlay_) {
-        publish_debug_overlay(frame, tracked_roi_);
+      if (blind_approach_after_standoff_m_ > 0.0) {
+        if (!start_standoff_blind_push(depth_sample->depth_m)) {
+          publish_zero_motion(tracking_confidence_);
+          transition_to(ServoState::LOST, "failed to initialize blind push");
+          if (publish_overlay_) {
+            publish_debug_overlay(frame, tracked_roi_);
+          }
+          return;
+        }
+        handle_standoff_blind_push(&frame);
+        return;
+      } else {
+        // No blind push configured — close immediately
+        publish_zero_motion(tracking_confidence_);
+        transition_to(ServoState::CLOSE_GRIPPER, "depth reached grasp band");
+        if (publish_overlay_) {
+          publish_debug_overlay(frame, tracked_roi_);
+        }
+        return;
       }
-      return;
     }
 
-    if (depth_in_band) {
+    if (!standoff_blind_active_ && depth_in_band) {
       // The gripper was already opened in OPEN_GRIPPER. Do not keep re-sending the
       // same open command while waiting for depth stability, or the adapter will
       // periodically issue fresh trajectory goals during approach.
@@ -848,7 +1135,7 @@ void VisualServoNode::handle_approach_depth()
       }
       return;
     }
-  } else {
+  } else if (!standoff_blind_active_) {
     // Only reset close streak — preserve last_depth_sample_ for blind approach
     // fallback and depth_progress_history_ for stall detection continuity.
     close_depth_streak_ = 0;
@@ -865,7 +1152,7 @@ void VisualServoNode::handle_approach_depth()
   }
 
   geometry_msgs::msg::Twist twist = compute_alignment_twist(feat_x, feat_y);
-  if (depth_sample.has_value()) {
+  if (!standoff_blind_active_ && depth_sample.has_value()) {
     twist = compute_approach_twist(feat_x, feat_y, depth_sample->depth_m);
 
     if (depth_sample_stamp.nanoseconds() > 0) {

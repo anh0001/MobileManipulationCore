@@ -88,12 +88,17 @@ private:
   bool fetch_latest_frame(cv::Mat & frame);
   bool acquire_from_detection(const cv::Mat & frame);
   bool update_tracking(const cv::Mat & frame);
+  bool start_standoff_blind_push(double depth_m);
+  void handle_standoff_blind_push(const cv::Mat * frame = nullptr);
   std::optional<size_t> find_joint_state_index(
     const sensor_msgs::msg::JointState & joint_state, const std::string & joint_name) const;
   std::optional<double> max_gripper_open_error();
   void reset_pick_progress();
+  void reset_standoff_blind_push();
   void apply_ramp(geometry_msgs::msg::Twist & twist);
   void publish_zero_motion(float confidence = 1.0F);
+  std::optional<CartesianVector> lookup_current_ee_position_in_reference();
+  std::optional<CartesianVector> lookup_eef_positive_z_axis_in_reference();
 
   geometry_msgs::msg::Twist compute_alignment_twist(
     double feat_x, double feat_y, bool allow_ramp = true);
@@ -148,8 +153,11 @@ private:
   std::mutex image_mutex_;
   cv::Mat latest_frame_;
   rclcpp::Time latest_frame_stamp_;
+  rclcpp::Time last_rgb_receive_time_;
   bool frame_available_{false};
   rclcpp::Time last_processed_frame_stamp_;
+  std::uint64_t latest_frame_generation_{0};
+  std::uint64_t last_processed_frame_generation_{0};
 
   std::mutex joint_state_mutex_;
   sensor_msgs::msg::JointState latest_joint_state_;
@@ -181,6 +189,13 @@ private:
   int close_depth_streak_{0};
   double accumulated_approach_distance_m_{0.0};
   double blind_approach_distance_m_{0.0};
+  // True once depth reached standoff and we're blind-pushing the final distance.
+  bool standoff_blind_active_{false};
+  std::optional<CartesianVector> blind_push_start_position_;
+  CartesianVector blind_push_axis_;
+  rclcpp::Time blind_push_start_time_;
+  double blind_push_timeout_sec_{0.0};
+  double blind_push_start_accumulated_distance_m_{0.0};
   double accumulated_lift_distance_m_{0.0};
   std::optional<DepthSample> last_depth_sample_;
   std::deque<DepthHistoryEntry> depth_progress_history_;
@@ -228,6 +243,9 @@ private:
   double blind_approach_depth_threshold_m_;
   double blind_approach_velocity_fraction_;
   double blind_approach_max_distance_m_;
+  double blind_approach_after_standoff_m_;
+  double blind_push_timeout_config_sec_;
+  double blind_push_close_tolerance_m_;
   double open_gripper_command_;
   double open_gripper_settle_sec_;
   double close_gripper_command_;

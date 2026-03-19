@@ -187,6 +187,34 @@ TEST(StateHelperTest, DepthVelocityAtStandoffIsZero)
   EXPECT_NEAR(compute_depth_velocity_mps(0.115, 0.115, 2.0, 0.10), 0.0, 1e-6);
 }
 
+TEST(StateHelperTest, ProjectsTranslationOntoNormalizedAxis)
+{
+  const CartesianVector translation{0.030, 0.020, -0.010};
+  const CartesianVector axis{1.0, 0.0, 0.0};
+  EXPECT_NEAR(project_translation_onto_axis(translation, axis), 0.030, 1e-6);
+}
+
+TEST(StateHelperTest, ProjectsTranslationOntoNonUnitAxis)
+{
+  const CartesianVector translation{0.018, 0.024, 0.0};
+  const CartesianVector axis{3.0, 4.0, 0.0};
+  EXPECT_NEAR(project_translation_onto_axis(translation, axis), 0.03, 1e-6);
+}
+
+TEST(StateHelperTest, ProjectsNegativeTranslationWhenMovingBackward)
+{
+  const CartesianVector translation{-0.010, 0.0, 0.0};
+  const CartesianVector axis{1.0, 0.0, 0.0};
+  EXPECT_NEAR(project_translation_onto_axis(translation, axis), -0.010, 1e-6);
+}
+
+TEST(StateHelperTest, ZeroAxisProducesZeroProjectedDistance)
+{
+  const CartesianVector translation{0.010, 0.020, 0.030};
+  const CartesianVector axis{0.0, 0.0, 0.0};
+  EXPECT_DOUBLE_EQ(project_translation_onto_axis(translation, axis), 0.0);
+}
+
 TEST(DepthSampleTest, RelaxedMinPixelsAcceptsSmallSamples)
 {
   // With only 6 valid pixels (matching relaxed min_valid_depth_pixels=6),

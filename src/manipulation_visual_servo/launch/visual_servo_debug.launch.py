@@ -154,6 +154,18 @@ def generate_launch_description():
                     vs_cfg.get('approach_stall_window_sec', 1.0)),
                 'approach_min_progress_m': float(
                     vs_cfg.get('approach_min_progress_m', 0.01)),
+                'blind_approach_depth_threshold_m': float(
+                    vs_cfg.get('blind_approach_depth_threshold_m', 0.30)),
+                'blind_approach_velocity_fraction': float(
+                    vs_cfg.get('blind_approach_velocity_fraction', 0.5)),
+                'blind_approach_max_distance_m': float(
+                    vs_cfg.get('blind_approach_max_distance_m', 0.20)),
+                'blind_approach_after_standoff_m': float(
+                    vs_cfg.get('blind_approach_after_standoff_m', 0.03)),
+                'blind_push_timeout_sec': float(
+                    vs_cfg.get('blind_push_timeout_sec', 7.2)),
+                'blind_push_close_tolerance_m': float(
+                    vs_cfg.get('blind_push_close_tolerance_m', 0.006)),
                 'open_gripper_command': float(
                     vs_cfg.get('open_gripper_command', 1.0)),
                 'open_gripper_settle_sec': float(

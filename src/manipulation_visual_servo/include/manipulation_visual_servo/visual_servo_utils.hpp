@@ -40,6 +40,13 @@ struct CenteringUpdate
   bool stable{false};
 };
 
+struct CartesianVector
+{
+  double x{0.0};
+  double y{0.0};
+  double z{0.0};
+};
+
 bool is_supported_depth_encoding(const std::string & encoding);
 
 bool decode_depth_image(
@@ -70,5 +77,9 @@ double compute_depth_velocity_mps(
   double grasp_standoff_m,
   double lambda_z,
   double max_linear_velocity);
+
+double project_translation_onto_axis(
+  const CartesianVector & translation,
+  const CartesianVector & axis);
 
 }  // namespace manipulation_visual_servo

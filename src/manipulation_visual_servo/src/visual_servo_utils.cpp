@@ -182,4 +182,19 @@ double compute_depth_velocity_mps(
   return clamp_value(unclamped, -limit, limit);
 }
 
+double project_translation_onto_axis(
+  const CartesianVector & translation,
+  const CartesianVector & axis)
+{
+  const double axis_norm = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+  if (axis_norm < 1e-9) {
+    return 0.0;
+  }
+
+  const double unit_x = axis.x / axis_norm;
+  const double unit_y = axis.y / axis_norm;
+  const double unit_z = axis.z / axis_norm;
+  return translation.x * unit_x + translation.y * unit_y + translation.z * unit_z;
+}
+
 }  // namespace manipulation_visual_servo

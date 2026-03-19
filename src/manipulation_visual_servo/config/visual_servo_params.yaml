@@ -38,8 +38,8 @@ visual_servo:
   camera_optical_frame: "piper_camera_optical_frame"
   ee_frame: "piper_tcp"                # Tool center point mounted after piper_link6
   arm_base_frame: "piper_base_link"
-  grasp_standoff_m: 0.055              # Desired object distance from wrist camera when grasping with piper_tcp; retune if camera-to-TCP offset changes
-  grasp_depth_tolerance_m: 0.01        # Tighter tolerance so grasp closure does not trigger too early
+  grasp_standoff_m: 0.095              # D405 min reliable depth is ~0.088m; trigger grasp while depth is still readable
+  grasp_depth_tolerance_m: 0.015       # Grasp band: 0.080–0.110m
   depth_sample_anchor_x: 0.50          # Normalized ROI x anchor (width fraction, right-positive)
   depth_sample_anchor_y: 0.50          # Normalized ROI y anchor (height fraction, down-positive); centered to avoid edge/background mixing at close range
   depth_roi_half_size_px: 8            # Half-width of the square depth sampling window around the anchor pixel
@@ -56,6 +56,9 @@ visual_servo:
   blind_approach_depth_threshold_m: 0.30  # Switch to blind approach when last good depth was below this
   blind_approach_velocity_fraction: 0.5   # Fraction of max_linear_velocity for blind forward motion
   blind_approach_max_distance_m: 0.20     # Safety cap on total blind approach distance
+  blind_approach_after_standoff_m: 0.03  # Extra blind-push distance along end-effector +Z after depth reaches standoff (0 = disabled, close immediately)
+  blind_push_timeout_sec: 14.4           # Exact timeout in seconds for the blind push along end-effector +Z
+  blind_push_close_tolerance_m: 0.006    # If timeout occurs with <= this much blind-push distance remaining, close instead of restarting alignment
   open_gripper_command: 1.0            # Normalized gripper command sent before approach (1.0 = open)
   open_gripper_settle_sec: 3.0         # Wait after issuing the open command so the hardware can finish opening
   close_gripper_command: 0.0           # Normalized gripper command sent at grasp depth (0.0 = closed)
