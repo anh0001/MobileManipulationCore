@@ -630,6 +630,10 @@ def generate_launch_description():
                 vs_cfg.get('blind_push_timeout_sec', 7.2)),
             'blind_push_close_tolerance_m': float(
                 vs_cfg.get('blind_push_close_tolerance_m', 0.006)),
+            'blind_push_offset_x': float(
+                vs_cfg.get('blind_push_offset_x', 0.0)),
+            'blind_push_offset_y': float(
+                vs_cfg.get('blind_push_offset_y', 0.0)),
             'open_gripper_settle_sec': float(
                 vs_cfg.get('open_gripper_settle_sec', 3.0)),
             'gripper_cmd_action': robot_actions.get(

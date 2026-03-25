@@ -51,6 +51,8 @@ visual_servo:
   blind_approach_after_standoff_m: 0.05  # Extra blind-push distance along end-effector +Z after depth reaches standoff (0 = disabled, close immediately)
   blind_push_timeout_sec: 14.4           # Exact timeout in seconds for the blind push along end-effector +Z
   blind_push_close_tolerance_m: 0.005    # If timeout occurs with <= this much blind-push distance remaining, close instead of restarting alignment
+  blind_push_offset_x: 0.017             # Lateral offset (m) in reference frame applied during blind push (positive = arm +Y direction)
+  blind_push_offset_y: 0.0              # Vertical offset (m) in reference frame applied during blind push (positive = arm +Z direction)
   open_gripper_settle_sec: 3.0         # Wait after issuing the direct GripperCommand open action
   gripper_open_position_tolerance: 0.020  # Joint-state tolerance used only to report when the open target is reached
   return_to_ready_after_pick: true     # Ask the adapter to send the arm back to its configured ready pose after DONE

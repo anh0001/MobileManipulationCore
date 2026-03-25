@@ -104,6 +104,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("blind_approach_after_standoff_m", 0.03);
   this->declare_parameter("blind_push_timeout_sec", 7.2);
   this->declare_parameter("blind_push_close_tolerance_m", 0.006);
+  this->declare_parameter("blind_push_offset_x", 0.0);
+  this->declare_parameter("blind_push_offset_y", 0.0);
   this->declare_parameter("open_gripper_settle_sec", 3.0);
   this->declare_parameter("gripper_cmd_action", "/piper_gripper_controller/gripper_cmd");
   this->declare_parameter("gripper_joint_name", "piper_joint7");
@@ -180,6 +182,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     this->get_parameter("blind_push_timeout_sec").as_double();
   blind_push_close_tolerance_m_ =
     this->get_parameter("blind_push_close_tolerance_m").as_double();
+  blind_push_offset_x_ = this->get_parameter("blind_push_offset_x").as_double();
+  blind_push_offset_y_ = this->get_parameter("blind_push_offset_y").as_double();
   open_gripper_settle_sec_ = this->get_parameter("open_gripper_settle_sec").as_double();
   gripper_cmd_action_ = this->get_parameter("gripper_cmd_action").as_string();
   gripper_joint_name_ = this->get_parameter("gripper_joint_name").as_string();
@@ -228,27 +232,47 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
+  // Sensor callbacks use a reentrant group so RGB, depth, joint-state and
+  // detection messages are never blocked by the control timer.  The control
+  // timer has its own mutually-exclusive group to guarantee only one tick
+  // executes at a time.
+  sensor_cb_group_ = this->create_callback_group(
+    rclcpp::CallbackGroupType::Reentrant);
+  timer_cb_group_ = this->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  rclcpp::SubscriptionOptions sensor_sub_opts;
+  sensor_sub_opts.callback_group = sensor_cb_group_;
+
   rgb_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
     rgb_topic_, rclcpp::SensorDataQoS(),
-    std::bind(&VisualServoNode::image_callback, this, std::placeholders::_1));
+    std::bind(&VisualServoNode::image_callback, this, std::placeholders::_1),
+    sensor_sub_opts);
 
   if (use_depth_) {
     depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
       depth_topic_, rclcpp::SensorDataQoS(),
-      std::bind(&VisualServoNode::depth_callback, this, std::placeholders::_1));
+      std::bind(&VisualServoNode::depth_callback, this, std::placeholders::_1),
+      sensor_sub_opts);
   }
 
   camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
     camera_info_topic_, rclcpp::SensorDataQoS(),
-    std::bind(&VisualServoNode::camera_info_callback, this, std::placeholders::_1));
+    std::bind(&VisualServoNode::camera_info_callback, this, std::placeholders::_1),
+    sensor_sub_opts);
+
+  rclcpp::SubscriptionOptions sensor_sub_opts_reliable;
+  sensor_sub_opts_reliable.callback_group = sensor_cb_group_;
 
   joint_states_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
     joint_states_topic_, 10,
-    std::bind(&VisualServoNode::joint_states_callback, this, std::placeholders::_1));
+    std::bind(&VisualServoNode::joint_states_callback, this, std::placeholders::_1),
+    sensor_sub_opts_reliable);
 
   detection_sub_ = this->create_subscription<vision_msgs::msg::Detection2DArray>(
     detection_topic_, 10,
-    std::bind(&VisualServoNode::detection_callback, this, std::placeholders::_1));
+    std::bind(&VisualServoNode::detection_callback, this, std::placeholders::_1),
+    sensor_sub_opts_reliable);
 
   gripper_cmd_client_ = rclcpp_action::create_client<GripperCommand>(this, gripper_cmd_action_);
 
@@ -266,7 +290,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   auto period = std::chrono::duration<double>(1.0 / std::max(1.0, control_rate_hz_));
   control_timer_ = this->create_wall_timer(
     std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-    std::bind(&VisualServoNode::control_timer_callback, this));
+    std::bind(&VisualServoNode::control_timer_callback, this),
+    timer_cb_group_);
 
   state_entry_time_ = this->now();
   last_track_time_ = this->now();
@@ -294,9 +319,10 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(
     this->get_logger(),
     "[INIT] Pick | use_depth=%s standoff=%.3f tol=%.3f lift=%.3f "
-    "max_approach=%.3f blind_after_standoff=%.3f",
+    "max_approach=%.3f blind_after_standoff=%.3f blind_push_offset=(%.4f, %.4f)",
     use_depth_ ? "true" : "false", grasp_standoff_m_, grasp_depth_tolerance_m_,
-    lift_distance_m_, max_approach_distance_m_, blind_approach_after_standoff_m_);
+    lift_distance_m_, max_approach_distance_m_, blind_approach_after_standoff_m_,
+    blind_push_offset_x_, blind_push_offset_y_);
   RCLCPP_INFO(
     this->get_logger(),
     "[INIT] Depth | anchor=(%.2f, %.2f) half_size=%d min_valid=%d max_iqr=%.3f "
@@ -1039,18 +1065,37 @@ void VisualServoNode::handle_standoff_blind_push(const cv::Mat * frame)
   const double velocity = std::min(blind_speed_mps, remaining / cycle_dt);
   const double step_distance = velocity * delta_horizon_sec;
 
+  // Compute a lateral axis perpendicular to the push direction in the reference
+  // frame horizontal plane.  blind_push_offset_x applies along this lateral axis
+  // (positive = robot left / +Y when the arm faces +X) and blind_push_offset_y
+  // applies along the reference frame Z-up direction.
+  const double ax = blind_push_axis_.x;
+  const double ay = blind_push_axis_.y;
+  const double horiz_len = std::sqrt(ax * ax + ay * ay);
+  // lateral = push_axis rotated 90° CCW in XY: (-ay, ax, 0), normalized
+  const double lat_x = (horiz_len > 1e-6) ? (-ay / horiz_len) : 0.0;
+  const double lat_y = (horiz_len > 1e-6) ? ( ax / horiz_len) : 0.0;
+
+  const double progress_fraction =
+    step_distance / std::max(1e-6, blind_approach_after_standoff_m_);
+  const double off_lateral = blind_push_offset_x_ * progress_fraction;
+  const double off_vertical = blind_push_offset_y_ * progress_fraction;
+
   RCLCPP_INFO_THROTTLE(
     this->get_logger(), *this->get_clock(), 500,
     "[APPROACH] standoff blind push (eef +Z): actual=%.3f/%.3f remaining=%.3f "
-    "elapsed=%.2f/%.2f axis=(%.3f, %.3f, %.3f)",
+    "elapsed=%.2f/%.2f axis=(%.3f, %.3f, %.3f) lateral=(%.3f, %.3f) "
+    "offset=(%.4f, %.4f)",
     blind_approach_distance_m_, blind_approach_after_standoff_m_, remaining,
     elapsed_sec, blind_push_timeout_sec_,
-    blind_push_axis_.x, blind_push_axis_.y, blind_push_axis_.z);
+    blind_push_axis_.x, blind_push_axis_.y, blind_push_axis_.z,
+    lat_x, lat_y,
+    blind_push_offset_x_, blind_push_offset_y_);
 
   publish_reference_frame_delta(
-    blind_push_axis_.x * step_distance,
-    blind_push_axis_.y * step_distance,
-    blind_push_axis_.z * step_distance,
+    blind_push_axis_.x * step_distance + lat_x * off_lateral,
+    blind_push_axis_.y * step_distance + lat_y * off_lateral,
+    blind_push_axis_.z * step_distance + off_vertical,
     tracking_confidence_);
   if (publish_overlay_ && frame != nullptr) {
     publish_debug_overlay(*frame, tracked_roi_);

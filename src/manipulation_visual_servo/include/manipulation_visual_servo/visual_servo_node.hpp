@@ -157,6 +157,13 @@ private:
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
+  // Callback groups: sensor callbacks run concurrently (reentrant) so that
+  // high-frequency image/depth data is never starved by the control timer.
+  // The control timer gets its own mutually-exclusive group to ensure only
+  // one control tick executes at a time.
+  rclcpp::CallbackGroup::SharedPtr sensor_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr timer_cb_group_;
+
   ServoState state_{ServoState::IDLE};
   rclcpp::Time state_entry_time_;
   int ramp_step_{0};
@@ -263,6 +270,8 @@ private:
   double blind_approach_after_standoff_m_;
   double blind_push_timeout_config_sec_;
   double blind_push_close_tolerance_m_;
+  double blind_push_offset_x_;
+  double blind_push_offset_y_;
   double open_gripper_settle_sec_;
 
   std::string tracker_type_;
