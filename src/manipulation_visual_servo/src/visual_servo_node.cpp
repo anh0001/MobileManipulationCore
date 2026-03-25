@@ -297,6 +297,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   last_track_time_ = this->now();
   last_processed_frame_stamp_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   last_rgb_receive_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  last_depth_receive_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   latest_frame_generation_ = 0;
   last_processed_frame_generation_ = 0;
 
@@ -400,6 +401,7 @@ void VisualServoNode::depth_callback(const sensor_msgs::msg::Image::ConstSharedP
     std::lock_guard<std::mutex> lock(depth_mutex_);
     latest_depth_frame_ = depth_image;
     latest_depth_stamp_ = msg->header.stamp;
+    last_depth_receive_time_ = this->now();
     depth_available_ = true;
   }
   depth_encoding_warned_ = false;
@@ -1169,6 +1171,18 @@ bool VisualServoNode::update_tracking(const cv::Mat & frame)
 
   cv::Rect2d updated_roi;
   if (!update_tracker(frame, updated_roi)) {
+    // MIL tracker lost the target (e.g. scene shifted during RGB stall).
+    // Re-init from the last known ROI on the current frame before giving up.
+    if (tracked_roi_.width >= 10.0 && tracked_roi_.height >= 10.0 &&
+      since_track <= lost_target_timeout_sec_)
+    {
+      init_tracker(frame, tracked_roi_);
+      last_track_time_ = this->now();
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[TRACK] MIL tracker failed; re-initialized from last ROI");
+      return true;
+    }
     transition_to(ServoState::LOST, "tracker update failed");
     return false;
   }
@@ -1419,7 +1433,7 @@ void VisualServoNode::handle_approach_depth()
     std::lock_guard<std::mutex> lock(depth_mutex_);
     depth_available_snapshot = depth_available_;
     if (use_depth_ && depth_available_) {
-      const double depth_age_sec = std::abs((this->now() - latest_depth_stamp_).seconds());
+      const double depth_age_sec = std::abs((this->now() - last_depth_receive_time_).seconds());
       if (depth_age_sec <= depth_stale_timeout_sec_) {
         depth_sample = sample_depth_at_roi_anchor(
           latest_depth_frame_, tracked_roi_, depth_sample_anchor_x_, depth_sample_anchor_y_,
@@ -1564,6 +1578,27 @@ void VisualServoNode::handle_approach_depth()
       publish_zero_motion(tracking_confidence_);
       transition_to(ServoState::LOST, "approach distance limit exceeded");
       return;
+    }
+  }
+
+  // If depth has never been available during this approach phase and the stall
+  // window has elapsed, synthesize a starting depth so blind approach can begin.
+  if (!last_depth_sample_.has_value() && !depth_sample.has_value() &&
+    !standoff_blind_active_)
+  {
+    const double approach_elapsed =
+      (this->now() - state_entry_time_).seconds();
+    if (approach_elapsed >= approach_stall_window_sec_) {
+      DepthSample synthetic;
+      synthetic.depth_m = blind_approach_depth_threshold_m_ - 0.001;
+      synthetic.valid_pixels = 0;
+      synthetic.depth_iqr_m = 0.0;
+      last_depth_sample_ = synthetic;
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[APPROACH] no depth samples after %.1fs; starting blind approach "
+        "from assumed depth %.3fm",
+        approach_elapsed, synthetic.depth_m);
     }
   }
 
@@ -2114,7 +2149,7 @@ int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<manipulation_visual_servo::VisualServoNode>();
-  rclcpp::executors::MultiThreadedExecutor executor;
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 4);
   executor.add_node(node);
   executor.spin();
   rclcpp::shutdown();

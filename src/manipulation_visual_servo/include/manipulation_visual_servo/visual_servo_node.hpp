@@ -188,6 +188,7 @@ private:
   std::mutex depth_mutex_;
   cv::Mat latest_depth_frame_;
   rclcpp::Time latest_depth_stamp_;
+  rclcpp::Time last_depth_receive_time_;
   bool depth_available_{false};
   bool depth_encoding_warned_{false};
 
