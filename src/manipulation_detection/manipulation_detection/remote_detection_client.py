@@ -31,6 +31,7 @@ from urllib import request as urlrequest
 
 import rclpy
 from cv_bridge import CvBridge
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -453,18 +454,44 @@ class RemoteDetectionClientNode(Node):
 
     def destroy_node(self):
         self.shutdown_requested = True
+        if hasattr(self, "request_timer") and self.request_timer is not None:
+            self.request_timer.cancel()
+        if hasattr(self, "metrics_timer") and self.metrics_timer is not None:
+            self.metrics_timer.cancel()
+        if hasattr(self, "image_sub") and self.image_sub is not None:
+            self.destroy_subscription(self.image_sub)
+            self.image_sub = None
+        if hasattr(self, "prompt_sub") and self.prompt_sub is not None:
+            self.destroy_subscription(self.prompt_sub)
+            self.prompt_sub = None
+        if self.worker_thread is not None and self.worker_thread.is_alive():
+            if threading.current_thread() is not self.worker_thread:
+                self.worker_thread.join(timeout=0.5)
         super().destroy_node()
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = RemoteDetectionClientNode()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            try:
+                executor.spin_once(timeout_sec=0.1)
+            except RuntimeError as exc:
+                if node.shutdown_requested or not rclpy.ok():
+                    break
+                if "Unable to convert call argument to Python object" in str(exc):
+                    if not rclpy.ok():
+                        break
+                raise
     except KeyboardInterrupt:
         pass
     finally:
+        executor.remove_node(node)
         node.destroy_node()
+        executor.shutdown()
         if rclpy.ok():
             rclpy.shutdown()
 

@@ -27,6 +27,7 @@ robot:
   actions:
     navigate_to_pose: "/navigate_to_pose"
     follow_joint_trajectory: "/piper_arm_controller/follow_joint_trajectory"
+    gripper_command: "/piper_gripper_controller/gripper_cmd"
 
 bridge_v2_virtual_frames:
   enabled: false
@@ -83,9 +84,9 @@ gripper:
   joint_name: "piper_joint7"
   joint_names:
     - "piper_joint7"
-  open_position: 0.75
+  open_position: 0.065
   closed_position: 0.0
-  open_positions: [0.75]
+  open_positions: [0.065]
   closed_positions: [0.0]
   command_epsilon: 0.01
 

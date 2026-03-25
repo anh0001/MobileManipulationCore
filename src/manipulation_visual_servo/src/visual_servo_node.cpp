@@ -15,10 +15,13 @@
 #include "manipulation_visual_servo/visual_servo_node.hpp"
 
 #include <algorithm>
+#include <cinttypes>
+#include <chrono>
 #include <cmath>
 #include <optional>
 #include <utility>
 
+#include <control_msgs/msg/gripper_command.hpp>
 #include <opencv2/video/tracking.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -101,13 +104,13 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("blind_approach_after_standoff_m", 0.03);
   this->declare_parameter("blind_push_timeout_sec", 7.2);
   this->declare_parameter("blind_push_close_tolerance_m", 0.006);
-  this->declare_parameter("open_gripper_command", 1.0);
   this->declare_parameter("open_gripper_settle_sec", 3.0);
-  this->declare_parameter("close_gripper_command", 0.0);
+  this->declare_parameter("gripper_cmd_action", "/piper_gripper_controller/gripper_cmd");
   this->declare_parameter("gripper_joint_name", "piper_joint7");
   this->declare_parameter<std::vector<std::string>>(
     "gripper_joint_names", std::vector<std::string>{});
-  this->declare_parameter("gripper_open_position", 0.75);
+  this->declare_parameter("gripper_open_position", 0.065);
+  this->declare_parameter("gripper_closed_position", 0.0);
   this->declare_parameter<std::vector<double>>(
     "gripper_open_positions", std::vector<double>{});
   this->declare_parameter("gripper_open_position_tolerance", 0.02);
@@ -177,12 +180,12 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     this->get_parameter("blind_push_timeout_sec").as_double();
   blind_push_close_tolerance_m_ =
     this->get_parameter("blind_push_close_tolerance_m").as_double();
-  open_gripper_command_ = this->get_parameter("open_gripper_command").as_double();
   open_gripper_settle_sec_ = this->get_parameter("open_gripper_settle_sec").as_double();
-  close_gripper_command_ = this->get_parameter("close_gripper_command").as_double();
+  gripper_cmd_action_ = this->get_parameter("gripper_cmd_action").as_string();
   gripper_joint_name_ = this->get_parameter("gripper_joint_name").as_string();
   gripper_joint_names_ = this->get_parameter("gripper_joint_names").as_string_array();
   gripper_open_position_ = this->get_parameter("gripper_open_position").as_double();
+  gripper_closed_position_ = this->get_parameter("gripper_closed_position").as_double();
   gripper_open_positions_ = this->get_parameter("gripper_open_positions").as_double_array();
   gripper_open_position_tolerance_ =
     this->get_parameter("gripper_open_position_tolerance").as_double();
@@ -247,6 +250,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     detection_topic_, 10,
     std::bind(&VisualServoNode::detection_callback, this, std::placeholders::_1));
 
+  gripper_cmd_client_ = rclcpp_action::create_client<GripperCommand>(this, gripper_cmd_action_);
+
   policy_output_pub_ = this->create_publisher<manipulation_msgs::msg::PolicyOutput>(
     output_topic_, 10);
 
@@ -301,10 +306,10 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     approach_stall_window_sec_, approach_min_progress_m_);
   RCLCPP_INFO(
     this->get_logger(),
-    "[INIT] Gripper verify | joint_states=%s joints=%zu open=%.3f open_tol=%.3f "
-    "open_settle=%.2fs",
-    joint_states_topic_.c_str(), gripper_joint_names_.size(), gripper_open_position_,
-    gripper_open_position_tolerance_, open_gripper_settle_sec_);
+    "[INIT] Gripper action | action=%s open=%.3f close=%.3f open_tol=%.3f "
+    "open_settle=%.2fs close_settle=%.2fs",
+    gripper_cmd_action_.c_str(), gripper_open_position_, gripper_closed_position_,
+    gripper_open_position_tolerance_, open_gripper_settle_sec_, grasp_settle_sec_);
 }
 
 void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
@@ -500,6 +505,19 @@ void VisualServoNode::transition_to(ServoState new_state, const std::string & re
     return;
   }
 
+  if (
+    state_ == ServoState::OPEN_GRIPPER || state_ == ServoState::CLOSE_GRIPPER ||
+    new_state == ServoState::OPEN_GRIPPER || new_state == ServoState::CLOSE_GRIPPER)
+  {
+    std::string cancel_reason = "state transition";
+    if (state_ == ServoState::OPEN_GRIPPER && new_state == ServoState::APPROACH_DEPTH) {
+      cancel_reason = "open step completed";
+    } else if (state_ == ServoState::CLOSE_GRIPPER && new_state == ServoState::LIFT) {
+      cancel_reason = "close step completed";
+    }
+    cancel_gripper_goal(cancel_reason);
+  }
+
   if (reason.empty()) {
     RCLCPP_INFO(
       this->get_logger(), "[STATE] %s -> %s",
@@ -545,6 +563,43 @@ bool VisualServoNode::fetch_latest_frame(cv::Mat & frame)
   return true;
 }
 
+bool VisualServoNode::fallback_to_detection_tracking(const char * context, bool allow_stale_roi)
+{
+  {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    if (detection_available_) {
+      tracked_roi_ = latest_detection_roi_;
+      tracking_confidence_ = latest_detection_confidence_;
+      detection_available_ = false;
+      last_track_time_ = this->now();
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[%s] fresh RGB stalled on %s; using latest detection ROI instead",
+        context, rgb_topic_.c_str());
+      return true;
+    }
+  }
+
+  if (!allow_stale_roi) {
+    return false;
+  }
+
+  if (tracked_roi_.width <= 0.0 || tracked_roi_.height <= 0.0) {
+    return false;
+  }
+
+  const double since_track = (this->now() - last_track_time_).seconds();
+  if (since_track > lost_target_timeout_sec_) {
+    return false;
+  }
+
+  RCLCPP_WARN_THROTTLE(
+    this->get_logger(), *this->get_clock(), 1000,
+    "[%s] fresh RGB stalled on %s; reusing last tracked ROI for %.2fs",
+    context, rgb_topic_.c_str(), since_track);
+  return true;
+}
+
 void VisualServoNode::reset_pick_progress()
 {
   centering_streak_ = 0;
@@ -565,6 +620,221 @@ void VisualServoNode::reset_standoff_blind_push()
   blind_push_start_time_ = this->now();
   blind_push_timeout_sec_ = 0.0;
   blind_push_start_accumulated_distance_m_ = 0.0;
+}
+
+void VisualServoNode::reset_gripper_action_state()
+{
+  std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+  ++gripper_goal_generation_;
+  gripper_goal_handle_.reset();
+  gripper_goal_state_ = ServoState::IDLE;
+  gripper_goal_started_ = false;
+  gripper_goal_completed_ = false;
+  gripper_goal_succeeded_ = false;
+  gripper_goal_stalled_ = false;
+  gripper_goal_reached_goal_ = false;
+  gripper_goal_error_.clear();
+}
+
+void VisualServoNode::cancel_gripper_goal(const std::string & reason)
+{
+  GripperGoalHandle::SharedPtr goal_handle;
+  ServoState goal_state = ServoState::IDLE;
+  {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    goal_handle = gripper_goal_handle_;
+    goal_state = gripper_goal_state_;
+    ++gripper_goal_generation_;
+    gripper_goal_handle_.reset();
+    gripper_goal_state_ = ServoState::IDLE;
+    gripper_goal_started_ = false;
+    gripper_goal_completed_ = false;
+    gripper_goal_succeeded_ = false;
+    gripper_goal_stalled_ = false;
+    gripper_goal_reached_goal_ = false;
+    gripper_goal_error_.clear();
+  }
+
+  if (goal_handle) {
+    if (reason.empty()) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[GRIPPER][%s] canceling in-flight goal",
+        state_to_string(goal_state).c_str());
+    } else {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[GRIPPER][%s] canceling in-flight goal: %s",
+        state_to_string(goal_state).c_str(), reason.c_str());
+    }
+    gripper_cmd_client_->async_cancel_goal(goal_handle);
+  }
+}
+
+void VisualServoNode::ensure_gripper_goal_started(ServoState command_state)
+{
+  {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    if (gripper_goal_started_ && gripper_goal_state_ == command_state) {
+      return;
+    }
+  }
+
+  const double target_position =
+    command_state == ServoState::OPEN_GRIPPER ? gripper_open_position_ : gripper_closed_position_;
+  const char * label = command_state == ServoState::OPEN_GRIPPER ? "OPEN" : "CLOSE";
+
+  cancel_gripper_goal("starting direct action command");
+
+  if (!gripper_cmd_client_->wait_for_action_server(std::chrono::seconds(0))) {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    gripper_goal_state_ = command_state;
+    gripper_goal_started_ = true;
+    gripper_goal_completed_ = true;
+    gripper_goal_succeeded_ = false;
+    gripper_goal_stalled_ = false;
+    gripper_goal_reached_goal_ = false;
+    gripper_goal_error_ = "action server unavailable";
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[GRIPPER][%s] action server %s not available",
+      label, gripper_cmd_action_.c_str());
+    return;
+  }
+
+  uint64_t generation = 0;
+  {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    generation = ++gripper_goal_generation_;
+    gripper_goal_state_ = command_state;
+    gripper_goal_started_ = true;
+    gripper_goal_completed_ = false;
+    gripper_goal_succeeded_ = false;
+    gripper_goal_stalled_ = false;
+    gripper_goal_reached_goal_ = false;
+    gripper_goal_error_.clear();
+    gripper_goal_handle_.reset();
+  }
+
+  GripperCommand::Goal goal;
+  goal.command = control_msgs::msg::GripperCommand();
+  goal.command.position = target_position;
+  goal.command.max_effort = 0.0;
+
+  rclcpp_action::Client<GripperCommand>::SendGoalOptions options;
+  options.goal_response_callback =
+    [this, command_state, generation](
+    const GripperGoalHandle::SharedPtr & goal_handle) {
+      handle_gripper_goal_response(command_state, generation, goal_handle);
+    };
+  options.result_callback =
+    [this, command_state, generation](const GripperGoalHandle::WrappedResult & result) {
+      handle_gripper_goal_result(command_state, generation, result);
+    };
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[GRIPPER][%s] sending direct GripperCommand to %.4f via %s",
+    label, target_position, gripper_cmd_action_.c_str());
+
+  try {
+    gripper_cmd_client_->async_send_goal(goal, options);
+  } catch (const std::exception & ex) {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    if (generation != gripper_goal_generation_ || gripper_goal_state_ != command_state) {
+      return;
+    }
+    gripper_goal_completed_ = true;
+    gripper_goal_succeeded_ = false;
+    gripper_goal_error_ = std::string("failed to send goal: ") + ex.what();
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[GRIPPER][%s] failed to send GripperCommand goal: %s",
+      label, ex.what());
+  }
+}
+
+void VisualServoNode::handle_gripper_goal_response(
+  ServoState command_state, uint64_t generation, const GripperGoalHandle::SharedPtr & goal_handle)
+{
+  const char * label = command_state == ServoState::OPEN_GRIPPER ? "OPEN" : "CLOSE";
+  std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+  if (generation != gripper_goal_generation_ || gripper_goal_state_ != command_state) {
+    return;
+  }
+
+  if (!goal_handle) {
+    gripper_goal_completed_ = true;
+    gripper_goal_succeeded_ = false;
+    gripper_goal_error_ = "goal rejected";
+    RCLCPP_WARN(this->get_logger(), "[GRIPPER][%s] GripperCommand goal rejected", label);
+    return;
+  }
+
+  gripper_goal_handle_ = goal_handle;
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[GRIPPER][%s] action accepted by %s",
+    label, gripper_cmd_action_.c_str());
+}
+
+void VisualServoNode::handle_gripper_goal_result(
+  ServoState command_state, uint64_t generation, const GripperGoalHandle::WrappedResult & result)
+{
+  const char * label = command_state == ServoState::OPEN_GRIPPER ? "OPEN" : "CLOSE";
+  {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    if (generation != gripper_goal_generation_ || gripper_goal_state_ != command_state) {
+      return;
+    }
+
+    gripper_goal_handle_.reset();
+    gripper_goal_completed_ = true;
+    gripper_goal_succeeded_ = false;
+    gripper_goal_stalled_ = false;
+    gripper_goal_reached_goal_ = false;
+    gripper_goal_error_.clear();
+
+    if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+      gripper_goal_succeeded_ = true;
+      if (result.result) {
+        gripper_goal_stalled_ = result.result->stalled;
+        gripper_goal_reached_goal_ = result.result->reached_goal;
+      }
+    } else if (result.code == rclcpp_action::ResultCode::ABORTED) {
+      gripper_goal_error_ = "goal aborted";
+    } else if (result.code == rclcpp_action::ResultCode::CANCELED) {
+      gripper_goal_error_ = "goal canceled";
+    } else {
+      gripper_goal_error_ = "goal ended with unknown result";
+    }
+  }
+
+  if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+    if (result.result && result.result->stalled && !result.result->reached_goal) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRIPPER][%s] hardware stopped at %.4f before the commanded target; "
+        "treating this as success",
+        label, result.result->position);
+    } else if (result.result) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[GRIPPER][%s] reached commanded position %.4f",
+        label, result.result->position);
+    } else {
+      RCLCPP_INFO(this->get_logger(), "[GRIPPER][%s] action completed", label);
+    }
+    return;
+  }
+
+  RCLCPP_WARN(
+    this->get_logger(),
+    "[GRIPPER][%s] action failed: %s",
+    label,
+    result.code == rclcpp_action::ResultCode::ABORTED ? "goal aborted" :
+    result.code == rclcpp_action::ResultCode::CANCELED ? "goal canceled" :
+    "unknown result");
 }
 
 std::optional<CartesianVector> VisualServoNode::lookup_current_ee_position_in_reference()
@@ -898,6 +1168,10 @@ void VisualServoNode::handle_track()
 {
   cv::Mat frame;
   if (!fetch_latest_frame(frame)) {
+    if (fallback_to_detection_tracking("TRACK")) {
+      transition_to(ServoState::ALIGN_XY, "target acquired from detection fallback");
+      return;
+    }
     std::uint64_t latest_generation = 0;
     std::uint64_t processed_generation = 0;
     rclcpp::Time latest_stamp(0, 0, this->get_clock()->get_clock_type());
@@ -913,10 +1187,10 @@ void VisualServoNode::handle_track()
       last_rgb_receive.nanoseconds() > 0 ? (this->now() - last_rgb_receive).seconds() : -1.0;
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 1000,
-      "[TRACK] waiting for fresh RGB frame: latest_gen=%llu processed_gen=%llu "
+      "[TRACK] waiting for fresh RGB frame: latest_gen=%" PRIu64 " processed_gen=%" PRIu64 " "
       "latest_stamp=%.3f since_rgb=%.3fs",
-      static_cast<unsigned long long>(latest_generation),
-      static_cast<unsigned long long>(processed_generation),
+      static_cast<uint64_t>(latest_generation),
+      static_cast<uint64_t>(processed_generation),
       latest_stamp.seconds(), since_rgb_sec);
     return;
   }
@@ -929,11 +1203,12 @@ void VisualServoNode::handle_track()
 void VisualServoNode::handle_align_xy()
 {
   cv::Mat frame;
-  if (!fetch_latest_frame(frame)) {
-    return;
-  }
-
-  if (!update_tracking(frame)) {
+  const bool has_fresh_frame = fetch_latest_frame(frame);
+  if (has_fresh_frame) {
+    if (!update_tracking(frame)) {
+      return;
+    }
+  } else if (!fallback_to_detection_tracking("ALIGN")) {
     return;
   }
 
@@ -960,7 +1235,7 @@ void VisualServoNode::handle_align_xy()
   const auto twist = compute_alignment_twist(feat_x, feat_y);
   publish_policy_output(twist, tracking_confidence_);
 
-  if (publish_overlay_) {
+  if (publish_overlay_ && has_fresh_frame) {
     publish_debug_overlay(frame, tracked_roi_);
   }
 
@@ -981,41 +1256,79 @@ void VisualServoNode::handle_open_gripper()
     }
   }
 
+  ensure_gripper_goal_started(ServoState::OPEN_GRIPPER);
+
   const double elapsed = (this->now() - state_entry_time_).seconds();
   const bool settle_elapsed = elapsed >= open_gripper_settle_sec_;
   const auto open_error = max_gripper_open_error();
   const bool gripper_fully_open =
     open_error.has_value() && *open_error <= gripper_open_position_tolerance_;
+  bool action_completed = false;
+  bool action_succeeded = false;
+  bool action_stalled = false;
+  bool action_reached_goal = false;
+  std::string action_error;
+  {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    action_completed = gripper_goal_completed_;
+    action_succeeded = gripper_goal_succeeded_;
+    action_stalled = gripper_goal_stalled_;
+    action_reached_goal = gripper_goal_reached_goal_;
+    action_error = gripper_goal_error_;
+  }
 
   if (open_error.has_value()) {
     RCLCPP_INFO_THROTTLE(
       this->get_logger(), *this->get_clock(), 500,
-      "[GRIPPER][OPEN] command=%.2f feedback=%s max_err=%.3f tol=%.3f settle=%.2f/%.2f",
-      open_gripper_command_,
+      "[GRIPPER][OPEN] target=%.4f feedback=%s max_err=%.3f tol=%.3f action=%s "
+      "stalled=%s reached_goal=%s settle=%.2f/%.2f",
+      gripper_open_position_,
       gripper_fully_open ? "ready" : "waiting",
-      *open_error, gripper_open_position_tolerance_, elapsed, open_gripper_settle_sec_);
+      *open_error, gripper_open_position_tolerance_,
+      action_succeeded ? "succeeded" : (action_completed ? action_error.c_str() : "pending"),
+      action_stalled ? "true" : "false",
+      action_reached_goal ? "true" : "false",
+      elapsed, open_gripper_settle_sec_);
   } else {
     RCLCPP_INFO_THROTTLE(
       this->get_logger(), *this->get_clock(), 500,
-      "[GRIPPER][OPEN] command=%.2f feedback=waiting joint_states=%s settle=%.2f/%.2f",
-      open_gripper_command_, joint_states_topic_.c_str(), elapsed, open_gripper_settle_sec_);
+      "[GRIPPER][OPEN] target=%.4f feedback=waiting joint_states=%s action=%s "
+      "settle=%.2f/%.2f",
+      gripper_open_position_,
+      joint_states_topic_.c_str(),
+      action_succeeded ? "succeeded" : (action_completed ? action_error.c_str() : "pending"),
+      elapsed, open_gripper_settle_sec_);
   }
 
-  // Do NOT include an arm target (has_eef_target=false) so the adapter does not
-  // feed MoveIt Servo, which would cause the servo-to-piper bridge to publish
-  // a competing JointState that resets the gripper to its current position.
-  publish_policy_output(
-    geometry_msgs::msg::Twist(), tracking_confidence_, false, true, open_gripper_command_);
+  publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_, false, false, 0.0);
 
-  if (gripper_fully_open) {
+  if (gripper_fully_open || action_succeeded) {
+    if (gripper_fully_open) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[GRIPPER][OPEN] joint feedback confirms the gripper is open "
+        "(max_err=%.4f <= tol=%.4f)",
+        *open_error, gripper_open_position_tolerance_);
+    } else {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[GRIPPER][OPEN] open action completed; starting depth approach");
+    }
     transition_to(
       ServoState::APPROACH_DEPTH,
-      "gripper fully opened; starting depth approach");
+      gripper_fully_open ?
+      "gripper fully opened; starting depth approach" :
+      "open gripper action completed; starting depth approach");
     return;
   }
 
   if (settle_elapsed) {
-    if (open_error.has_value()) {
+    if (action_completed && !action_succeeded) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRIPPER][OPEN] settle elapsed after action error (%s); continuing to depth approach",
+        action_error.c_str());
+    } else if (open_error.has_value()) {
       RCLCPP_WARN(
         this->get_logger(),
         "[GRIPPER][OPEN] settle elapsed without confirmed open feedback "
@@ -1042,11 +1355,12 @@ void VisualServoNode::handle_approach_depth()
   }
 
   cv::Mat frame;
-  if (!fetch_latest_frame(frame)) {
-    return;
-  }
-
-  if (!update_tracking(frame)) {
+  const bool has_fresh_frame = fetch_latest_frame(frame);
+  if (has_fresh_frame) {
+    if (!update_tracking(frame)) {
+      return;
+    }
+  } else if (!fallback_to_detection_tracking("APPROACH")) {
     return;
   }
 
@@ -1107,7 +1421,7 @@ void VisualServoNode::handle_approach_depth()
         if (!start_standoff_blind_push(depth_sample->depth_m)) {
           publish_zero_motion(tracking_confidence_);
           transition_to(ServoState::LOST, "failed to initialize blind push");
-          if (publish_overlay_) {
+          if (publish_overlay_ && has_fresh_frame) {
             publish_debug_overlay(frame, tracked_roi_);
           }
           return;
@@ -1118,7 +1432,7 @@ void VisualServoNode::handle_approach_depth()
         // No blind push configured — close immediately
         publish_zero_motion(tracking_confidence_);
         transition_to(ServoState::CLOSE_GRIPPER, "depth reached grasp band");
-        if (publish_overlay_) {
+        if (publish_overlay_ && has_fresh_frame) {
           publish_debug_overlay(frame, tracked_roi_);
         }
         return;
@@ -1130,7 +1444,7 @@ void VisualServoNode::handle_approach_depth()
       // same open command while waiting for depth stability, or the adapter will
       // periodically issue fresh trajectory goals during approach.
       publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_);
-      if (publish_overlay_) {
+      if (publish_overlay_ && has_fresh_frame) {
         publish_debug_overlay(frame, tracked_roi_);
       }
       return;
@@ -1256,24 +1570,60 @@ void VisualServoNode::handle_approach_depth()
   // Keep moving with the gripper state latched from OPEN_GRIPPER. Avoid reasserting
   // the same open command every control cycle during approach.
   publish_policy_output(twist, tracking_confidence_);
-  if (publish_overlay_) {
+  if (publish_overlay_ && has_fresh_frame) {
     publish_debug_overlay(frame, tracked_roi_);
   }
 }
 
 void VisualServoNode::handle_close_gripper()
 {
+  ensure_gripper_goal_started(ServoState::CLOSE_GRIPPER);
+
+  bool action_completed = false;
+  bool action_succeeded = false;
+  bool action_stalled = false;
+  bool action_reached_goal = false;
+  std::string action_error;
+  {
+    std::lock_guard<std::mutex> lock(gripper_action_mutex_);
+    action_completed = gripper_goal_completed_;
+    action_succeeded = gripper_goal_succeeded_;
+    action_stalled = gripper_goal_stalled_;
+    action_reached_goal = gripper_goal_reached_goal_;
+    action_error = gripper_goal_error_;
+  }
+
   RCLCPP_INFO_THROTTLE(
     this->get_logger(), *this->get_clock(), 500,
-    "[GRIPPER][CLOSE] command=%.2f settle=%.2f/%.2f",
-    close_gripper_command_,
+    "[GRIPPER][CLOSE] target=%.4f action=%s stalled=%s reached_goal=%s settle=%.2f/%.2f",
+    gripper_closed_position_,
+    action_succeeded ? "succeeded" : (action_completed ? action_error.c_str() : "pending"),
+    action_stalled ? "true" : "false",
+    action_reached_goal ? "true" : "false",
     (this->now() - state_entry_time_).seconds(), grasp_settle_sec_);
 
-  publish_policy_output(
-    geometry_msgs::msg::Twist(), tracking_confidence_, true, true, close_gripper_command_);
+  publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_, false, false, 0.0);
+
+  if (action_succeeded) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[GRIPPER][CLOSE] close step complete; lifting the grasped object");
+    transition_to(ServoState::LIFT, "close gripper action completed; lifting");
+    return;
+  }
 
   if ((this->now() - state_entry_time_).seconds() >= grasp_settle_sec_) {
-    transition_to(ServoState::LIFT, "gripper closed; lifting");
+    if (action_completed && !action_succeeded) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRIPPER][CLOSE] settle elapsed after action error (%s); continuing to lift",
+        action_error.c_str());
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRIPPER][CLOSE] settle elapsed before close action completed; continuing to lift");
+    }
+    transition_to(ServoState::LIFT, "close command settled; lifting");
   }
 }
 
@@ -1294,13 +1644,13 @@ void VisualServoNode::handle_lift()
   // per-cycle portion so the lift distance tracks real progress.
   const double velocity = std::min(max_linear_velocity_, remaining / cycle_dt);
   const double dz = velocity * delta_horizon_sec;
-  publish_reference_frame_delta(0.0, 0.0, dz, tracking_confidence_, true, close_gripper_command_);
+  publish_reference_frame_delta(0.0, 0.0, dz, tracking_confidence_, false, 0.0);
   accumulated_lift_distance_m_ += velocity * cycle_dt;
 }
 
 void VisualServoNode::handle_done()
 {
-  publish_zero_motion(tracking_confidence_);
+  publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_, false, false, 0.0);
 }
 
 void VisualServoNode::handle_lost()

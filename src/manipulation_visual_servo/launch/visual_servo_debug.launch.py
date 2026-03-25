@@ -166,15 +166,14 @@ def generate_launch_description():
                     vs_cfg.get('blind_push_timeout_sec', 7.2)),
                 'blind_push_close_tolerance_m': float(
                     vs_cfg.get('blind_push_close_tolerance_m', 0.006)),
-                'open_gripper_command': float(
-                    vs_cfg.get('open_gripper_command', 1.0)),
                 'open_gripper_settle_sec': float(
                     vs_cfg.get('open_gripper_settle_sec', 3.0)),
-                'close_gripper_command': float(
-                    vs_cfg.get('close_gripper_command', 0.0)),
+                'gripper_cmd_action': str(
+                    vs_cfg.get('gripper_cmd_action', '/piper_gripper_controller/gripper_cmd')),
                 'gripper_joint_name': str(vs_cfg.get('gripper_joint_name', 'piper_joint7')),
                 'gripper_joint_names': vs_cfg.get('gripper_joint_names', []),
-                'gripper_open_position': float(vs_cfg.get('gripper_open_position', 0.75)),
+                'gripper_open_position': float(vs_cfg.get('gripper_open_position', 0.065)),
+                'gripper_closed_position': float(vs_cfg.get('gripper_closed_position', 0.0)),
                 'gripper_open_positions': vs_cfg.get('gripper_open_positions', []),
                 'gripper_open_position_tolerance': float(
                     vs_cfg.get('gripper_open_position_tolerance', 0.02)),

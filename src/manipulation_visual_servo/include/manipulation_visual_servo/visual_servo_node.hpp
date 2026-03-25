@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include <control_msgs/action/gripper_command.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <manipulation_msgs/msg/policy_output.hpp>
@@ -31,6 +32,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video/tracking.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -64,6 +66,9 @@ public:
   explicit VisualServoNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+  using GripperCommand = control_msgs::action::GripperCommand;
+  using GripperGoalHandle = rclcpp_action::ClientGoalHandle<GripperCommand>;
+
   void image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg);
   void depth_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg);
   void camera_info_callback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr & msg);
@@ -86,6 +91,7 @@ private:
   bool init_tracker(const cv::Mat & frame, const cv::Rect2d & roi);
   bool update_tracker(const cv::Mat & frame, cv::Rect2d & tracked_roi);
   bool fetch_latest_frame(cv::Mat & frame);
+  bool fallback_to_detection_tracking(const char * context, bool allow_stale_roi = true);
   bool acquire_from_detection(const cv::Mat & frame);
   bool update_tracking(const cv::Mat & frame);
   bool start_standoff_blind_push(double depth_m);
@@ -95,6 +101,14 @@ private:
   std::optional<double> max_gripper_open_error();
   void reset_pick_progress();
   void reset_standoff_blind_push();
+  void reset_gripper_action_state();
+  void cancel_gripper_goal(const std::string & reason = "");
+  void ensure_gripper_goal_started(ServoState command_state);
+  void handle_gripper_goal_response(
+    ServoState command_state, uint64_t generation,
+    const GripperGoalHandle::SharedPtr & goal_handle);
+  void handle_gripper_goal_result(
+    ServoState command_state, uint64_t generation, const GripperGoalHandle::WrappedResult & result);
   void apply_ramp(geometry_msgs::msg::Twist & twist);
   void publish_zero_motion(float confidence = 1.0F);
   std::optional<CartesianVector> lookup_current_ee_position_in_reference();
@@ -138,6 +152,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
+  rclcpp_action::Client<GripperCommand>::SharedPtr gripper_cmd_client_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -211,9 +226,11 @@ private:
   std::string ee_frame_;
   std::string arm_base_frame_;
   std::string target_class_;
+  std::string gripper_cmd_action_;
   std::string gripper_joint_name_;
   std::vector<std::string> gripper_joint_names_;
   double gripper_open_position_;
+  double gripper_closed_position_;
   std::vector<double> gripper_open_positions_;
   double gripper_open_position_tolerance_;
 
@@ -246,9 +263,7 @@ private:
   double blind_approach_after_standoff_m_;
   double blind_push_timeout_config_sec_;
   double blind_push_close_tolerance_m_;
-  double open_gripper_command_;
   double open_gripper_settle_sec_;
-  double close_gripper_command_;
 
   std::string tracker_type_;
   int klt_max_features_;
@@ -268,6 +283,17 @@ private:
   std::string overlay_topic_;
   bool publish_state_flag_;
   std::string state_topic_;
+
+  std::mutex gripper_action_mutex_;
+  GripperGoalHandle::SharedPtr gripper_goal_handle_;
+  ServoState gripper_goal_state_{ServoState::IDLE};
+  uint64_t gripper_goal_generation_{0};
+  bool gripper_goal_started_{false};
+  bool gripper_goal_completed_{false};
+  bool gripper_goal_succeeded_{false};
+  bool gripper_goal_stalled_{false};
+  bool gripper_goal_reached_goal_{false};
+  std::string gripper_goal_error_;
 };
 
 }  // namespace manipulation_visual_servo

@@ -59,10 +59,12 @@ visual_servo:
   blind_approach_after_standoff_m: 0.03  # Extra blind-push distance along end-effector +Z after depth reaches standoff (0 = disabled, close immediately)
   blind_push_timeout_sec: 14.4           # Exact timeout in seconds for the blind push along end-effector +Z
   blind_push_close_tolerance_m: 0.006    # If timeout occurs with <= this much blind-push distance remaining, close instead of restarting alignment
-  open_gripper_command: 1.0            # Normalized gripper command sent before approach (1.0 = open)
-  open_gripper_settle_sec: 3.0         # Wait after issuing the open command so the hardware can finish opening
-  close_gripper_command: 0.0           # Normalized gripper command sent at grasp depth (0.0 = closed)
+  gripper_cmd_action: "/piper_gripper_controller/gripper_cmd"  # Direct gripper action used in OPEN_GRIPPER/CLOSE_GRIPPER
+  gripper_open_position: 0.065         # Open target sent via GripperCommand action
+  gripper_closed_position: 0.0         # Closed target sent via GripperCommand action
+  open_gripper_settle_sec: 3.0         # Wait after issuing the direct GripperCommand open action
   gripper_open_position_tolerance: 0.020  # Joint-state tolerance used only to report when the open target is reached
+  return_to_ready_after_pick: true     # Adapter returns to its configured ready pose after visual-servo DONE
 
   # Reference frame for output PolicyOutput
   reference_frame: "piper_base_link"

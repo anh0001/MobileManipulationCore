@@ -182,6 +182,12 @@ Provided by `adapter_node` (future implementation).
 - **Client:** `adapter_node`
 - **Server:** MoveIt `move_group`
 
+#### /piper_gripper_controller/gripper_cmd
+- **Type:** `control_msgs/action/GripperCommand`
+- **Description:** Direct gripper open/close action used by `visual_servo_node`
+- **Client:** `visual_servo_node`
+- **Server:** Piper gripper bridge/controller
+
 ### Action Servers (Provided by Our Stack)
 
 #### /manipulation/execute_task
@@ -265,7 +271,7 @@ ros2 run manipulation_policy policy_node \
 | `arm_command_duration_sec` | double | 1.5 | Arm trajectory duration (s) |
 | `gripper_joint_name` | string | `piper_joint7` | Gripper joint name |
 | `gripper_joint_names` | string[] | `[]` | Gripper joint names (multi-joint) |
-| `gripper_open_position` | double | 0.75 | Gripper open position (rad/m) |
+| `gripper_open_position` | double | 0.065 | Gripper open position (rad/m) |
 | `gripper_closed_position` | double | 0.0 | Gripper closed position (rad/m) |
 | `gripper_open_positions` | double[] | `[]` | Gripper open positions per joint |
 | `gripper_closed_positions` | double[] | `[]` | Gripper closed positions per joint |
@@ -288,6 +294,17 @@ ros2 run manipulation_policy policy_node \
 | `servo_max_angular_velocity` | double | 0.35 | Angular velocity clamp for Servo commands |
 | `pause_base_during_servo` | bool | true | Suppress base hints while arm Servo command is active |
 | `servo_start_service` | string | `/servo_node/start_servo` | Trigger service used to start MoveIt Servo |
+
+### visual_servo_node
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `gripper_cmd_action` | string | `/piper_gripper_controller/gripper_cmd` | Direct `GripperCommand` action name used in `OPEN_GRIPPER` and `CLOSE_GRIPPER` |
+| `gripper_open_position` | double | `0.065` | Open target sent by direct gripper action |
+| `gripper_closed_position` | double | `0.0` | Closed target sent by direct gripper action |
+| `open_gripper_settle_sec` | double | `3.0` | Fallback wait before continuing if the open action does not complete |
+| `grasp_settle_sec` | double | `0.75` | Fallback wait before continuing if the close action does not complete |
+| `gripper_open_position_tolerance` | double | `0.02` | Joint-state tolerance for confirming the open target |
 
 ### remote_detection_client
 

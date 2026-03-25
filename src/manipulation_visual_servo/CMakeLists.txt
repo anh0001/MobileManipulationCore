@@ -7,7 +7,9 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(control_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(vision_msgs REQUIRED)
@@ -51,7 +53,9 @@ target_link_libraries(visual_servo_node
 )
 
 ament_target_dependencies(visual_servo_node
+  control_msgs
   rclcpp
+  rclcpp_action
   sensor_msgs
   geometry_msgs
   vision_msgs

@@ -460,7 +460,7 @@ def generate_launch_description():
             'arm_command_duration_sec': float(arm_cfg.get('command_duration_sec', 1.5)),
             'gripper_joint_name': gripper_cfg.get('joint_name', 'piper_joint7'),
             'gripper_joint_names': gripper_cfg.get('joint_names', []),
-            'gripper_open_position': float(gripper_cfg.get('open_position', 0.75)),
+            'gripper_open_position': float(gripper_cfg.get('open_position', 0.065)),
             'gripper_closed_position': float(gripper_cfg.get('closed_position', 0.0)),
             'gripper_open_positions': gripper_cfg.get('open_positions', []),
             'gripper_closed_positions': gripper_cfg.get('closed_positions', []),
@@ -503,6 +503,12 @@ def generate_launch_description():
             ),
             'servo_ready_timeout_sec': float(
                 moveit_cfg.get('servo_ready_timeout_sec', 20.0)
+            ),
+            'visual_servo_state_topic': str(
+                vs_debug_cfg.get('state_topic', '/visual_servo/state')
+            ),
+            'return_to_ready_after_visual_servo': bool(
+                vs_cfg.get('return_to_ready_after_pick', True)
             ),
         }]
     )
@@ -624,15 +630,15 @@ def generate_launch_description():
                 vs_cfg.get('blind_push_timeout_sec', 7.2)),
             'blind_push_close_tolerance_m': float(
                 vs_cfg.get('blind_push_close_tolerance_m', 0.006)),
-            'open_gripper_command': float(
-                vs_cfg.get('open_gripper_command', 1.0)),
             'open_gripper_settle_sec': float(
                 vs_cfg.get('open_gripper_settle_sec', 3.0)),
-            'close_gripper_command': float(
-                vs_cfg.get('close_gripper_command', 0.0)),
+            'gripper_cmd_action': robot_actions.get(
+                'gripper_command', '/piper_gripper_controller/gripper_cmd'
+            ),
             'gripper_joint_name': gripper_cfg.get('joint_name', 'piper_joint7'),
             'gripper_joint_names': gripper_cfg.get('joint_names', []),
-            'gripper_open_position': float(gripper_cfg.get('open_position', 0.75)),
+            'gripper_open_position': float(gripper_cfg.get('open_position', 0.065)),
+            'gripper_closed_position': float(gripper_cfg.get('closed_position', 0.0)),
             'gripper_open_positions': gripper_cfg.get('open_positions', []),
             'gripper_open_position_tolerance': float(
                 vs_cfg.get('gripper_open_position_tolerance', 0.02)),

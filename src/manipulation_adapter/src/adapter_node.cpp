@@ -44,6 +44,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -124,7 +125,7 @@ public:
     this->declare_parameter<std::vector<std::string>>(
       "gripper_joint_names",
       std::vector<std::string>{});
-    this->declare_parameter<double>("gripper_open_position", 0.75);
+    this->declare_parameter<double>("gripper_open_position", 0.065);
     this->declare_parameter<double>("gripper_closed_position", 0.0);
     this->declare_parameter<std::vector<double>>(
       "gripper_open_positions",
@@ -155,6 +156,8 @@ public:
     this->declare_parameter<std::string>("servo_start_service", "/servo_node/start_servo");
     this->declare_parameter<bool>("wait_for_servo_ready", true);
     this->declare_parameter<double>("servo_ready_timeout_sec", 20.0);
+    this->declare_parameter<std::string>("visual_servo_state_topic", "/visual_servo/state");
+    this->declare_parameter<bool>("return_to_ready_after_visual_servo", true);
 
     // Get parameters
     base_frame_ = this->get_parameter("base_frame").as_string();
@@ -216,6 +219,9 @@ public:
     servo_start_service_ = this->get_parameter("servo_start_service").as_string();
     wait_for_servo_ready_ = this->get_parameter("wait_for_servo_ready").as_bool();
     servo_ready_timeout_sec_ = this->get_parameter("servo_ready_timeout_sec").as_double();
+    visual_servo_state_topic_ = this->get_parameter("visual_servo_state_topic").as_string();
+    return_to_ready_after_visual_servo_ =
+      this->get_parameter("return_to_ready_after_visual_servo").as_bool();
 
     std::transform(
       arm_execution_mode_.begin(), arm_execution_mode_.end(), arm_execution_mode_.begin(),
@@ -285,6 +291,9 @@ public:
     joint_states_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
       joint_states_topic_, 10,
       std::bind(&AdapterNode::jointStatesCallback, this, std::placeholders::_1));
+    visual_servo_state_sub_ = this->create_subscription<std_msgs::msg::String>(
+      visual_servo_state_topic_, 10,
+      std::bind(&AdapterNode::visualServoStateCallback, this, std::placeholders::_1));
 
     // Create publishers for hardware commands
     cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
@@ -375,6 +384,11 @@ public:
         pause_base_during_servo_ ? "true" : "false",
         wait_for_servo_ready_ ? "true" : "false", servo_ready_timeout_sec_);
     }
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[INIT] Visual servo ready return=%s state_topic=%s",
+      return_to_ready_after_visual_servo_ ? "true" : "false",
+      visual_servo_state_topic_.c_str());
 
     // Initialize safety timestamp to avoid large "no policy output" elapsed time at startup.
     last_policy_time_ = this->now();
@@ -621,6 +635,10 @@ private:
 
     if (!skip_arm_this_cycle && !arm_command_sent && msg->has_joint_deltas) {
       arm_command_sent = processJointDeltas(msg->joint_deltas);
+    }
+
+    if (!msg->gripper_active && !msg->has_eef_target && !msg->has_joint_deltas) {
+      stopServoCommand();
     }
 
     // Process base hint if available
@@ -1223,6 +1241,49 @@ private:
     (void)moveToReadyPose();
   }
 
+  void visualServoStateCallback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    const std::string new_state = msg->data;
+    if (new_state != "DONE") {
+      if (new_state != last_visual_servo_state_) {
+        post_visual_servo_ready_pose_completed_.store(false);
+        post_visual_servo_ready_pose_goal_active_.store(false);
+        post_visual_servo_ready_pose_attempts_ = 0;
+      }
+      last_visual_servo_state_ = new_state;
+      return;
+    }
+
+    last_visual_servo_state_ = new_state;
+    if (!return_to_ready_after_visual_servo_ || !use_moveit_ || ready_pose_joint_names_.empty()) {
+      return;
+    }
+    if (
+      post_visual_servo_ready_pose_completed_.load() ||
+      post_visual_servo_ready_pose_goal_active_.load())
+    {
+      return;
+    }
+    if (post_visual_servo_ready_pose_attempts_ >= ready_pose_max_attempts_) {
+      post_visual_servo_ready_pose_completed_.store(true);
+      RCLCPP_ERROR_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "[READY][POST] failed after %d attempts. Staying in the current pose.",
+        ready_pose_max_attempts_);
+      return;
+    }
+
+    const auto retry_period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(ready_pose_retry_period_sec_));
+    const auto now = std::chrono::steady_clock::now();
+    if (now < last_post_visual_servo_ready_pose_attempt_steady_ + retry_period) {
+      return;
+    }
+
+    last_post_visual_servo_ready_pose_attempt_steady_ = now;
+    (void)moveToPostVisualServoReadyPose();
+  }
+
   bool moveToReadyPose()
   {
     if (!move_to_ready_on_startup_ || startup_ready_pose_completed_.load()) {
@@ -1325,6 +1386,107 @@ private:
       attempt_number, ready_pose_max_attempts_);
     moveit_goal_active_.store(true);
     startup_ready_pose_goal_active_.store(true);
+    move_group_client_->async_send_goal(goal, send_goal_options);
+    return true;
+  }
+
+  bool moveToPostVisualServoReadyPose()
+  {
+    if (!return_to_ready_after_visual_servo_ || !use_moveit_ || ready_pose_joint_names_.empty()) {
+      return false;
+    }
+
+    if (!ensureMoveGroupClientReady()) {
+      return false;
+    }
+
+    if (moveit_goal_active_.load()) {
+      RCLCPP_DEBUG_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "[READY][POST] MoveIt goal already active; deferring return to ready pose");
+      return false;
+    }
+
+    stopServoCommand();
+
+    const int attempt_number = post_visual_servo_ready_pose_attempts_ + 1;
+    post_visual_servo_ready_pose_attempts_ = attempt_number;
+
+    moveit_msgs::action::MoveGroup::Goal goal;
+    goal.request.group_name = move_group_name_;
+    goal.request.num_planning_attempts = moveit_planning_attempts_;
+    goal.request.allowed_planning_time = moveit_planning_time_;
+    goal.request.max_velocity_scaling_factor = moveit_velocity_scaling_;
+    goal.request.max_acceleration_scaling_factor = moveit_accel_scaling_;
+    goal.request.goal_constraints.push_back(
+      buildJointGoalConstraints(
+        ready_pose_joint_names_, ready_pose_joint_positions_, "post_visual_servo_ready_pose"));
+    goal.request.start_state.is_diff = true;
+
+    goal.planning_options.plan_only = false;
+    goal.planning_options.look_around = false;
+    goal.planning_options.replan = false;
+    goal.planning_options.planning_scene_diff.is_diff = true;
+    goal.planning_options.planning_scene_diff.robot_state.is_diff = true;
+
+    auto send_goal_options =
+      rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SendGoalOptions();
+
+    send_goal_options.goal_response_callback =
+      [this, attempt_number](
+      rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle) {
+        if (!goal_handle) {
+          moveit_goal_active_.store(false);
+          post_visual_servo_ready_pose_goal_active_.store(false);
+          std::lock_guard<std::mutex> lock(goal_mutex_);
+          moveit_goal_handle_.reset();
+          RCLCPP_WARN(
+            this->get_logger(),
+            "[READY][POST] goal rejected on attempt %d/%d",
+            attempt_number, ready_pose_max_attempts_);
+          return;
+        }
+        {
+          std::lock_guard<std::mutex> lock(goal_mutex_);
+          moveit_goal_handle_ = goal_handle;
+        }
+        moveit_goal_active_.store(true);
+        post_visual_servo_ready_pose_goal_active_.store(true);
+      };
+
+    send_goal_options.result_callback =
+      [this, attempt_number](const auto & result) {
+        moveit_goal_active_.store(false);
+        post_visual_servo_ready_pose_goal_active_.store(false);
+        {
+          std::lock_guard<std::mutex> lock(goal_mutex_);
+          moveit_goal_handle_.reset();
+        }
+        if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+          post_visual_servo_ready_pose_completed_.store(true);
+          RCLCPP_INFO(this->get_logger(), "[READY][POST] returned to ready pose");
+          return;
+        }
+
+        RCLCPP_WARN(
+          this->get_logger(),
+          "[READY][POST] failed with code %d on attempt %d/%d",
+          static_cast<int>(result.code), attempt_number, ready_pose_max_attempts_);
+        if (attempt_number >= ready_pose_max_attempts_) {
+          post_visual_servo_ready_pose_completed_.store(true);
+          RCLCPP_ERROR(
+            this->get_logger(),
+            "[READY][POST] failed after %d attempts. Staying in the current pose.",
+            ready_pose_max_attempts_);
+        }
+      };
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[READY][POST] returning to ready pose after visual-servo grasp (%d/%d)",
+      attempt_number, ready_pose_max_attempts_);
+    moveit_goal_active_.store(true);
+    post_visual_servo_ready_pose_goal_active_.store(true);
     move_group_client_->async_send_goal(goal, send_goal_options);
     return true;
   }
@@ -1747,6 +1909,8 @@ private:
   std::string servo_start_service_;
   bool wait_for_servo_ready_;
   double servo_ready_timeout_sec_;
+  std::string visual_servo_state_topic_;
+  bool return_to_ready_after_visual_servo_;
 
   // TF
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -1755,6 +1919,7 @@ private:
   // ROS communication
   rclcpp::Subscription<manipulation_msgs::msg::PolicyOutput>::SharedPtr policy_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr visual_servo_state_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr servo_twist_pub_;
   rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr nav_client_;
@@ -1791,11 +1956,17 @@ private:
   std::atomic<bool> servo_started_{false};
   std::atomic<bool> servo_start_requested_{false};
   std::atomic<bool> servo_wait_started_{false};
+  std::string last_visual_servo_state_;
+  std::atomic<bool> post_visual_servo_ready_pose_completed_{false};
+  std::atomic<bool> post_visual_servo_ready_pose_goal_active_{false};
+  int post_visual_servo_ready_pose_attempts_{0};
   std::chrono::steady_clock::time_point ready_pose_start_time_steady_{
     std::chrono::steady_clock::time_point::min()};
   std::chrono::steady_clock::time_point gripper_goal_start_steady_{
     std::chrono::steady_clock::time_point::min()};
   std::chrono::steady_clock::time_point servo_wait_start_steady_{
+    std::chrono::steady_clock::time_point::min()};
+  std::chrono::steady_clock::time_point last_post_visual_servo_ready_pose_attempt_steady_{
     std::chrono::steady_clock::time_point::min()};
   bool safety_stop_active_{false};
 };
