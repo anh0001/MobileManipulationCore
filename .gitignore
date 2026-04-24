@@ -5,8 +5,6 @@ log/
 *.bag
 *.db3
 
-AGENTS.md
-CLAUDE.md
 .github/
 /*.png
 /*.jpg
