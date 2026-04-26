@@ -244,3 +244,11 @@ ros2 topic delay /camera/color/image_raw
 **Last Updated:** 2026-02-04
 **ROS 2 Distribution:** Humble
 **Target Platform:** Ubuntu 22.04 + Jetson AGX Orin
+<!-- ARIS:BEGIN -->
+## ARIS Skill Scope
+ARIS skills installed in this project: 69 entries.
+Manifest: `.aris/installed-skills.txt` (lists every skill ARIS installed and its upstream target).
+For ARIS workflows, prefer the project-local skills under `.claude/skills/` over global skills.
+Do not modify or delete files inside any skill that is a symlink (symlinks point into `/home/robofi/codes/Auto-claude-code-research-in-sleep`).
+Update with: `bash /home/robofi/codes/Auto-claude-code-research-in-sleep/tools/install_aris.sh`  (re-runnable; reconciles new/removed skills).
+<!-- ARIS:END -->
