@@ -123,19 +123,24 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // Look-then-move (table-plane) grasp parameters.
   this->declare_parameter("use_table_grasp", true);
   this->declare_parameter("grasp_top_down", true);
-  this->declare_parameter("grasp_plane_annulus_frac", 0.6);
+  this->declare_parameter("grasp_use_move_group", true);
+  this->declare_parameter("grasp_plane_annulus_frac", 0.3);
   this->declare_parameter("grasp_plane_min_depth_m", 0.12);
   this->declare_parameter("grasp_plane_max_depth_m", 0.60);
   this->declare_parameter("grasp_plane_min_points", 60);
   this->declare_parameter("grasp_plane_max_rms_m", 0.03);
-  this->declare_parameter("grasp_height_above_table_m", 0.05);
+  this->declare_parameter("grasp_height_above_table_m", 0.055);
   this->declare_parameter("grasp_object_radius_m", 0.03);
+  this->declare_parameter("neck_grasp_offset_m", 0.30);  // disable cap-reach; use fixed body height from teach demo
   this->declare_parameter("pregrasp_standoff_m", 0.12);
   this->declare_parameter("guarded_approach_speed_mps", 0.02);
   this->declare_parameter("guarded_reach_tolerance_m", 0.01);
   this->declare_parameter("grasp_estimate_settle_cycles", 10);
   this->declare_parameter("grasp_estimate_max_attempts", 40);
   this->declare_parameter("grasp_max_reach_m", 0.55);
+  this->declare_parameter("grasp_offset_x", -0.035);  // calib: estimate overshoots forward
+  this->declare_parameter("grasp_offset_y", -0.018);  // calib from teach demo
+  this->declare_parameter("grasp_offset_z", 0.0);
 
   this->declare_parameter("tracker_type", "mil");
   this->declare_parameter("klt_max_features", 200);
@@ -216,6 +221,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 
   use_table_grasp_ = this->get_parameter("use_table_grasp").as_bool();
   grasp_top_down_ = this->get_parameter("grasp_top_down").as_bool();
+  grasp_use_move_group_ = this->get_parameter("grasp_use_move_group").as_bool();
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
   grasp_plane_min_depth_m_ = this->get_parameter("grasp_plane_min_depth_m").as_double();
   grasp_plane_max_depth_m_ = this->get_parameter("grasp_plane_max_depth_m").as_double();
@@ -223,6 +229,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_plane_max_rms_m_ = this->get_parameter("grasp_plane_max_rms_m").as_double();
   grasp_height_above_table_m_ = this->get_parameter("grasp_height_above_table_m").as_double();
   grasp_object_radius_m_ = this->get_parameter("grasp_object_radius_m").as_double();
+  neck_grasp_offset_m_ = this->get_parameter("neck_grasp_offset_m").as_double();
   pregrasp_standoff_m_ = this->get_parameter("pregrasp_standoff_m").as_double();
   guarded_approach_speed_mps_ = this->get_parameter("guarded_approach_speed_mps").as_double();
   guarded_reach_tolerance_m_ = this->get_parameter("guarded_reach_tolerance_m").as_double();
@@ -231,6 +238,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_estimate_max_attempts_ =
     static_cast<int>(this->get_parameter("grasp_estimate_max_attempts").as_int());
   grasp_max_reach_m_ = this->get_parameter("grasp_max_reach_m").as_double();
+  grasp_offset_x_ = this->get_parameter("grasp_offset_x").as_double();
+  grasp_offset_y_ = this->get_parameter("grasp_offset_y").as_double();
+  grasp_offset_z_ = this->get_parameter("grasp_offset_z").as_double();
 
   if (gripper_joint_names_.empty() && !gripper_joint_name_.empty()) {
     gripper_joint_names_.push_back(gripper_joint_name_);
@@ -1278,9 +1288,11 @@ void VisualServoNode::handle_acquire()
 void VisualServoNode::handle_track()
 {
   cv::Mat frame;
+  const ServoState post_track = (use_table_grasp_ && grasp_use_move_group_) ?
+    ServoState::ESTIMATE_GRASP : ServoState::ALIGN_XY;
   if (!fetch_latest_frame(frame)) {
     if (fallback_to_detection_tracking("TRACK")) {
-      transition_to(ServoState::ALIGN_XY, "target acquired from detection fallback");
+      transition_to(post_track, "target acquired from detection fallback");
       return;
     }
     std::uint64_t latest_generation = 0;
@@ -1307,7 +1319,7 @@ void VisualServoNode::handle_track()
   }
 
   if (update_tracking(frame)) {
-    transition_to(ServoState::ALIGN_XY, "target acquired");
+    transition_to(post_track, "target acquired");
   }
 }
 
@@ -1523,12 +1535,25 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     return false;
   }
 
+  // Grasp height: for a top-down grasp aim at the narrow neck — a fixed offset
+  // below the detected object top — because the gripper's max opening is barely
+  // wider than the body. Never below the body floor (grasp_height_above_table).
+  double grasp_h = grasp_height_above_table_m_;
+  if (grasp_top_down_ && est.object_height_m > 0.0) {
+    grasp_h = std::max(grasp_height_above_table_m_,
+      est.object_height_m - neck_grasp_offset_m_);
+  }
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[ESTIMATE] object_height=%.3f object_pts=%zu grasp_height=%.3f",
+    est.object_height_m, est.object_points, grasp_h);
+
   // Grasp point in the camera frame: footprint lifted off the table along the
-  // table normal by the desired grasp height.
+  // table normal by the chosen grasp height.
   const CartesianVector grasp_cam{
-    est.footprint_cam.x + est.up_cam.x * grasp_height_above_table_m_,
-    est.footprint_cam.y + est.up_cam.y * grasp_height_above_table_m_,
-    est.footprint_cam.z + est.up_cam.z * grasp_height_above_table_m_};
+    est.footprint_cam.x + est.up_cam.x * grasp_h,
+    est.footprint_cam.y + est.up_cam.y * grasp_h,
+    est.footprint_cam.z + est.up_cam.z * grasp_h};
 
   const auto grasp_ref_opt = transform_point_to_reference(grasp_cam);
   const auto ee_opt = lookup_current_ee_position_in_reference();
@@ -1536,6 +1561,11 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     return false;
   }
   CartesianVector grasp_ref = grasp_ref_opt.value();
+
+  // Apply the fixed hand-eye calibration offset (base frame).
+  grasp_ref.x += grasp_offset_x_;
+  grasp_ref.y += grasp_offset_y_;
+  grasp_ref.z += grasp_offset_z_;
 
   // Reach guard: refuse to command a target the arm cannot reach (horizontal
   // distance from the base origin), so we never strain into a singularity.
@@ -1678,13 +1708,19 @@ void VisualServoNode::handle_guarded_approach()
     return;
   }
 
-  // Step toward the target this cycle. The adapter converts an EEF-delta to a
-  // velocity by dividing by its command horizon, so the delta magnitude must be
-  // speed * horizon (NOT speed * cycle_dt) to realize the requested speed. As
-  // dist shrinks below one step the delta shrinks too, giving smooth braking.
-  const double horizon = std::max(0.1, output_delta_horizon_sec_);
-  const double step = std::min(dist, guarded_approach_speed_mps_ * horizon);
-  const double scale = step / dist;
+  double scale;
+  if (grasp_use_move_group_) {
+    // Publish the FULL delta: the adapter (move_group + delta mode) plans
+    // current+delta and executes a non-singular trajectory. Re-publishing each
+    // cycle is harmless — the adapter ignores new goals while one is active.
+    scale = 1.0;
+  } else {
+    // Servo: the adapter converts an EEF-delta to a velocity by dividing by its
+    // command horizon, so the delta must be speed*horizon (not speed*cycle_dt).
+    const double horizon = std::max(0.1, output_delta_horizon_sec_);
+    const double step = std::min(dist, guarded_approach_speed_mps_ * horizon);
+    scale = step / dist;
+  }
   publish_reference_frame_delta(dx * scale, dy * scale, dz * scale, tracking_confidence_);
 }
 
@@ -1966,10 +2002,14 @@ void VisualServoNode::handle_close_gripper()
 
   publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_, false, false, 0.0);
 
-  if (action_succeeded) {
+  // Wait grasp_settle_sec before lifting even if the gripper action reports
+  // success immediately (the piper gripper action returns on command accept,
+  // not on physical close) so the fingers actually grip the object first.
+  const double close_elapsed = (this->now() - state_entry_time_).seconds();
+  if (action_succeeded && close_elapsed >= grasp_settle_sec_) {
     RCLCPP_INFO(
       this->get_logger(),
-      "[GRIPPER][CLOSE] close step complete; lifting the grasped object");
+      "[GRIPPER][CLOSE] close complete + settled; lifting the grasped object");
     transition_to(ServoState::LIFT, "close gripper action completed; lifting");
     return;
   }

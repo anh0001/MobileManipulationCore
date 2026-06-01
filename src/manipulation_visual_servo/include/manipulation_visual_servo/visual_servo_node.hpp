@@ -299,6 +299,11 @@ private:
   // Look-then-move (table-plane) grasp parameters.
   bool use_table_grasp_{true};
   bool grasp_top_down_{true};
+  // When true, skip the servo ALIGN leg and execute the approach as MoveIt
+  // move_group planned moves (publish the full EEF delta so the adapter, in
+  // move_group + delta mode, plans current+delta and picks a non-singular IK).
+  // Requires the adapter launched with arm_execution_mode:=move_group.
+  bool grasp_use_move_group_{true};
   double grasp_plane_annulus_frac_{0.6};
   double grasp_plane_min_depth_m_{0.12};
   double grasp_plane_max_depth_m_{0.60};
@@ -306,12 +311,20 @@ private:
   double grasp_plane_max_rms_m_{0.02};
   double grasp_height_above_table_m_{0.05};
   double grasp_object_radius_m_{0.03};
+  // Top-down: grasp this far below the detected object top (the narrow neck of
+  // a bottle), since the gripper max opening is barely wider than the body.
+  double neck_grasp_offset_m_{0.025};
   double pregrasp_standoff_m_{0.12};
   double guarded_approach_speed_mps_{0.02};
   double guarded_reach_tolerance_m_{0.01};
   int grasp_estimate_settle_cycles_{10};
   int grasp_estimate_max_attempts_{40};
   double grasp_max_reach_m_{0.55};
+  // Fixed grasp correction in the reference/base frame (hand-eye calibration
+  // residual). Applied to the estimated grasp point.
+  double grasp_offset_x_{0.0};
+  double grasp_offset_y_{0.0};
+  double grasp_offset_z_{0.0};
 
   std::string tracker_type_;
   int klt_max_features_;

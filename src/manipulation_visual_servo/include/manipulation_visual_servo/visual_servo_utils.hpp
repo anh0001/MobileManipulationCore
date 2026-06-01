@@ -94,6 +94,8 @@ struct TableGraspEstimate
   std::size_t plane_points{0};     // number of inlier points used for the plane fit
   double plane_rms_m{0.0};         // RMS residual of the plane fit (meters)
   double footprint_depth_m{0.0};   // forward (camera +Z) distance to footprint
+  double object_height_m{0.0};     // robust top height of the object above the table
+  std::size_t object_points{0};    // object-surface points used for the footprint
   bool valid{false};
 };
 

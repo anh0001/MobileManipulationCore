@@ -326,7 +326,7 @@ TableGraspEstimate estimate_table_grasp(
   // avoids the grazing-angle projection error of the bbox-bottom ray and is far
   // more accurate for the object's true footprint XY.
   const double OBJ_MIN_H = 0.015;   // m above the table to count as object
-  const double OBJ_MAX_H = 0.180;   // m above the table (ignore tall background)
+  const double OBJ_MAX_H = 0.300;   // m above the table (ignore tall background)
   const std::size_t OBJ_MIN_PTS = 15;
   const double shrink = 0.15;       // shrink bbox to avoid edge/background mixing
   const int sx0 = clamp_value(static_cast<int>(std::floor(bbox.x + bbox.width * shrink)), 0, cols - 1);
@@ -335,7 +335,7 @@ TableGraspEstimate estimate_table_grasp(
   const int sy1 = clamp_value(static_cast<int>(std::ceil(bbox.y + bbox.height * (1.0 - shrink))), 0, rows);
   const int istep = std::max(1, (sx1 - sx0) / 60);
 
-  std::vector<double> px_, py_, pz_;
+  std::vector<double> px_, py_, pz_, ph_;
   for (int v = sy0; v < sy1; v += istep) {
     const auto * row_ptr = depth_image_mm.ptr<uint16_t>(v);
     for (int u = sx0; u < sx1; u += istep) {
@@ -357,6 +357,7 @@ TableGraspEstimate estimate_table_grasp(
       px_.push_back(proj[0]);
       py_.push_back(proj[1]);
       pz_.push_back(proj[2]);
+      ph_.push_back(h);
     }
   }
 
@@ -367,11 +368,17 @@ TableGraspEstimate estimate_table_grasp(
 
   if (px_.size() >= OBJ_MIN_PTS) {
     const cv::Vec3d fp(median(px_), median(py_), median(pz_));
+    // Robust top of the object: 90th percentile of the object-point heights
+    // (avoids a single noisy spike while capturing the real top/cap height).
+    std::sort(ph_.begin(), ph_.end());
+    const double top_h = ph_[static_cast<std::size_t>(ph_.size() * 0.9)];
     result.footprint_cam = CartesianVector{fp[0], fp[1], fp[2]};
     result.up_cam = CartesianVector{normal[0], normal[1], normal[2]};
     result.plane_points = pts.size();
     result.plane_rms_m = rms;
     result.footprint_depth_m = fp[2];
+    result.object_height_m = top_h;
+    result.object_points = px_.size();
     result.valid = true;
     return result;
   }
