@@ -298,6 +298,7 @@ private:
 
   // Look-then-move (table-plane) grasp parameters.
   bool use_table_grasp_{true};
+  bool grasp_top_down_{true};
   double grasp_plane_annulus_frac_{0.6};
   double grasp_plane_min_depth_m_{0.12};
   double grasp_plane_max_depth_m_{0.60};

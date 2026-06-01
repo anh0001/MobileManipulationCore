@@ -122,6 +122,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 
   // Look-then-move (table-plane) grasp parameters.
   this->declare_parameter("use_table_grasp", true);
+  this->declare_parameter("grasp_top_down", true);
   this->declare_parameter("grasp_plane_annulus_frac", 0.6);
   this->declare_parameter("grasp_plane_min_depth_m", 0.12);
   this->declare_parameter("grasp_plane_max_depth_m", 0.60);
@@ -214,6 +215,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     this->get_parameter("gripper_open_position_tolerance").as_double();
 
   use_table_grasp_ = this->get_parameter("use_table_grasp").as_bool();
+  grasp_top_down_ = this->get_parameter("grasp_top_down").as_bool();
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
   grasp_plane_min_depth_m_ = this->get_parameter("grasp_plane_min_depth_m").as_double();
   grasp_plane_max_depth_m_ = this->get_parameter("grasp_plane_max_depth_m").as_double();
@@ -1534,23 +1536,6 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     return false;
   }
   CartesianVector grasp_ref = grasp_ref_opt.value();
-  const CartesianVector ee = ee_opt.value();
-
-  // Horizontal approach direction from the current EEF toward the object.
-  double ax = grasp_ref.x - ee.x;
-  double ay = grasp_ref.y - ee.y;
-  const double ahyp = std::sqrt(ax * ax + ay * ay);
-  if (ahyp < 1e-6) {
-    return false;
-  }
-  ax /= ahyp;
-  ay /= ahyp;
-  grasp_approach_dir_ref_ = CartesianVector{ax, ay, 0.0};
-
-  // The bbox-bottom ray hits the near (front) side of the object; the grasp
-  // center is ~one radius further along the approach direction.
-  grasp_ref.x += ax * grasp_object_radius_m_;
-  grasp_ref.y += ay * grasp_object_radius_m_;
 
   // Reach guard: refuse to command a target the arm cannot reach (horizontal
   // distance from the base origin), so we never strain into a singularity.
@@ -1564,11 +1549,35 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     return false;
   }
 
-  // Pre-grasp: back off horizontally along the approach direction.
-  CartesianVector pregrasp_ref{
-    grasp_ref.x - ax * pregrasp_standoff_m_,
-    grasp_ref.y - ay * pregrasp_standoff_m_,
-    grasp_ref.z};
+  CartesianVector pregrasp_ref;
+  if (grasp_top_down_) {
+    // Top-down grasp: an upright object's XY at any height equals its base
+    // footprint XY, so grasp directly over the footprint and descend straight
+    // down. Pre-grasp sits a standoff distance ABOVE the grasp point.
+    grasp_approach_dir_ref_ = CartesianVector{0.0, 0.0, -1.0};
+    pregrasp_ref = CartesianVector{
+      grasp_ref.x, grasp_ref.y, grasp_ref.z + pregrasp_standoff_m_};
+  } else {
+    // Side grasp: approach horizontally; the bbox-bottom ray hits the near face
+    // so push one radius further to the object center, and back off the
+    // pre-grasp horizontally.
+    const CartesianVector ee = ee_opt.value();
+    double ax = grasp_ref.x - ee.x;
+    double ay = grasp_ref.y - ee.y;
+    const double ahyp = std::sqrt(ax * ax + ay * ay);
+    if (ahyp < 1e-6) {
+      return false;
+    }
+    ax /= ahyp;
+    ay /= ahyp;
+    grasp_approach_dir_ref_ = CartesianVector{ax, ay, 0.0};
+    grasp_ref.x += ax * grasp_object_radius_m_;
+    grasp_ref.y += ay * grasp_object_radius_m_;
+    pregrasp_ref = CartesianVector{
+      grasp_ref.x - ax * pregrasp_standoff_m_,
+      grasp_ref.y - ay * pregrasp_standoff_m_,
+      grasp_ref.z};
+  }
 
   grasp_target_ref_ = grasp_ref;
   pregrasp_target_ref_ = pregrasp_ref;
@@ -1576,11 +1585,12 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[ESTIMATE] grasp=(%.3f, %.3f, %.3f) pregrasp=(%.3f, %.3f, %.3f) "
-    "approach=(%.2f, %.2f) plane_pts=%zu rms=%.4f footprint_depth=%.3f",
+    "[ESTIMATE] mode=%s grasp=(%.3f, %.3f, %.3f) pregrasp=(%.3f, %.3f, %.3f) "
+    "plane_pts=%zu rms=%.4f footprint_depth=%.3f",
+    grasp_top_down_ ? "top_down" : "side",
     grasp_ref.x, grasp_ref.y, grasp_ref.z,
     pregrasp_ref.x, pregrasp_ref.y, pregrasp_ref.z,
-    ax, ay, est.plane_points, est.plane_rms_m, est.footprint_depth_m);
+    est.plane_points, est.plane_rms_m, est.footprint_depth_m);
   return true;
 }
 
