@@ -119,6 +119,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::vector<double>>(
     "gripper_open_positions", std::vector<double>{});
   this->declare_parameter("gripper_open_position_tolerance", 0.02);
+  this->declare_parameter("gripper_max_effort", 5.0);
 
   // Look-then-move (table-plane) grasp parameters.
   this->declare_parameter("use_table_grasp", true);
@@ -218,6 +219,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   gripper_open_positions_ = this->get_parameter("gripper_open_positions").as_double_array();
   gripper_open_position_tolerance_ =
     this->get_parameter("gripper_open_position_tolerance").as_double();
+  gripper_max_effort_ = this->get_parameter("gripper_max_effort").as_double();
 
   use_table_grasp_ = this->get_parameter("use_table_grasp").as_bool();
   grasp_top_down_ = this->get_parameter("grasp_top_down").as_bool();
@@ -591,17 +593,13 @@ void VisualServoNode::transition_to(ServoState new_state, const std::string & re
     return;
   }
 
-  if (
-    state_ == ServoState::OPEN_GRIPPER || state_ == ServoState::CLOSE_GRIPPER ||
-    new_state == ServoState::OPEN_GRIPPER || new_state == ServoState::CLOSE_GRIPPER)
-  {
-    std::string cancel_reason = "state transition";
-    if (state_ == ServoState::OPEN_GRIPPER && new_state == ServoState::APPROACH_DEPTH) {
-      cancel_reason = "open step completed";
-    } else if (state_ == ServoState::CLOSE_GRIPPER && new_state == ServoState::LIFT) {
-      cancel_reason = "close step completed";
-    }
-    cancel_gripper_goal(cancel_reason);
+  // Cancel an in-flight gripper goal ONLY when aborting/resetting. The piper
+  // gripper releases its hold when its action goal is cancelled, so cancelling
+  // on OPEN_GRIPPER->approach would let it close mid-approach, and cancelling on
+  // CLOSE_GRIPPER->LIFT would drop the grasped object. New gripper goals preempt
+  // the old one in ensure_gripper_goal_started(), so no cancel is needed there.
+  if (new_state == ServoState::LOST || new_state == ServoState::IDLE) {
+    cancel_gripper_goal("aborting to " + state_to_string(new_state));
   }
 
   if (reason.empty()) {
@@ -809,7 +807,9 @@ void VisualServoNode::ensure_gripper_goal_started(ServoState command_state)
   GripperCommand::Goal goal;
   goal.command = control_msgs::msg::GripperCommand();
   goal.command.position = target_position;
-  goal.command.max_effort = 0.0;
+  // Nonzero effort is required or the piper gripper does not actuate (the joint
+  // feedback still reports the commanded position, masking the no-move).
+  goal.command.max_effort = gripper_max_effort_;
 
   rclcpp_action::Client<GripperCommand>::SendGoalOptions options;
   options.goal_response_callback =

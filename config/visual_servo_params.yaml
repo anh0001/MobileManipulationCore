@@ -54,7 +54,7 @@ visual_servo:
   blind_push_offset_x: 0.015             # Lateral offset (m) in reference frame applied during blind push (positive = arm +Y direction)
   blind_push_offset_y: 0.0              # Vertical offset (m) in reference frame applied during blind push (positive = arm +Z direction)
   open_gripper_settle_sec: 3.0         # Wait after issuing the direct GripperCommand open action
-  gripper_open_position_tolerance: 0.020  # Joint-state tolerance used only to report when the open target is reached
+  gripper_open_position_tolerance: 0.008  # Require near-full open before approaching (else OPEN->APPROACH cancels the open goal mid-travel and the gripper descends partly closed)
   return_to_ready_after_pick: true     # Ask the adapter to send the arm back to its configured ready pose after DONE
 
   control:

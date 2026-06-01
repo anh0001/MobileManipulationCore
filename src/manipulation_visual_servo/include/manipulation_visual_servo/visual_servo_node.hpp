@@ -262,6 +262,7 @@ private:
   double gripper_closed_position_;
   std::vector<double> gripper_open_positions_;
   double gripper_open_position_tolerance_;
+  double gripper_max_effort_{5.0};
 
   bool use_depth_;
   double control_rate_hz_;

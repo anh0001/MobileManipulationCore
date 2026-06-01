@@ -1,0 +1,36 @@
+# Grounding DINO detection server image for NVIDIA Jetson (JetPack 6 / L4T r36).
+#
+# Base: dusty-nv l4t-pytorch (CUDA torch already matched to L4T r36.4).
+# Adds a torch-2.4-compatible transformers (>=4.40 has Grounding DINO; 4.46.3 is
+# the last that works cleanly with torch 2.4 — newer transformers import
+# torch.distributed.tensor.device_mesh which is absent in 2.4).
+#
+# Build (from repo root):
+#   sudo docker build --network host -t grounding-dino:jp6 \
+#     -f deployment/docker/Dockerfile.grounding_dino deployment/docker
+#
+# Run the detection server (host networking so port 30543 is on the Jetson):
+#   sudo docker run -d --name dino_server --restart unless-stopped \
+#     --runtime nvidia --network host --ipc host --dns 8.8.8.8 \
+#     -v <repo>:/workspace/app -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+#     -e PYTHONPATH=/workspace/app/src/manipulation_detection \
+#     -e GROUNDING_DINO_MODEL_ID=IDEA-Research/grounding-dino-tiny \
+#     -w /workspace/app grounding-dino:jp6 \
+#     python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543
+#
+# Notes:
+# - Pull torch/transformers from real PyPI, not the jetson-ai-lab index (which
+#   has the torch wheel but not transformers).
+# - On the 30W power mode the Orin runs grounding-dino-tiny at ~0.6-0.7 FPS;
+#   MAXN/50W needs a reboot. Use the tiny model for the servo loop.
+FROM dustynv/l4t-pytorch:r36.4.0
+
+RUN python3 -m pip install --no-cache-dir --index-url https://pypi.org/simple \
+    "transformers==4.46.3" \
+    safetensors \
+    pillow \
+    requests
+
+WORKDIR /workspace/app
+ENV HF_HOME=/root/.cache/huggingface
+EXPOSE 30543

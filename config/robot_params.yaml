@@ -84,11 +84,15 @@ gripper:
   joint_name: "piper_joint7"
   joint_names:
     - "piper_joint7"
-  open_position: 0.065
+  open_position: 0.07            # full open (joint7 max ~0.069); wide for the bottle neck
   closed_position: 0.0
-  open_positions: [0.065]
+  open_positions: [0.07]
   closed_positions: [0.0]
   command_epsilon: 0.01
+  # Require the gripper to actually reach near-full open before approaching,
+  # else the OPEN->APPROACH transition cancels the open goal mid-travel and the
+  # gripper descends only partially open.
+  open_position_tolerance: 0.008
 
 # MoveIt parameters for the PiPER arm
 moveit:

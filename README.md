@@ -136,18 +136,54 @@ ros2 launch manipulation_bringup sim_launch.py
 ros2 launch manipulation_bringup core_launch.py
 ```
 
-**Real Robot (Visual Servo Mode):**
+**Real Robot (Visual Servo Mode — image-based servo):**
 ```bash
 ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo
 ```
 
-**Remote Grounding DINO Server (for Visual Servo detections):**
+**Real Robot (Look-then-move table-plane grasp — recommended for picking):**
 ```bash
-# On remote GPU machine
+# Plans the pre-grasp + descent with MoveIt move_group (non-singular IK); no
+# servo/move_group conflict. PYTHONNOUSERSITE=1 avoids the host numpy-2 vs
+# cv_bridge crash on the Jetson.
+PYTHONNOUSERSITE=1 ros2 launch manipulation_bringup core_launch.py \
+    control_mode:=visual_servo arm_execution_mode:=move_group
+```
+
+The grasp pipeline is `look-down capture → Grounding DINO detect → table-plane
+3D estimate → MoveIt plan to pre-grasp → guarded vertical descent → close →
+lift`. It fits a table plane from depth around the object and ray-casts /
+medians the object's own above-plane points (robust for translucent bottles
+where surface depth is unreliable), never servoing into the D405 < 8.8 cm blind
+zone. See [docs/visual_servo_grasp.md](docs/visual_servo_grasp.md) for the state
+machine, tunable params, and the teach-based calibration procedure.
+
+**Local Grounding DINO Server on the Jetson (Docker):**
+```bash
+# Build the JetPack-6 image once (see deployment/docker/Dockerfile.grounding_dino):
+sudo docker build --network host -t grounding-dino:jp6 \
+    -f deployment/docker/Dockerfile.grounding_dino deployment/docker
+# Run the detection server (host networking, GPU):
+sudo docker run -d --name dino_server --restart unless-stopped \
+    --runtime nvidia --network host --ipc host --dns 8.8.8.8 \
+    -v $PWD:/workspace/app -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+    -e PYTHONPATH=/workspace/app/src/manipulation_detection \
+    -e GROUNDING_DINO_MODEL_ID=IDEA-Research/grounding-dino-tiny \
+    -w /workspace/app grounding-dino:jp6 \
+    python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543
+```
+
+**Remote Grounding DINO Server (alternative, on a remote GPU):**
+```bash
 python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543
 ```
 
-> **Note:** In visual-servo mode, `remote_detection_client` sends JPEG-compressed frames to the remote detector and republishes detections on `/manipulation/target_detections` (`vision_msgs/msg/Detection2DArray`). Runtime detection prompt topic is `/visual_servo/target_prompt`.
+> **Note:** In visual-servo mode, `remote_detection_client` sends JPEG-compressed frames to the detector and republishes detections on `/manipulation/target_detections` (`vision_msgs/msg/Detection2DArray`). Set the detector endpoint via `detection.remote_url` in `config/detection_params.yaml` (e.g. `http://localhost:30543` for the local Jetson server). Runtime detection prompt topic is `/visual_servo/target_prompt`.
+
+> **Real-robot operational notes (PiPER + dual RealSense):**
+> - **Pin the wrist camera by serial** — the bringup auto-picks the first RealSense, so a D435i can steal the wrist topic. Launch the robot stack with `wrist_camera_serial:=<D405 serial>` (or set it as the default).
+> - **Imitation/teach button latches `ctrl_mode=2`** — the arm then ignores position commands. Power-cycle the arm to reset to `ctrl_mode=1`; the SDK `ModeCtrl`/`MotionCtrl_2` do not reliably override it on a shared CAN bus.
+> - **Never disable the arm while it is holding a pose** — the PiPER has no brakes and drops. Stop motion by killing the command source, not by disabling motors.
 
 **Visual Servo Node Only (Debug/Bench):**
 ```bash
