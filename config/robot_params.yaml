@@ -15,7 +15,7 @@ robot:
 
   # Topic names (customize if your robot uses different topics)
   topics:
-    camera_rgb: "/piper/wrist_camera/piper_d405/color/image_rect_raw"
+    camera_rgb: "/piper/wrist_camera/piper_d405/color/image_raw"
     camera_depth: "/piper/wrist_camera/piper_d405/depth/image_rect_raw"
     camera_info: "/piper/wrist_camera/piper_d405/color/camera_info"
     joint_states: "/joint_states"

@@ -82,4 +82,33 @@ double project_translation_onto_axis(
   const CartesianVector & translation,
   const CartesianVector & axis);
 
+// Result of estimating a grasp on a (translucent) object standing on a table,
+// computed in the depth camera's optical frame. Robust for objects whose own
+// surface depth is unreliable (glass/plastic): the table plane is fit from
+// valid depth in an annulus AROUND the object, then the object's footprint is
+// found by intersecting the ray through the bbox bottom-center with that plane.
+struct TableGraspEstimate
+{
+  CartesianVector footprint_cam;   // table point under the object (camera frame, meters)
+  CartesianVector up_cam;          // unit table normal, oriented toward the camera
+  std::size_t plane_points{0};     // number of inlier points used for the plane fit
+  double plane_rms_m{0.0};         // RMS residual of the plane fit (meters)
+  double footprint_depth_m{0.0};   // forward (camera +Z) distance to footprint
+  bool valid{false};
+};
+
+// Fit the table plane from valid depth pixels in an annulus around `bbox`
+// (between the bbox edge and `annulus_margin_frac` of the bbox size outward,
+// excluding the bbox interior so the object's own bad depth is ignored), then
+// ray-cast the bbox bottom-center pixel onto that plane to get the object
+// footprint. `depth_image_mm` must be CV_16UC1 (millimeters, 0 = invalid).
+TableGraspEstimate estimate_table_grasp(
+  const cv::Mat & depth_image_mm,
+  const cv::Rect2d & bbox,
+  double fx, double fy, double cx, double cy,
+  double annulus_margin_frac,
+  double min_depth_m, double max_depth_m,
+  std::size_t min_plane_points,
+  double max_plane_rms_m);
+
 }  // namespace manipulation_visual_servo

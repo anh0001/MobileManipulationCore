@@ -34,22 +34,22 @@ visual_servo:
   grasp_depth_tolerance_m: 0.015       # Grasp band: 0.080–0.110m
   depth_sample_anchor_x: 0.50          # Normalized ROI x anchor (width fraction, right-positive)
   depth_sample_anchor_y: 0.50          # Normalized ROI y anchor (height fraction, down-positive); centered to avoid edge/background mixing at close range
-  depth_roi_half_size_px: 8            # Half-width of the square depth sampling window around the anchor pixel
-  min_valid_depth_pixels: 6            # Minimum non-zero depth pixels required in the sampling window (relaxed for close-range D405 gaps)
-  depth_sample_max_iqr_m: 0.025        # Reject a depth sample if the local interquartile range exceeds this threshold (relaxed for close-range noise)
+  depth_roi_half_size_px: 6            # Half-width of the square depth sampling window around the anchor pixel
+  min_valid_depth_pixels: 4            # Minimum non-zero depth pixels required in the sampling window (relaxed for close-range D405 gaps)
+  depth_sample_max_iqr_m: 0.030        # Reject a depth sample if the local interquartile range exceeds this threshold (mild relax for translucent-bottle noise)
   depth_stale_timeout_sec: 1.0         # Allow for depth gaps (D405 at ~8 Hz + single-threaded executor delays)
   centering_stable_cycles: 3           # Number of consecutive centered control cycles before grasp sequence starts
-  close_depth_stable_frames: 3         # Number of consecutive in-band depth samples before closing the gripper
+  close_depth_stable_frames: 1         # Consecutive in-band depth samples before closing. Must be 1: during blind approach the no-depth path (line ~1514) resets close_depth_streak every cycle, so it can never accumulate >1 in blind mode. With translucent objects (blind path is the norm) >1 makes the close never fire. Proper fix is preserving the streak during blind approach in visual_servo_node.cpp.
   grasp_settle_sec: 1.5                # Wait time after open/close gripper commands before next state
   lift_distance_m: 0.08                # Upward lift distance after grasp completion
   max_approach_distance_m: 1.00        # Safety cap on total forward approach distance during one pick attempt
-  approach_stall_window_sec: 1.0       # Abort if depth fails to improve enough over this rolling window while approaching
-  approach_min_progress_m: 0.01        # Minimum depth improvement required over the stall window
-  blind_approach_depth_threshold_m: 0.12  # Switch to blind approach when last good depth was below this
-  blind_approach_velocity_fraction: 0.5   # Fraction of max_linear_velocity for blind forward motion
-  blind_approach_max_distance_m: 0.4      # Safety cap on total blind approach distance
-  blind_approach_after_standoff_m: 0.05  # Extra blind-push distance along end-effector +Z after depth reaches standoff (0 = disabled, close immediately)
-  blind_push_timeout_sec: 14.4           # Exact timeout in seconds for the blind push along end-effector +Z
+  approach_stall_window_sec: 1.5       # Abort if depth fails to improve enough over this rolling window while approaching
+  approach_min_progress_m: 0.005       # Minimum depth improvement required over the stall window
+  blind_approach_depth_threshold_m: 0.43  # Switch to blind approach when last good depth was below this (D405 depth on translucent bottle dies ~0.40m; threshold = last_good + 0.02)
+  blind_approach_velocity_fraction: 0.30  # Fraction of max_linear_velocity for blind forward motion (~0.03 m/s)
+  blind_approach_max_distance_m: 0.37     # Safety cap on total blind approach distance. last_good~0.429: need 0.334 to reach standoff + 0.02 after-push + margin
+  blind_approach_after_standoff_m: 0.02  # Extra blind-push distance along end-effector +Z after depth reaches standoff (0 = disabled, close immediately)
+  blind_push_timeout_sec: 12.0           # Exact timeout in seconds for the blind push along end-effector +Z
   blind_push_close_tolerance_m: 0.005    # If timeout occurs with <= this much blind-push distance remaining, close instead of restarting alignment
   blind_push_offset_x: 0.015             # Lateral offset (m) in reference frame applied during blind push (positive = arm +Y direction)
   blind_push_offset_y: 0.0              # Vertical offset (m) in reference frame applied during blind push (positive = arm +Z direction)

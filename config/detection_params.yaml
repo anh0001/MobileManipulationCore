@@ -2,18 +2,22 @@
 
 detection:
   # Jetson-side client topics
-  image_topic: "/piper/wrist_camera/piper_d405/color/image_rect_raw"
+  # D405 wrist camera publishes color/image_raw (no rectified color stream).
+  image_topic: "/piper/wrist_camera/piper_d405/color/image_raw"
   detection_topic: "/manipulation/target_detections"
   prompt_topic: "/visual_servo/target_prompt"
 
   # Remote detector endpoint (Grounding DINO server)
-  remote_url: "http://100.112.100.20:30543"
+  # Local Grounding DINO server on this Jetson (docker, port 30543).
+  remote_url: "http://localhost:30543"
 
   # Client request controls
+  # Local grounding-dino-tiny on Orin (30W) runs ~1.5-1.8s/frame, so the timeout
+  # must exceed that; rate stays 1Hz with in-flight skipping.
   request_rate_hz: 1.0
-  request_timeout_sec: 2.0
+  request_timeout_sec: 8.0
   retry_attempts: 0
-  max_result_staleness_sec: 2.0
+  max_result_staleness_sec: 5.0
 
   # Image payload optimization
   jpeg_quality: 70

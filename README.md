@@ -60,6 +60,42 @@ The system follows a modular pipeline:
 - Python 3.10+
 - NVIDIA Jetson AGX Orin (for on-device deployment) or GPU-enabled machine
 
+### Robot Hardware Stack (required for real-robot runs)
+
+MobileManipulationCore is the high-level "brain" only — it does **not** include
+the robot bringup (drivers, controllers, MoveIt, sensors). For any real-robot
+run it requires the companion hardware stack:
+
+- **Repo:** [anh0001/ranger-garden-assistant](https://github.com/anh0001/ranger-garden-assistant.git)
+  (AgileX Ranger Mini 3.0 base + PiPER 6-DOF arm, Livox Mid-360, RealSense D405).
+- **Location:** clone it as a **sibling folder** next to this repo, e.g.:
+
+  ```
+  ~/codes/
+  ├── MobileManipulationCore        # this repo
+  └── ranger-garden-assistant       # robot stack (sibling)
+  ```
+
+  ```bash
+  cd ~/codes
+  git clone https://github.com/anh0001/ranger-garden-assistant.git
+  ```
+
+- **Bring up the real robot first**, then launch this stack on top. From the
+  `ranger-garden-assistant` workspace root:
+
+  ```bash
+  source /opt/ros/humble/setup.bash
+  source install/setup.bash
+  ros2 launch robofi_bringup ranger_complete_bringup.launch.py
+  ```
+
+  This provides the drivers, `move_group`, `servo_node`, arm/gripper
+  controllers, and camera/LiDAR that MobileManipulationCore commands. The
+  Visual Servo adapter publishes to `/servo_node/delta_twist_cmds` exposed by
+  this bringup. See the [robot stack README](https://github.com/anh0001/ranger-garden-assistant)
+  for build and hardware setup.
+
 ### Installation
 
 ```bash
@@ -89,6 +125,11 @@ source install/setup.bash
 ```bash
 ros2 launch manipulation_bringup sim_launch.py
 ```
+
+> **Prerequisite:** the [robot hardware stack](#robot-hardware-stack-required-for-real-robot-runs)
+> (`ranger-garden-assistant`) must already be running its complete bringup
+> (`ros2 launch robofi_bringup ranger_complete_bringup.launch.py`) before
+> starting any real-robot mode below.
 
 **Real Robot (VLA Mode, default):**
 ```bash

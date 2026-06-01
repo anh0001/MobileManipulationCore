@@ -197,4 +197,145 @@ double project_translation_onto_axis(
   return translation.x * unit_x + translation.y * unit_y + translation.z * unit_z;
 }
 
+TableGraspEstimate estimate_table_grasp(
+  const cv::Mat & depth_image_mm,
+  const cv::Rect2d & bbox,
+  double fx, double fy, double cx, double cy,
+  double annulus_margin_frac,
+  double min_depth_m, double max_depth_m,
+  std::size_t min_plane_points,
+  double max_plane_rms_m)
+{
+  TableGraspEstimate result;
+  if (depth_image_mm.empty() || depth_image_mm.type() != CV_16UC1 ||
+    fx <= 1e-6 || fy <= 1e-6 || bbox.width <= 1.0 || bbox.height <= 1.0)
+  {
+    return result;
+  }
+
+  const int cols = depth_image_mm.cols;
+  const int rows = depth_image_mm.rows;
+
+  // Annulus bounds: an outer box expanded by annulus_margin_frac of the bbox
+  // size, with the bbox interior excluded.
+  const double mx = std::max(4.0, bbox.width * annulus_margin_frac);
+  const double my = std::max(4.0, bbox.height * annulus_margin_frac);
+  const int ox0 = clamp_value(static_cast<int>(std::floor(bbox.x - mx)), 0, cols - 1);
+  const int oy0 = clamp_value(static_cast<int>(std::floor(bbox.y - my)), 0, rows - 1);
+  const int ox1 = clamp_value(static_cast<int>(std::ceil(bbox.x + bbox.width + mx)), 0, cols);
+  const int oy1 = clamp_value(static_cast<int>(std::ceil(bbox.y + bbox.height + my)), 0, rows);
+
+  const int ix0 = static_cast<int>(std::floor(bbox.x));
+  const int iy0 = static_cast<int>(std::floor(bbox.y));
+  const int ix1 = static_cast<int>(std::ceil(bbox.x + bbox.width));
+  const int iy1 = static_cast<int>(std::ceil(bbox.y + bbox.height));
+
+  // Subsample to keep the plane fit cheap on large ROIs.
+  const int step = std::max(1, (ox1 - ox0) / 80);
+
+  std::vector<cv::Point3d> pts;
+  pts.reserve(1024);
+  double sx = 0.0, sy = 0.0, sz = 0.0;
+  for (int v = oy0; v < oy1; v += step) {
+    const auto * row_ptr = depth_image_mm.ptr<uint16_t>(v);
+    const bool inside_rows = (v >= iy0 && v < iy1);
+    for (int u = ox0; u < ox1; u += step) {
+      if (inside_rows && u >= ix0 && u < ix1) {
+        continue;  // skip object interior
+      }
+      const uint16_t d_mm = row_ptr[u];
+      if (d_mm == 0U) {
+        continue;
+      }
+      const double z = static_cast<double>(d_mm) * 0.001;
+      if (z < min_depth_m || z > max_depth_m) {
+        continue;
+      }
+      const double x = (static_cast<double>(u) - cx) * z / fx;
+      const double y = (static_cast<double>(v) - cy) * z / fy;
+      pts.emplace_back(x, y, z);
+      sx += x;
+      sy += y;
+      sz += z;
+    }
+  }
+
+  if (pts.size() < min_plane_points) {
+    return result;
+  }
+
+  const double n = static_cast<double>(pts.size());
+  const cv::Point3d centroid(sx / n, sy / n, sz / n);
+
+  // 3x3 covariance of the centered points.
+  double cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
+  for (const auto & p : pts) {
+    const double dx = p.x - centroid.x;
+    const double dy = p.y - centroid.y;
+    const double dz = p.z - centroid.z;
+    cxx += dx * dx;
+    cyy += dy * dy;
+    czz += dz * dz;
+    cxy += dx * dy;
+    cxz += dx * dz;
+    cyz += dy * dz;
+  }
+  cv::Mat cov = (cv::Mat_<double>(3, 3) <<
+    cxx, cxy, cxz,
+    cxy, cyy, cyz,
+    cxz, cyz, czz);
+  cv::Mat eval;
+  cv::Mat evec;
+  cv::eigen(cov, eval, evec);  // eigenvalues descending; rows of evec are eigenvectors
+  // Smallest eigenvalue -> plane normal (last row).
+  cv::Vec3d normal(
+    evec.at<double>(2, 0), evec.at<double>(2, 1), evec.at<double>(2, 2));
+  const double nn = std::sqrt(normal.dot(normal));
+  if (nn < 1e-9) {
+    return result;
+  }
+  normal *= (1.0 / nn);
+
+  // Orient the normal toward the camera (origin). The centroid is in front of
+  // the camera (z>0); a normal pointing back toward the camera has a negative
+  // dot with the centroid position vector.
+  if (normal.dot(cv::Vec3d(centroid.x, centroid.y, centroid.z)) > 0.0) {
+    normal = -normal;
+  }
+
+  // Plane fit RMS residual.
+  double sse = 0.0;
+  for (const auto & p : pts) {
+    const double r = normal[0] * (p.x - centroid.x) +
+      normal[1] * (p.y - centroid.y) +
+      normal[2] * (p.z - centroid.z);
+    sse += r * r;
+  }
+  const double rms = std::sqrt(sse / n);
+  if (rms > max_plane_rms_m) {
+    return result;
+  }
+
+  // Ray through the bbox bottom-center pixel, intersected with the plane.
+  const double u_b = bbox.x + bbox.width * 0.5;
+  const double v_b = bbox.y + bbox.height;  // bottom edge = footprint on table
+  const cv::Vec3d dir((u_b - cx) / fx, (v_b - cy) / fy, 1.0);
+  const double denom = normal.dot(dir);
+  if (std::abs(denom) < 1e-9) {
+    return result;
+  }
+  const double t = normal.dot(cv::Vec3d(centroid.x, centroid.y, centroid.z)) / denom;
+  if (t < min_depth_m || t > max_depth_m) {
+    return result;
+  }
+
+  result.footprint_cam = CartesianVector{dir[0] * t, dir[1] * t, dir[2] * t};
+  result.up_cam = CartesianVector{normal[0], normal[1], normal[2]};
+  result.plane_points = pts.size();
+  result.plane_rms_m = rms;
+  result.footprint_depth_m = dir[2] * t;
+  result.valid = true;
+  return result;
+}
+
 }  // namespace manipulation_visual_servo

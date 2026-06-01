@@ -50,8 +50,10 @@ enum class ServoState
   ACQUIRE,
   TRACK,
   ALIGN_XY,
+  ESTIMATE_GRASP,
   OPEN_GRIPPER,
   APPROACH_DEPTH,
+  GUARDED_APPROACH,
   CLOSE_GRIPPER,
   LIFT,
   DONE,
@@ -81,12 +83,20 @@ private:
   void handle_acquire();
   void handle_track();
   void handle_align_xy();
+  void handle_estimate_grasp();
   void handle_open_gripper();
   void handle_approach_depth();
+  void handle_guarded_approach();
   void handle_close_gripper();
   void handle_lift();
   void handle_done();
   void handle_lost();
+
+  // Robust "look-then-move" grasp: estimate the object's 3D grasp pose from the
+  // table plane (around the bbox) at a safe standoff, then move there open-loop.
+  bool estimate_grasp_pose_in_reference();
+  std::optional<CartesianVector> transform_point_to_reference(
+    const CartesianVector & point_cam);
 
   bool init_tracker(const cv::Mat & frame, const cv::Rect2d & roi);
   bool update_tracker(const cv::Mat & frame, cv::Rect2d & tracked_roi);
@@ -171,6 +181,10 @@ private:
   bool camera_info_received_{false};
   int image_width_{0};
   int image_height_{0};
+  double fx_{0.0};
+  double fy_{0.0};
+  double cx_{0.0};
+  double cy_{0.0};
 
   std::mutex image_mutex_;
   cv::Mat latest_frame_;
@@ -223,6 +237,13 @@ private:
   std::optional<DepthSample> last_depth_sample_;
   std::deque<DepthHistoryEntry> depth_progress_history_;
 
+  // Look-then-move grasp state (all targets in the reference/base frame).
+  std::optional<CartesianVector> grasp_target_ref_;
+  std::optional<CartesianVector> pregrasp_target_ref_;
+  CartesianVector grasp_approach_dir_ref_;   // unit horizontal approach direction
+  bool guarded_at_pregrasp_{false};          // false: heading to pregrasp; true: descending to grasp
+  int estimate_attempts_{0};
+
   std::string rgb_topic_;
   std::string camera_info_topic_;
   std::string depth_topic_;
@@ -274,6 +295,22 @@ private:
   double blind_push_offset_x_;
   double blind_push_offset_y_;
   double open_gripper_settle_sec_;
+
+  // Look-then-move (table-plane) grasp parameters.
+  bool use_table_grasp_{true};
+  double grasp_plane_annulus_frac_{0.6};
+  double grasp_plane_min_depth_m_{0.12};
+  double grasp_plane_max_depth_m_{0.60};
+  int grasp_plane_min_points_{60};
+  double grasp_plane_max_rms_m_{0.02};
+  double grasp_height_above_table_m_{0.05};
+  double grasp_object_radius_m_{0.03};
+  double pregrasp_standoff_m_{0.12};
+  double guarded_approach_speed_mps_{0.02};
+  double guarded_reach_tolerance_m_{0.01};
+  int grasp_estimate_settle_cycles_{10};
+  int grasp_estimate_max_attempts_{40};
+  double grasp_max_reach_m_{0.55};
 
   std::string tracker_type_;
   int klt_max_features_;
