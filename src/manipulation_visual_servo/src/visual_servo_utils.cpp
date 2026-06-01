@@ -260,6 +260,7 @@ TableGraspEstimate estimate_table_grasp(
     }
   }
 
+  result.plane_points = pts.size();  // report for diagnostics even on failure
   if (pts.size() < min_plane_points) {
     return result;
   }
@@ -312,19 +313,79 @@ TableGraspEstimate estimate_table_grasp(
     sse += r * r;
   }
   const double rms = std::sqrt(sse / n);
+  result.plane_rms_m = rms;  // report for diagnostics even on failure
   if (rms > max_plane_rms_m) {
     return result;
   }
 
-  // Ray through the bbox bottom-center pixel, intersected with the plane.
+  const cv::Vec3d centroid_v(centroid.x, centroid.y, centroid.z);
+
+  // Primary footprint: the object's OWN points. Deproject valid depth inside a
+  // shrunk bbox, keep points standing ABOVE the table plane (an upright object),
+  // project them straight down onto the plane and take the robust median. This
+  // avoids the grazing-angle projection error of the bbox-bottom ray and is far
+  // more accurate for the object's true footprint XY.
+  const double OBJ_MIN_H = 0.015;   // m above the table to count as object
+  const double OBJ_MAX_H = 0.180;   // m above the table (ignore tall background)
+  const std::size_t OBJ_MIN_PTS = 15;
+  const double shrink = 0.15;       // shrink bbox to avoid edge/background mixing
+  const int sx0 = clamp_value(static_cast<int>(std::floor(bbox.x + bbox.width * shrink)), 0, cols - 1);
+  const int sx1 = clamp_value(static_cast<int>(std::ceil(bbox.x + bbox.width * (1.0 - shrink))), 0, cols);
+  const int sy0 = clamp_value(static_cast<int>(std::floor(bbox.y + bbox.height * shrink)), 0, rows - 1);
+  const int sy1 = clamp_value(static_cast<int>(std::ceil(bbox.y + bbox.height * (1.0 - shrink))), 0, rows);
+  const int istep = std::max(1, (sx1 - sx0) / 60);
+
+  std::vector<double> px_, py_, pz_;
+  for (int v = sy0; v < sy1; v += istep) {
+    const auto * row_ptr = depth_image_mm.ptr<uint16_t>(v);
+    for (int u = sx0; u < sx1; u += istep) {
+      const uint16_t d_mm = row_ptr[u];
+      if (d_mm == 0U) {
+        continue;
+      }
+      const double z = static_cast<double>(d_mm) * 0.001;
+      if (z < min_depth_m || z > max_depth_m) {
+        continue;
+      }
+      const cv::Vec3d p((static_cast<double>(u) - cx) * z / fx,
+        (static_cast<double>(v) - cy) * z / fy, z);
+      const double h = normal.dot(p - centroid_v);  // height above plane (up +)
+      if (h < OBJ_MIN_H || h > OBJ_MAX_H) {
+        continue;
+      }
+      const cv::Vec3d proj = p - normal * h;  // drop straight onto the table
+      px_.push_back(proj[0]);
+      py_.push_back(proj[1]);
+      pz_.push_back(proj[2]);
+    }
+  }
+
+  auto median = [](std::vector<double> & v) {
+      std::sort(v.begin(), v.end());
+      return v[v.size() / 2];
+    };
+
+  if (px_.size() >= OBJ_MIN_PTS) {
+    const cv::Vec3d fp(median(px_), median(py_), median(pz_));
+    result.footprint_cam = CartesianVector{fp[0], fp[1], fp[2]};
+    result.up_cam = CartesianVector{normal[0], normal[1], normal[2]};
+    result.plane_points = pts.size();
+    result.plane_rms_m = rms;
+    result.footprint_depth_m = fp[2];
+    result.valid = true;
+    return result;
+  }
+
+  // Fallback: ray through the bbox bottom-center pixel, intersected with the plane
+  // (used when the object surface gives too few valid depth points).
   const double u_b = bbox.x + bbox.width * 0.5;
-  const double v_b = bbox.y + bbox.height;  // bottom edge = footprint on table
+  const double v_b = bbox.y + bbox.height;
   const cv::Vec3d dir((u_b - cx) / fx, (v_b - cy) / fy, 1.0);
   const double denom = normal.dot(dir);
   if (std::abs(denom) < 1e-9) {
     return result;
   }
-  const double t = normal.dot(cv::Vec3d(centroid.x, centroid.y, centroid.z)) / denom;
+  const double t = normal.dot(centroid_v) / denom;
   if (t < min_depth_m || t > max_depth_m) {
     return result;
   }

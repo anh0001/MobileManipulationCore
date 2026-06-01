@@ -127,7 +127,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("grasp_plane_min_depth_m", 0.12);
   this->declare_parameter("grasp_plane_max_depth_m", 0.60);
   this->declare_parameter("grasp_plane_min_points", 60);
-  this->declare_parameter("grasp_plane_max_rms_m", 0.02);
+  this->declare_parameter("grasp_plane_max_rms_m", 0.03);
   this->declare_parameter("grasp_height_above_table_m", 0.05);
   this->declare_parameter("grasp_object_radius_m", 0.03);
   this->declare_parameter("pregrasp_standoff_m", 0.12);
@@ -1518,8 +1518,8 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
   if (!est.valid) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 1000,
-      "[ESTIMATE] table-plane fit failed (need %d pts, rms<=%.3f)",
-      grasp_plane_min_points_, grasp_plane_max_rms_m_);
+      "[ESTIMATE] table-plane fit failed: got %zu pts (need %d) rms=%.4f (need<=%.3f)",
+      est.plane_points, grasp_plane_min_points_, est.plane_rms_m, grasp_plane_max_rms_m_);
     return false;
   }
 
