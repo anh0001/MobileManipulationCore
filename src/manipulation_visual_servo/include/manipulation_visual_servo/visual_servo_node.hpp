@@ -73,6 +73,7 @@ private:
 
   void image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg);
   void depth_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg);
+  void mask_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg);
   void camera_info_callback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr & msg);
   void joint_states_callback(const sensor_msgs::msg::JointState::ConstSharedPtr & msg);
   void detection_callback(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg);
@@ -153,6 +154,7 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rgb_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr mask_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detection_sub_;
@@ -212,6 +214,12 @@ private:
   bool depth_available_{false};
   bool depth_encoding_warned_{false};
 
+  // MobileSAM object mask (mono8, source/depth resolution) for the grasp estimate.
+  std::mutex mask_mutex_;
+  cv::Mat latest_mask_frame_;
+  rclcpp::Time last_mask_receive_time_;
+  bool mask_available_{false};
+
   std::mutex detection_mutex_;
   cv::Rect2d latest_detection_roi_;
   std::string latest_detection_class_;
@@ -253,6 +261,8 @@ private:
   std::string rgb_topic_;
   std::string camera_info_topic_;
   std::string depth_topic_;
+  std::string mask_topic_;
+  bool grasp_use_mask_{true};
   std::string detection_topic_;
   std::string output_topic_;
   std::string joint_states_topic_;
@@ -326,6 +336,7 @@ private:
   // Top-down: grasp this far below the detected object top (the narrow neck of
   // a bottle), since the gripper max opening is barely wider than the body.
   double neck_grasp_offset_m_{0.025};
+  double grasp_band_width_margin_m_{0.012};  // jaw clearance for the band width check
   double pregrasp_standoff_m_{0.12};
   double guarded_approach_speed_mps_{0.02};
   double guarded_reach_tolerance_m_{0.01};

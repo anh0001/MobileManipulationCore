@@ -96,6 +96,9 @@ struct TableGraspEstimate
   double footprint_depth_m{0.0};   // forward (camera +Z) distance to footprint
   double object_height_m{0.0};     // robust top height of the object above the table
   std::size_t object_points{0};    // object-surface points used for the footprint
+  double grasp_height_m{0.0};      // band-selected grasp height above the table (0 = unset)
+  double object_width_m{0.0};      // minor-axis width at the selected band (jaw span needed)
+  bool mask_used{false};           // true when the object footprint came from a SAM mask
   bool valid{false};
 };
 
@@ -104,6 +107,12 @@ struct TableGraspEstimate
 // excluding the bbox interior so the object's own bad depth is ignored), then
 // ray-cast the bbox bottom-center pixel onto that plane to get the object
 // footprint. `depth_image_mm` must be CV_16UC1 (millimeters, 0 = invalid).
+// `object_mask` (CV_8UC1, nonzero = object, same size as the depth image) when
+// non-empty replaces the depth-threshold object segmentation: the footprint XY,
+// height, and per-height-band widths are taken from the masked points, and a
+// graspable band (minor width <= gripper_max_opening_m, preferring mid-body) is
+// selected into `grasp_height_m`/`object_width_m`. Pass an empty Mat to use the
+// legacy depth-only path.
 TableGraspEstimate estimate_table_grasp(
   const cv::Mat & depth_image_mm,
   const cv::Rect2d & bbox,
@@ -111,6 +120,8 @@ TableGraspEstimate estimate_table_grasp(
   double annulus_margin_frac,
   double min_depth_m, double max_depth_m,
   std::size_t min_plane_points,
-  double max_plane_rms_m);
+  double max_plane_rms_m,
+  const cv::Mat & object_mask = cv::Mat(),
+  double gripper_max_opening_m = 0.07);
 
 }  // namespace manipulation_visual_servo

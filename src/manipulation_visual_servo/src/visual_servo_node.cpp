@@ -70,6 +70,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     "camera_info_topic",
     "/piper/wrist_camera/piper_d405/color/camera_info");
   this->declare_parameter("depth_topic", "/piper/wrist_camera/piper_d405/depth/image_rect_raw");
+  this->declare_parameter("mask_topic", "/manipulation/target_mask");
+  this->declare_parameter("grasp_use_mask", true);
   this->declare_parameter("detection_topic", "/manipulation/target_detections");
   this->declare_parameter("output_topic", "/manipulation/policy_output");
   this->declare_parameter("joint_states_topic", "/joint_states");
@@ -135,6 +137,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("grasp_height_above_table_m", 0.055);
   this->declare_parameter("grasp_object_radius_m", 0.03);
   this->declare_parameter("neck_grasp_offset_m", 0.025);  // neck grasp: aim this far below the measured object top
+  this->declare_parameter("grasp_band_width_margin_m", 0.012);  // jaw clearance for band width check
   this->declare_parameter("pregrasp_standoff_m", 0.12);
   this->declare_parameter("guarded_approach_speed_mps", 0.02);
   this->declare_parameter("guarded_reach_tolerance_m", 0.01);
@@ -167,6 +170,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   rgb_topic_ = this->get_parameter("rgb_topic").as_string();
   camera_info_topic_ = this->get_parameter("camera_info_topic").as_string();
   depth_topic_ = this->get_parameter("depth_topic").as_string();
+  mask_topic_ = this->get_parameter("mask_topic").as_string();
+  grasp_use_mask_ = this->get_parameter("grasp_use_mask").as_bool();
   detection_topic_ = this->get_parameter("detection_topic").as_string();
   output_topic_ = this->get_parameter("output_topic").as_string();
   joint_states_topic_ = this->get_parameter("joint_states_topic").as_string();
@@ -236,6 +241,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_height_above_table_m_ = this->get_parameter("grasp_height_above_table_m").as_double();
   grasp_object_radius_m_ = this->get_parameter("grasp_object_radius_m").as_double();
   neck_grasp_offset_m_ = this->get_parameter("neck_grasp_offset_m").as_double();
+  grasp_band_width_margin_m_ = this->get_parameter("grasp_band_width_margin_m").as_double();
   pregrasp_standoff_m_ = this->get_parameter("pregrasp_standoff_m").as_double();
   guarded_approach_speed_mps_ = this->get_parameter("guarded_approach_speed_mps").as_double();
   guarded_reach_tolerance_m_ = this->get_parameter("guarded_reach_tolerance_m").as_double();
@@ -313,6 +319,13 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
       depth_topic_, rclcpp::SensorDataQoS(),
       std::bind(&VisualServoNode::depth_callback, this, std::placeholders::_1),
+      sensor_sub_opts);
+  }
+
+  if (grasp_use_mask_) {
+    mask_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+      mask_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&VisualServoNode::mask_callback, this, std::placeholders::_1),
       sensor_sub_opts);
   }
 
@@ -439,6 +452,28 @@ void VisualServoNode::depth_callback(const sensor_msgs::msg::Image::ConstSharedP
     depth_available_ = true;
   }
   depth_encoding_warned_ = false;
+}
+
+void VisualServoNode::mask_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
+{
+  // MobileSAM target mask, mono8 (1 byte/pixel), already at the source/depth
+  // resolution. Decode directly without cv_bridge (single-channel raw bytes).
+  if ((msg->encoding != "mono8" && msg->encoding != "8UC1") ||
+    msg->height == 0 || msg->width == 0)
+  {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "[MASK] frame rejected: encoding=%s %ux%u", msg->encoding.c_str(),
+      msg->width, msg->height);
+    return;
+  }
+  const cv::Mat view(
+    static_cast<int>(msg->height), static_cast<int>(msg->width), CV_8UC1,
+    const_cast<uint8_t *>(msg->data.data()), msg->step);
+  std::lock_guard<std::mutex> lock(mask_mutex_);
+  latest_mask_frame_ = view.clone();
+  last_mask_receive_time_ = this->now();
+  mask_available_ = true;
 }
 
 void VisualServoNode::camera_info_callback(
@@ -1540,6 +1575,15 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     }
     depth = latest_depth_frame_;
   }
+  cv::Mat object_mask;
+  if (grasp_use_mask_) {
+    std::lock_guard<std::mutex> lock(mask_mutex_);
+    if (mask_available_ && !latest_mask_frame_.empty() &&
+      latest_mask_frame_.rows == depth.rows && latest_mask_frame_.cols == depth.cols)
+    {
+      object_mask = latest_mask_frame_;  // CV_8UC1, nonzero = object
+    }
+  }
   roi = tracked_roi_;
   if (roi.width <= 1.0 || roi.height <= 1.0 || !camera_info_received_) {
     return false;
@@ -1550,7 +1594,8 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     grasp_plane_annulus_frac_,
     grasp_plane_min_depth_m_, grasp_plane_max_depth_m_,
     static_cast<std::size_t>(std::max(1, grasp_plane_min_points_)),
-    grasp_plane_max_rms_m_);
+    grasp_plane_max_rms_m_,
+    object_mask, gripper_open_position_);
   if (!est.valid) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 1000,
@@ -1571,18 +1616,36 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     return false;
   }
 
-  // Grasp height: for a top-down grasp aim at the narrow neck — a fixed offset
-  // below the detected object top — because the gripper's max opening is barely
-  // wider than the body. Never below the body floor (grasp_height_above_table).
+  // Grasp height: prefer the mask-derived band selector (grasp_height_m) — it
+  // picks a height where the object's minor span fits the jaw, generalising a
+  // narrow bottle neck and a solid loaf. Fall back to the legacy neck offset
+  // (object_top - neck_offset) when no mask/band is available. Never below the
+  // body floor.
   double grasp_h = grasp_height_above_table_m_;
-  if (grasp_top_down_ && est.object_height_m > 0.0) {
+  bool used_band = false;
+  if (grasp_top_down_ && est.mask_used && est.grasp_height_m > 0.0) {
+    grasp_h = std::max(grasp_height_above_table_m_, est.grasp_height_m);
+    used_band = true;
+    // Reject if even the best band is wider than the jaw can open.
+    if (est.object_width_m > 0.0 &&
+      est.object_width_m > gripper_open_position_ - grasp_band_width_margin_m_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[ESTIMATE] object too wide to grasp: minor width=%.3f > jaw=%.3f-%.3f",
+        est.object_width_m, gripper_open_position_, grasp_band_width_margin_m_);
+      return false;
+    }
+  } else if (grasp_top_down_ && est.object_height_m > 0.0) {
     grasp_h = std::max(grasp_height_above_table_m_,
       est.object_height_m - neck_grasp_offset_m_);
   }
   RCLCPP_INFO(
     this->get_logger(),
-    "[ESTIMATE] object_height=%.3f object_pts=%zu grasp_height=%.3f",
-    est.object_height_m, est.object_points, grasp_h);
+    "[ESTIMATE] object_height=%.3f object_pts=%zu grasp_height=%.3f "
+    "band=%s width=%.3f mask=%s",
+    est.object_height_m, est.object_points, grasp_h,
+    used_band ? "yes" : "no", est.object_width_m, est.mask_used ? "yes" : "no");
 
   // Grasp point in the camera frame: footprint lifted off the table along the
   // table normal by the chosen grasp height.

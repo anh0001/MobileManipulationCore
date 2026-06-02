@@ -205,7 +205,9 @@ TableGraspEstimate estimate_table_grasp(
   double annulus_margin_frac,
   double min_depth_m, double max_depth_m,
   std::size_t min_plane_points,
-  double max_plane_rms_m)
+  double max_plane_rms_m,
+  const cv::Mat & object_mask,
+  double gripper_max_opening_m)
 {
   TableGraspEstimate result;
   if (depth_image_mm.empty() || depth_image_mm.type() != CV_16UC1 ||
@@ -357,17 +359,36 @@ TableGraspEstimate estimate_table_grasp(
   const double OBJ_MIN_H = 0.015;   // m above the table to count as object
   const double OBJ_MAX_H = 0.300;   // m above the table (ignore tall background)
   const std::size_t OBJ_MIN_PTS = 15;
-  const double shrink = 0.15;       // shrink bbox to avoid edge/background mixing
-  const int sx0 = clamp_value(static_cast<int>(std::floor(bbox.x + bbox.width * shrink)), 0, cols - 1);
-  const int sx1 = clamp_value(static_cast<int>(std::ceil(bbox.x + bbox.width * (1.0 - shrink))), 0, cols);
-  const int sy0 = clamp_value(static_cast<int>(std::floor(bbox.y + bbox.height * shrink)), 0, rows - 1);
-  const int sy1 = clamp_value(static_cast<int>(std::ceil(bbox.y + bbox.height * (1.0 - shrink))), 0, rows);
-  const int istep = std::max(1, (sx1 - sx0) / 60);
+
+  // Object segmentation: prefer a SAM mask (pixel-accurate, gates exactly the
+  // object) over the legacy shrunk-bbox heuristic. With a mask we scan the full
+  // bbox and keep only masked pixels; without one we shrink the bbox to avoid
+  // mixing in table/background edges.
+  const bool use_mask = !object_mask.empty() &&
+    object_mask.rows == depth_image_mm.rows && object_mask.cols == depth_image_mm.cols;
+  int sx0, sx1, sy0, sy1;
+  if (use_mask) {
+    sx0 = clamp_value(static_cast<int>(std::floor(bbox.x)), 0, cols - 1);
+    sx1 = clamp_value(static_cast<int>(std::ceil(bbox.x + bbox.width)), 0, cols);
+    sy0 = clamp_value(static_cast<int>(std::floor(bbox.y)), 0, rows - 1);
+    sy1 = clamp_value(static_cast<int>(std::ceil(bbox.y + bbox.height)), 0, rows);
+  } else {
+    const double shrink = 0.15;     // shrink bbox to avoid edge/background mixing
+    sx0 = clamp_value(static_cast<int>(std::floor(bbox.x + bbox.width * shrink)), 0, cols - 1);
+    sx1 = clamp_value(static_cast<int>(std::ceil(bbox.x + bbox.width * (1.0 - shrink))), 0, cols);
+    sy0 = clamp_value(static_cast<int>(std::floor(bbox.y + bbox.height * shrink)), 0, rows - 1);
+    sy1 = clamp_value(static_cast<int>(std::ceil(bbox.y + bbox.height * (1.0 - shrink))), 0, rows);
+  }
+  const int istep = std::max(1, (sx1 - sx0) / 80);
 
   std::vector<double> px_, py_, pz_, ph_;
   for (int v = sy0; v < sy1; v += istep) {
     const auto * row_ptr = depth_image_mm.ptr<uint16_t>(v);
+    const uint8_t * mask_row = use_mask ? object_mask.ptr<uint8_t>(v) : nullptr;
     for (int u = sx0; u < sx1; u += istep) {
+      if (use_mask && mask_row[u] == 0U) {
+        continue;
+      }
       const uint16_t d_mm = row_ptr[u];
       if (d_mm == 0U) {
         continue;
@@ -389,6 +410,66 @@ TableGraspEstimate estimate_table_grasp(
       ph_.push_back(h);
     }
   }
+  result.mask_used = use_mask;
+
+  // Graspable-band selector: bin object points by height; per band, PCA the
+  // on-plane XY and measure the minor-axis span (the jaw must close across it).
+  // Pick a band whose span fits the gripper, preferring mid-body height — this
+  // generalises a narrow bottle neck (upper band) and a solid loaf (mid band)
+  // without a per-object "neck offset". Writes grasp_height_m / object_width_m.
+  auto select_grasp_band = [&](double obj_h) {
+      const double band = 0.02;                       // 2 cm height bins
+      const double margin = 0.012;                    // jaw clearance
+      const double max_w = gripper_max_opening_m - margin;
+      double best_h = 0.0, best_w = 0.0;
+      double best_cost = 1e9;
+      for (double lo = OBJ_MIN_H; lo + band <= obj_h + 1e-6; lo += band) {
+        const double hi = lo + band;
+        std::vector<double> bx, by;
+        for (std::size_t i = 0; i < ph_.size(); ++i) {
+          if (ph_[i] >= lo && ph_[i] < hi) {bx.push_back(px_[i]); by.push_back(py_[i]);}
+        }
+        if (bx.size() < 8) {continue;}
+        double mx = 0, my = 0;
+        for (std::size_t i = 0; i < bx.size(); ++i) {mx += bx[i]; my += by[i];}
+        mx /= bx.size(); my /= by.size();
+        double a = 0, b = 0, c = 0;
+        for (std::size_t i = 0; i < bx.size(); ++i) {
+          const double dx = bx[i] - mx, dy = by[i] - my;
+          a += dx * dx; b += dx * dy; c += dy * dy;
+        }
+        const double nb = static_cast<double>(bx.size());
+        a /= nb; b /= nb; c /= nb;
+        // Minor eigenvector of the 2x2 covariance [[a,b],[b,c]].
+        const double tr = a + c, det = a * c - b * b;
+        const double disc = std::sqrt(std::max(0.0, tr * tr * 0.25 - det));
+        const double lmin = tr * 0.5 - disc;
+        cv::Vec2d minor((std::abs(b) > 1e-12) ? (lmin - c) : 1.0,
+          (std::abs(b) > 1e-12) ? b : 0.0);
+        const double mn = std::sqrt(minor[0] * minor[0] + minor[1] * minor[1]);
+        if (mn < 1e-9) {continue;}
+        minor *= (1.0 / mn);
+        // Span of the band along the minor axis (5..95 pct to reject stragglers).
+        std::vector<double> proj;
+        proj.reserve(bx.size());
+        for (std::size_t i = 0; i < bx.size(); ++i) {
+          proj.push_back((bx[i] - mx) * minor[0] + (by[i] - my) * minor[1]);
+        }
+        std::sort(proj.begin(), proj.end());
+        const double p05 = proj[static_cast<std::size_t>(proj.size() * 0.05)];
+        const double p95 = proj[static_cast<std::size_t>(proj.size() * 0.95)];
+        const double width = p95 - p05;
+        const double mid = 0.5 * obj_h;
+        const double band_h = 0.5 * (lo + hi);
+        // Cost: feasible bands ranked by closeness to mid-body; infeasible bands
+        // heavily penalised but still selectable (narrowest) as a last resort.
+        const double feas_pen = (width <= max_w) ? 0.0 : 100.0 * (width - max_w);
+        const double cost = feas_pen + std::abs(band_h - mid);
+        if (cost < best_cost) {best_cost = cost; best_h = band_h; best_w = width;}
+      }
+      result.grasp_height_m = best_h;
+      result.object_width_m = best_w;
+    };
 
   auto median = [](std::vector<double> & v) {
       std::sort(v.begin(), v.end());
@@ -409,15 +490,20 @@ TableGraspEstimate estimate_table_grasp(
     };
 
   if (px_.size() >= OBJ_MIN_PTS) {
-    const cv::Vec3d fp(median(px_), median(py_), median(pz_));
+    // median() sorts in place, so copy the footprint coords (keep px_/py_/ph_
+    // index-aligned for the band selector below).
+    std::vector<double> mx_ = px_, my_ = py_, mz_ = pz_;
+    const cv::Vec3d fp(median(mx_), median(my_), median(mz_));
     // Prefer the RGB-bbox top height; fall back to the 90th-percentile of the
     // object-point heights (depth) only if the bbox solve is out of range.
-    std::sort(ph_.begin(), ph_.end());
-    double top_h = ph_[static_cast<std::size_t>(ph_.size() * 0.9)];
+    std::vector<double> ph_sorted = ph_;
+    std::sort(ph_sorted.begin(), ph_sorted.end());
+    double top_h = ph_sorted[static_cast<std::size_t>(ph_sorted.size() * 0.9)];
     const double h_bbox = bbox_top_height(fp);
     if (h_bbox > OBJ_MIN_H && h_bbox < OBJ_MAX_H) {
       top_h = h_bbox;
     }
+    select_grasp_band(top_h);  // sets result.grasp_height_m / object_width_m
     result.footprint_cam = CartesianVector{fp[0], fp[1], fp[2]};
     result.up_cam = CartesianVector{normal[0], normal[1], normal[2]};
     result.plane_points = pts.size();
