@@ -72,6 +72,16 @@ D405). Calibrate it by demonstration:
 - **Do not cancel the gripper action goal on state change:** the PiPER releases
   its hold on cancel (opens then immediately closes; or drops on lift). Only
   cancel when aborting (LOST/IDLE); new goals preempt old ones.
+- **Arm-only moves close the gripper (driver bug, FIXED in the fork):** the PiPER
+  driver runs `GripperCtrl(joint_6)` on *every* command, and `joint_6` defaults to
+  0 when the command carries < 7 joints — so a 6-DOF arm trajectory force-closes
+  the gripper mid-approach (opens fully, then snaps shut ~1 s into the descent, so
+  the hand arrives closed and misses). Fixed in `piper_ros` fork (branch `ranger`,
+  c5ecaef): the FJT bridge now always publishes 7 joints, filling the gripper from
+  its current measured angle so the driver holds it. Verified: gripper holds 0.069
+  (full open) through the whole GUARDED_APPROACH, closes on the object, settles
+  nonzero through LIFT. There is no MMC-side workaround (the arm controller rejects
+  joint7 in arm goals), so this must stay fixed in the bridge.
 - **Camera serial pinning:** with a D435i + D405 both attached, pin the wrist
   cam by serial (`wrist_camera_serial`) or it can grab the D405's topic after a
   USB re-enumeration; color/depth resolutions must also match (auto-pick can put
@@ -113,9 +123,11 @@ It stops on 3 successes, or escalates a repeated code-level failure to a human.
 
 ## Status
 
-Verified live through the full sequence: look-down capture, accurate table-plane
-estimate (matches a teach demo within ~1 cm), MoveIt-planned approach without
-singularity stalls, gripper actuation and hold. End-to-end grasp success on a
-~7 cm bottle is still being tuned (gripper-to-object width margin); see the
-gotchas above. The `manipulation_adapter` continues to expose `moveit_servo`
-mode for the image-based servo path.
+Verified live end-to-end: look-down capture, accurate table-plane estimate
+(matches a teach demo within ~1 cm), MoveIt-planned approach without singularity
+stalls, gripper held fully open through the entire descent (after the `piper_ros`
+bridge fix above), close on the object, and lift with the object retained
+(joint7 settles nonzero). Calibrated hand-eye offset
+`grasp_offset = (-0.035, -0.018, 0.0)`, `grasp_height_above_table_m = 0.055`.
+The `manipulation_adapter` continues to expose `moveit_servo` mode for the
+image-based servo path.
