@@ -294,14 +294,20 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     rclcpp::CallbackGroupType::Reentrant);
   timer_cb_group_ = this->create_callback_group(
     rclcpp::CallbackGroupType::MutuallyExclusive);
+  rgb_cb_group_ = this->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive);
 
   rclcpp::SubscriptionOptions sensor_sub_opts;
   sensor_sub_opts.callback_group = sensor_cb_group_;
 
+  // RGB on its own group + a shallow queue (latest-frame semantics for servoing)
+  // so the high-rate joint_states/depth callbacks cannot starve it.
+  rclcpp::SubscriptionOptions rgb_sub_opts;
+  rgb_sub_opts.callback_group = rgb_cb_group_;
   rgb_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-    rgb_topic_, rclcpp::SensorDataQoS(),
+    rgb_topic_, rclcpp::SensorDataQoS().keep_last(2),
     std::bind(&VisualServoNode::image_callback, this, std::placeholders::_1),
-    sensor_sub_opts);
+    rgb_sub_opts);
 
   if (use_depth_) {
     depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
@@ -395,42 +401,16 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 
 void VisualServoNode::image_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
 {
-  try {
-    cv::Mat converted;
-    if (msg->encoding == sensor_msgs::image_encodings::BGR8) {
-      const cv::Mat view(
-        static_cast<int>(msg->height),
-        static_cast<int>(msg->width),
-        CV_8UC3,
-        const_cast<unsigned char *>(msg->data.data()),
-        static_cast<std::size_t>(msg->step));
-      converted = view.clone();
-    } else if (msg->encoding == sensor_msgs::image_encodings::RGB8) {
-      const cv::Mat view(
-        static_cast<int>(msg->height),
-        static_cast<int>(msg->width),
-        CV_8UC3,
-        const_cast<unsigned char *>(msg->data.data()),
-        static_cast<std::size_t>(msg->step));
-      cv::cvtColor(view, converted, cv::COLOR_RGB2BGR);
-    } else {
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(), *this->get_clock(), 2000,
-        "Unsupported image encoding: %s (expected bgr8/rgb8)", msg->encoding.c_str());
-      return;
-    }
-
-    std::lock_guard<std::mutex> lock(image_mutex_);
-    latest_frame_ = converted;
-    latest_frame_stamp_ = msg->header.stamp;
-    last_rgb_receive_time_ = this->now();
-    ++latest_frame_generation_;
-    frame_available_ = true;
-  } catch (const std::exception & e) {
-    RCLCPP_WARN_THROTTLE(
-      this->get_logger(), *this->get_clock(), 2000,
-      "Image conversion failed: %s", e.what());
-  }
+  // Keep this callback CHEAP: just stash the raw message and bump the
+  // generation. The cvtColor/clone happens lazily in fetch_latest_frame() at the
+  // 20 Hz control rate when a frame is actually consumed, so the 30 Hz image
+  // stream cannot back up and get its best-effort samples dropped under load.
+  std::lock_guard<std::mutex> lock(image_mutex_);
+  latest_image_msg_ = msg;
+  latest_frame_stamp_ = msg->header.stamp;
+  last_rgb_receive_time_ = this->now();
+  ++latest_frame_generation_;
+  frame_available_ = true;
 }
 
 void VisualServoNode::depth_callback(const sensor_msgs::msg::Image::ConstSharedPtr & msg)
@@ -635,19 +615,43 @@ void VisualServoNode::transition_to(ServoState new_state, const std::string & re
 
 bool VisualServoNode::fetch_latest_frame(cv::Mat & frame)
 {
-  std::lock_guard<std::mutex> lock(image_mutex_);
-  if (!frame_available_) {
+  // Take the latest raw message under the lock (cheap shared_ptr copy), then
+  // convert OUTSIDE the lock so the producer (image_callback) is never blocked.
+  sensor_msgs::msg::Image::ConstSharedPtr msg;
+  {
+    std::lock_guard<std::mutex> lock(image_mutex_);
+    if (!frame_available_ || latest_image_msg_ == nullptr) {
+      return false;
+    }
+    // Some camera drivers reuse header stamps, so use an internal generation
+    // counter instead of timestamp equality.
+    if (latest_frame_generation_ == last_processed_frame_generation_) {
+      return false;
+    }
+    msg = latest_image_msg_;
+    last_processed_frame_stamp_ = latest_frame_stamp_;
+    last_processed_frame_generation_ = latest_frame_generation_;
+  }
+  try {
+    const cv::Mat view(
+      static_cast<int>(msg->height), static_cast<int>(msg->width), CV_8UC3,
+      const_cast<unsigned char *>(msg->data.data()), static_cast<std::size_t>(msg->step));
+    if (msg->encoding == sensor_msgs::image_encodings::RGB8) {
+      cv::cvtColor(view, frame, cv::COLOR_RGB2BGR);
+    } else if (msg->encoding == sensor_msgs::image_encodings::BGR8) {
+      frame = view.clone();
+    } else {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "Unsupported image encoding: %s (expected bgr8/rgb8)", msg->encoding.c_str());
+      return false;
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 2000,
+      "Image conversion failed: %s", e.what());
     return false;
   }
-  // Skip if no new callback has arrived since the last processed frame.
-  // Some camera drivers reuse header stamps, so use an internal generation
-  // counter instead of timestamp equality.
-  if (latest_frame_generation_ == last_processed_frame_generation_) {
-    return false;
-  }
-  frame = latest_frame_.clone();
-  last_processed_frame_stamp_ = latest_frame_stamp_;
-  last_processed_frame_generation_ = latest_frame_generation_;
   return true;
 }
 

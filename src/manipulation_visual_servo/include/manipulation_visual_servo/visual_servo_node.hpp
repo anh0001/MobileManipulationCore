@@ -173,6 +173,11 @@ private:
   // one control tick executes at a time.
   rclcpp::CallbackGroup::SharedPtr sensor_cb_group_;
   rclcpp::CallbackGroup::SharedPtr timer_cb_group_;
+  // Dedicated group for the RGB image callback: kept cheap (just stash the raw
+  // message + bump the generation, no cvtColor) and isolated from the 200 Hz
+  // joint_states + depth callbacks so best-effort frames are not dropped under
+  // CPU load on the Jetson (ACQUIRE was stalling waiting for a fresh frame).
+  rclcpp::CallbackGroup::SharedPtr rgb_cb_group_;
 
   ServoState state_{ServoState::IDLE};
   rclcpp::Time state_entry_time_;
@@ -187,6 +192,7 @@ private:
   double cy_{0.0};
 
   std::mutex image_mutex_;
+  sensor_msgs::msg::Image::ConstSharedPtr latest_image_msg_;  // raw; converted lazily on consume
   cv::Mat latest_frame_;
   rclcpp::Time latest_frame_stamp_;
   rclcpp::Time last_rgb_receive_time_;
