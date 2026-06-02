@@ -46,28 +46,35 @@ TCP_FRAME = "piper_tcp"
 
 # ---- SAFE pose sweep: [j1..j6]. j3 fixed near -0.2 (away from lidar), small
 # deltas, wide ORIENTATION diversity via j1(yaw)/j5(pitch)/j6(roll). ----------
-POSES = [
-    [0.00, 1.20, -0.20, 0.00, -0.35, 0.00],
-    # wide rotation diversity: combine yaw(j1) + roll(j4,j6) + pitch(j5) +
-    # distance(j2), each pose a DISTINCT multi-axis rotation, j3 fixed (safe).
-    [0.00, 1.20, -0.20, 0.60, -0.35, 0.70],
-    [0.00, 1.20, -0.20, -0.60, -0.35, -0.70],
-    [0.30, 1.25, -0.20, 0.50, -0.20, 0.50],
-    [-0.30, 1.25, -0.20, -0.50, -0.20, -0.50],
-    [0.30, 1.15, -0.20, -0.40, -0.55, 0.40],
-    [-0.30, 1.15, -0.20, 0.40, -0.55, -0.40],
-    [0.20, 1.30, -0.20, 0.60, -0.10, -0.60],
-    [-0.20, 1.10, -0.20, -0.60, -0.65, 0.60],
-    [0.00, 1.25, -0.20, 0.30, -0.50, 0.70],
-    [0.00, 1.15, -0.20, -0.30, -0.20, -0.70],
-    [0.25, 1.20, -0.20, -0.55, -0.35, 0.20],
-    [-0.25, 1.20, -0.20, 0.55, -0.35, -0.20],
-    [0.15, 1.28, -0.20, 0.40, -0.25, 0.55],
-    [-0.15, 1.12, -0.20, -0.40, -0.55, -0.55],
-    [0.30, 1.22, -0.20, 0.20, -0.45, -0.30],
-    [-0.30, 1.18, -0.20, -0.20, -0.30, 0.30],
-    [0.00, 1.20, -0.20, 0.00, -0.35, 0.00],
+import json as _json
+
+# Start pose = the hand-guided calibration pose (camera looks well at the board).
+_cfg = os.path.join(os.path.dirname(__file__), "..", "config", "calibration_start_pose.json")
+START = _json.load(open(_cfg))["joint_positions"]
+
+# Bounded deltas around the start pose. Orientation diversity (what hand-eye
+# needs) comes from wrist rolls (j4,j6) + small pitch(j5)/yaw(j1). j2/j3 (the
+# arm posture) are held near-fixed so the arm never folds further toward the
+# lidar. Poses that lose the board are skipped automatically.
+DELTAS = [
+    [0.00, 0.00, 0.0, 0.00, 0.00, 0.00],
+    [0.00, 0.00, 0.0, 0.45, 0.00, 0.60],
+    [0.00, 0.00, 0.0, -0.45, 0.00, -0.60],
+    [0.20, 0.00, 0.0, 0.35, 0.25, 0.40],
+    [-0.20, 0.00, 0.0, -0.35, 0.25, -0.40],
+    [0.20, 0.05, 0.0, -0.30, -0.30, 0.50],
+    [-0.20, -0.05, 0.0, 0.30, -0.30, -0.50],
+    [0.00, 0.05, 0.0, 0.45, 0.30, -0.60],
+    [0.00, -0.05, 0.0, -0.45, -0.35, 0.60],
+    [0.15, 0.00, 0.0, 0.20, 0.35, 0.55],
+    [-0.15, 0.00, 0.0, -0.20, 0.35, -0.55],
+    [0.25, 0.00, 0.0, -0.50, 0.00, 0.20],
+    [-0.25, 0.00, 0.0, 0.50, 0.00, -0.20],
+    [0.10, 0.05, 0.0, 0.35, -0.25, 0.30],
+    [-0.10, -0.05, 0.0, -0.35, 0.30, -0.30],
+    [0.00, 0.00, 0.0, 0.00, 0.00, 0.00],
 ]
+POSES = [[round(s + d, 4) for s, d in zip(START, dl)] for dl in DELTAS]
 
 MOVE_SEC = 7            # slow moves
 SETTLE_SEC = 2.0
