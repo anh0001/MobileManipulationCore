@@ -84,6 +84,33 @@ D405). Calibrate it by demonstration:
   accumulate, load the Jetson, and starve the camera. Kill them by name between
   runs.
 
+## Autonomous tuning (`scripts/grasp_autotune.py`)
+
+A deterministic ROS 2 supervisor that closed-loop tunes the grasp without a human
+labelling each attempt. Per attempt it resets the arm to the capture pose, sets
+the tuning params on the running node via `ros2 param set` (the node re-reads
+`grasp_offset_{x,y,z}`, `grasp_height_above_table_m`, `neck_grasp_offset_m`,
+`grasp_enabled` in IDLE — no relaunch), gates one attempt with `grasp_enabled`,
+records an MCAP bag, then classifies the outcome and updates the params.
+
+Enablers in the node: `grasp_enabled` (IDLE gate), `grasp_auto_loop`
+(DONE→IDLE so the next enable re-grasps), and runtime re-read of the tuning
+params in IDLE.
+
+Outcome classifier (wrist cam + gripper joint7 only, no force sensor):
+- `gripper_did_not_open` — peak joint7 < open threshold during OPEN/approach.
+- `gripper_closed_early` — joint7 closed before/at the descent (the MoveIt /
+  controller-manager conflict; needs a code fix, the loop escalates it).
+- `success` — joint7 settles NONZERO + stable after lift AND the object is gone
+  from the table ROI.
+- `miss_empty` — empty close, object still on the table → coordinate-descent
+  nudge of `grasp_offset_x/y`.
+
+Run: bringup (D405 pinned) + local DINO + grasp pipeline up, then the VSCode task
+**"Run Grasp Autotune (autonomous)"** (or `python3 scripts/grasp_autotune.py`).
+Results stream to `~/grasp_autotune.jsonl`, bags to `~/grasp_autotune_bags/`.
+It stops on 3 successes, or escalates a repeated code-level failure to a human.
+
 ## Status
 
 Verified live through the full sequence: look-down capture, accurate table-plane

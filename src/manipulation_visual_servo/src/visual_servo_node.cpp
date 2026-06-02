@@ -124,6 +124,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // Look-then-move (table-plane) grasp parameters.
   this->declare_parameter("use_table_grasp", true);
   this->declare_parameter("grasp_top_down", true);
+  this->declare_parameter("grasp_enabled", true);
+  this->declare_parameter("grasp_auto_loop", false);
   this->declare_parameter("grasp_use_move_group", true);
   this->declare_parameter("grasp_plane_annulus_frac", 0.3);
   this->declare_parameter("grasp_plane_min_depth_m", 0.12);
@@ -223,6 +225,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
 
   use_table_grasp_ = this->get_parameter("use_table_grasp").as_bool();
   grasp_top_down_ = this->get_parameter("grasp_top_down").as_bool();
+  grasp_enabled_ = this->get_parameter("grasp_enabled").as_bool();
+  grasp_auto_loop_ = this->get_parameter("grasp_auto_loop").as_bool();
   grasp_use_move_group_ = this->get_parameter("grasp_use_move_group").as_bool();
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
   grasp_plane_min_depth_m_ = this->get_parameter("grasp_plane_min_depth_m").as_double();
@@ -1260,6 +1264,18 @@ void VisualServoNode::handle_idle()
     return;
   }
 
+  // Re-read runtime-tunable params so an external autotuner's `ros2 param set`
+  // takes effect on the next attempt without relaunching.
+  grasp_enabled_ = this->get_parameter("grasp_enabled").as_bool();
+  if (!grasp_enabled_) {
+    return;
+  }
+  grasp_offset_x_ = this->get_parameter("grasp_offset_x").as_double();
+  grasp_offset_y_ = this->get_parameter("grasp_offset_y").as_double();
+  grasp_offset_z_ = this->get_parameter("grasp_offset_z").as_double();
+  grasp_height_above_table_m_ = this->get_parameter("grasp_height_above_table_m").as_double();
+  neck_grasp_offset_m_ = this->get_parameter("neck_grasp_offset_m").as_double();
+
   std::lock_guard<std::mutex> lock(detection_mutex_);
   if (detection_available_) {
     transition_to(ServoState::ACQUIRE, "detection available");
@@ -2053,6 +2069,14 @@ void VisualServoNode::handle_lift()
 void VisualServoNode::handle_done()
 {
   publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_, false, false, 0.0);
+  // Autonomous tuning: after holding briefly in DONE, fall back to IDLE so the
+  // next grasp_enabled=true starts a fresh attempt (gated in handle_idle).
+  if (grasp_auto_loop_) {
+    const double elapsed = (this->now() - state_entry_time_).seconds();
+    if (elapsed >= std::max(0.5, grasp_settle_sec_)) {
+      transition_to(ServoState::IDLE, "auto-loop: ready for next attempt");
+    }
+  }
 }
 
 void VisualServoNode::handle_lost()

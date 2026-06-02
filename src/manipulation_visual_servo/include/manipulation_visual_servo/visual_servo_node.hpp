@@ -300,6 +300,11 @@ private:
   // Look-then-move (table-plane) grasp parameters.
   bool use_table_grasp_{true};
   bool grasp_top_down_{true};
+  // Gate for autonomous tuning: when false the IDLE state will not start a new
+  // grasp. An external supervisor sets it true after positioning the arm and
+  // updating tuning params, then false again after DONE.
+  bool grasp_enabled_{true};
+  bool grasp_auto_loop_{false};  // DONE -> IDLE so the next enable re-grasps
   // When true, skip the servo ALIGN leg and execute the approach as MoveIt
   // move_group planned moves (publish the full EEF delta so the adapter, in
   // move_group + delta mode, plans current+delta and picks a non-singular IK).

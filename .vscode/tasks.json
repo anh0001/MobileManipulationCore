@@ -562,6 +562,24 @@
       "options": {
         "cwd": "${workspaceFolder}"
       }
+    },
+    {
+      "label": "Run Grasp Autotune (autonomous)",
+      "type": "shell",
+      "command": "source install/setup.bash && source ${env:HOME}/codes/ranger-garden-assistant/install/setup.bash && PYTHONNOUSERSITE=1 python3 ${workspaceFolder}/scripts/grasp_autotune.py",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "new",
+        "showReuseMessage": false,
+        "clear": false,
+        "group": "visual-servo"
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
     }
   ],
   "inputs": [

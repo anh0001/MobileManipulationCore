@@ -1554,7 +1554,13 @@ private:
     goal.request.goal_constraints.push_back(buildPoseGoalConstraints(target));
     goal.request.start_state.is_diff = true;
 
-    goal.planning_options.plan_only = false;
+    // Plan only, then execute the planned ARM trajectory ourselves directly on
+    // the arm controller. MoveIt's own execution dispatches every controller
+    // whose joints appear in the executed RobotTrajectory; for the piper that
+    // includes piper_gripper_controller (it manages it), which slams the gripper
+    // shut to the start-state value during the arm move. Executing only joints
+    // 1-6 on /piper_arm_controller bypasses that entirely.
+    goal.planning_options.plan_only = true;
     goal.planning_options.look_around = false;
     goal.planning_options.replan = false;
     goal.planning_options.planning_scene_diff.is_diff = true;
@@ -1582,18 +1588,20 @@ private:
 
     send_goal_options.result_callback =
       [this](const auto & result) {
-        moveit_goal_active_.store(false);
         {
           std::lock_guard<std::mutex> lock(goal_mutex_);
           moveit_goal_handle_.reset();
         }
-        if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+        if (result.code != rclcpp_action::ResultCode::SUCCEEDED || !result.result) {
+          moveit_goal_active_.store(false);
           RCLCPP_WARN(
-            this->get_logger(), "[MOVEIT] goal failed with code %d",
+            this->get_logger(), "[MOVEIT] plan failed with code %d",
             static_cast<int>(result.code));
-        } else {
-          RCLCPP_INFO(this->get_logger(), "[MOVEIT] goal succeeded");
+          return;
         }
+        // Execute the planned trajectory, arm joints only (no gripper). Keeps
+        // moveit_goal_active_ true until the arm controller finishes.
+        executePlannedArmTrajectory(result.result->planned_trajectory.joint_trajectory);
       };
 
     RCLCPP_INFO(
@@ -1605,6 +1613,72 @@ private:
     moveit_goal_active_.store(true);
     move_group_client_->async_send_goal(goal, send_goal_options);
     return true;
+  }
+
+  // Execute a MoveIt-planned trajectory ourselves on the arm controller, with
+  // the gripper joint stripped out, so MoveIt's controller manager never
+  // dispatches the gripper controller (which would slam the gripper shut during
+  // an arm move). Holds moveit_goal_active_ until the arm controller finishes.
+  void executePlannedArmTrajectory(const trajectory_msgs::msg::JointTrajectory & planned)
+  {
+    if (!arm_client_) {
+      moveit_goal_active_.store(false);
+      return;
+    }
+    trajectory_msgs::msg::JointTrajectory traj;
+    std::vector<size_t> keep;
+    for (size_t i = 0; i < planned.joint_names.size(); ++i) {
+      if (planned.joint_names[i] == gripper_joint_name_) {
+        continue;  // never command the gripper as part of the arm move
+      }
+      keep.push_back(i);
+      traj.joint_names.push_back(planned.joint_names[i]);
+    }
+    if (traj.joint_names.empty() || planned.points.empty()) {
+      RCLCPP_WARN(this->get_logger(), "[MOVEIT] planned trajectory empty after filtering");
+      moveit_goal_active_.store(false);
+      return;
+    }
+    for (const auto & p : planned.points) {
+      trajectory_msgs::msg::JointTrajectoryPoint np;
+      np.time_from_start = p.time_from_start;
+      for (size_t idx : keep) {
+        if (idx < p.positions.size()) {np.positions.push_back(p.positions[idx]);}
+        if (idx < p.velocities.size()) {np.velocities.push_back(p.velocities[idx]);}
+        if (idx < p.accelerations.size()) {np.accelerations.push_back(p.accelerations[idx]);}
+      }
+      traj.points.push_back(np);
+    }
+
+    if (!arm_client_->wait_for_action_server(std::chrono::milliseconds(300))) {
+      RCLCPP_WARN(this->get_logger(), "[MOVEIT] arm controller unavailable for planned trajectory");
+      moveit_goal_active_.store(false);
+      return;
+    }
+    const std::size_t npoints = traj.points.size();
+    const std::size_t njoints = traj.joint_names.size();
+    control_msgs::action::FollowJointTrajectory::Goal goal;
+    goal.trajectory = traj;
+    auto opts =
+      rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SendGoalOptions();
+    opts.result_callback = [this, npoints](const auto & result) {
+        moveit_goal_active_.store(false);
+        if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+          RCLCPP_WARN(
+            this->get_logger(), "[MOVEIT] planned arm trajectory failed code %d",
+            static_cast<int>(result.code));
+        } else {
+          RCLCPP_INFO(
+            this->get_logger(), "[MOVEIT] planned arm trajectory executed (%zu pts, arm-only)",
+            npoints);
+        }
+      };
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[MOVEIT] executing planned arm trajectory: %zu joints, %zu points (gripper excluded)",
+      njoints, npoints);
+    moveit_goal_active_.store(true);
+    arm_client_->async_send_goal(goal, opts);
   }
 
   bool sendJointTrajectoryGoal(
