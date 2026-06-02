@@ -1,0 +1,26 @@
+{
+  "note": "hand-guided correct bread grasp pose",
+  "tcp_base": [
+    0.4581,
+    -0.111,
+    -0.1101
+  ],
+  "last_estimate": [
+    0.487,
+    -0.093,
+    -0.057
+  ],
+  "residual_grasp_offset": [
+    -0.0289,
+    -0.018,
+    -0.0531
+  ],
+  "joints": [
+    -0.2408,
+    2.3562,
+    -0.9651,
+    -0.0133,
+    -0.4808,
+    -0.1835
+  ]
+}

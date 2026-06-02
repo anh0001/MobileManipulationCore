@@ -144,9 +144,12 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("grasp_estimate_settle_cycles", 10);
   this->declare_parameter("grasp_estimate_max_attempts", 40);
   this->declare_parameter("grasp_max_reach_m", 0.55);
-  this->declare_parameter("grasp_offset_x", -0.035);  // calib: estimate overshoots forward
-  this->declare_parameter("grasp_offset_y", -0.018);  // calib from teach demo
-  this->declare_parameter("grasp_offset_z", 0.0);
+  // Residual gripper-fingertip-vs-piper_tcp offset (base frame, top-down), teach-tuned
+  // AFTER the eye-in-hand calibration (config/handeye_calibration.yaml) corrected the
+  // camera mount. XY verified on hardware; z=-0.015 lands the jaw on the object top.
+  this->declare_parameter("grasp_offset_x", -0.0289);
+  this->declare_parameter("grasp_offset_y", -0.018);
+  this->declare_parameter("grasp_offset_z", -0.015);
 
   this->declare_parameter("tracker_type", "mil");
   this->declare_parameter("klt_max_features", 200);
