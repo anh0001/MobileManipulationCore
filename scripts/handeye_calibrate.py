@@ -79,7 +79,7 @@ POSES = [[round(s + d, 4) for s, d in zip(START, dl)] for dl in DELTAS]
 
 MOVE_SEC = 7            # slow moves
 SETTLE_SEC = 2.0
-MIN_CORNERS = 20        # strict: reject partial-board views (PnP/depth poison)
+MIN_CORNERS = 12        # keep high-rotation (partial-board) views; RMS gate guards quality
 MAX_FIT_RMS = 0.004     # reject depth-Kabsch fits worse than 4 mm
 
 
@@ -129,7 +129,7 @@ def board_pose_depth(gray, depth, d, board, K):
             continue
         Q.append([(u - cx) * z / fx, (v - cy) * z / fy, z])
         P.append(objp[int(cid)])
-    if len(P) < 20:
+    if len(P) < 12:
         return None
     P = np.array(P); Q = np.array(Q)
     idx = np.arange(len(P))
@@ -138,8 +138,8 @@ def board_pose_depth(gray, depth, d, board, K):
         res = np.linalg.norm(P @ R.T + t - Q, axis=1)
         rms = float(np.sqrt((res[idx] ** 2).mean()))
         keep = np.where(res < max(3 * rms, 0.002))[0]
-        if len(keep) < 20 or len(keep) == len(idx):
-            idx = keep if len(keep) >= 20 else idx
+        if len(keep) < 12 or len(keep) == len(idx):
+            idx = keep if len(keep) >= 12 else idx
             break
         idx = keep
     R, t = _kabsch(P[idx], Q[idx])
