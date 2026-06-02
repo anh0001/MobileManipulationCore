@@ -150,20 +150,31 @@ PYTHONNOUSERSITE=1 ros2 launch manipulation_bringup core_launch.py \
     control_mode:=visual_servo arm_execution_mode:=move_group
 ```
 
-The grasp pipeline is `look-down capture → Grounding DINO detect → table-plane
-3D estimate → MoveIt plan to pre-grasp → guarded vertical descent → close →
-lift`. It fits a table plane from depth around the object and ray-casts /
-medians the object's own above-plane points (robust for translucent bottles
-where surface depth is unreliable), never servoing into the D405 < 8.8 cm blind
-zone. See [docs/visual_servo_grasp.md](docs/visual_servo_grasp.md) for the state
-machine, tunable params, and the teach-based calibration procedure.
+The grasp pipeline is `look-down capture → Grounding DINO detect → MobileSAM mask
+→ RANSAC table-plane + depth-based 3D estimate → graspable-band selection →
+MoveIt plan to pre-grasp → guarded vertical descent → close → lift`, never
+servoing into the D405 < 8.8 cm blind zone. Key pieces:
 
-**Local Grounding DINO Server on the Jetson (Docker):**
+- **MobileSAM mask** (box-prompted by the DINO detection) gives a pixel-accurate
+  object footprint instead of sparse depth points → stable grasp XY.
+- **RANSAC table-plane fit** locks onto the dominant table surface (robust to the
+  object base, shadows, and D405 depth spikes that break a least-squares fit).
+- **Graspable-band selector** picks the grasp *height* by object geometry — a
+  height band whose minor width fits the jaw — so it generalises a narrow bottle
+  neck and a solid loaf instead of a fixed neck offset.
+- A **driver-level fix** in the `piper_ros` fork keeps the gripper open through
+  the MoveIt approach (the stock driver force-closed it on any arm-only command).
+
+See [docs/visual_servo_grasp.md](docs/visual_servo_grasp.md) for the state
+machine, tunable params, and the teach/calibration procedure.
+
+**Local Grounding DINO + MobileSAM Server on the Jetson (Docker):**
 ```bash
-# Build the JetPack-6 image once (see deployment/docker/Dockerfile.grounding_dino):
+# Build the JetPack-6 image once (Grounding DINO + MobileSAM, see
+# deployment/docker/Dockerfile.grounding_dino):
 sudo docker build --network host -t grounding-dino:jp6 \
     -f deployment/docker/Dockerfile.grounding_dino deployment/docker
-# Run the detection server (host networking, GPU):
+# Run the detection+segmentation server (host networking, GPU):
 sudo docker run -d --name dino_server --restart unless-stopped \
     --runtime nvidia --network host --ipc host --dns 8.8.8.8 \
     -v $PWD:/workspace/app -v $HOME/.cache/huggingface:/root/.cache/huggingface \
@@ -184,11 +195,23 @@ python3 -m manipulation_detection.detection_server --host 0.0.0.0 --port 30543
 > - **Pin the wrist camera by serial** — the bringup auto-picks the first RealSense, so a D435i can steal the wrist topic. Launch the robot stack with `wrist_camera_serial:=<D405 serial>` (or set it as the default).
 > - **Imitation/teach button latches `ctrl_mode=2`** — the arm then ignores position commands. Power-cycle the arm to reset to `ctrl_mode=1`; the SDK `ModeCtrl`/`MotionCtrl_2` do not reliably override it on a shared CAN bus.
 > - **Never disable the arm while it is holding a pose** — the PiPER has no brakes and drops. Stop motion by killing the command source, not by disabling motors.
+> - **Overhead/vertical wrist poses can hit the lidar** — keep the arm reaching *forward*; the calibration uses IK collision-checked forward poses.
 
-**Visual Servo Node Only (Debug/Bench):**
+**Hand-eye calibration (wrist D405 → arm):**
 ```bash
-ros2 launch manipulation_visual_servo visual_servo_debug.launch.py
+# Aim the wrist cam at a fixed ChArUco board (10x7, 25 mm squares, DICT_4X4_50),
+# then run the look-at orbit calibration. It orbits the camera around the board
+# (collision-checked IK), reads the board pose from DEPTH (no PnP ambiguity), and
+# solves cv2.calibrateHandEye -> config/handeye_calibration.yaml.
+PYTHONNOUSERSITE=1 python3 scripts/handeye_orbit_calibrate.py
 ```
+Wrist-spin sweeps fail (roll-only rotation is ill-conditioned); the orbit gives
+the ≥30°/2-axis rotation diversity `calibrateHandEye` needs. See
+[docs/handeye_calibration.md](docs/handeye_calibration.md).
+
+**VSCode Tasks (easiest):** `Terminal → Run Task…` exposes the whole workflow,
+numbered in run order — `1. Build`, `2. Server (DINO+MobileSAM)`, `3. Arm`,
+`4. Grasp`, `5. Calibrate`, `6. Debug`. See [.vscode/tasks.json](.vscode/tasks.json).
 
 **Split Deployment (Jetson + Remote Server):**
 
@@ -249,6 +272,8 @@ MobileManipulationCore/
 - [Design Document](docs/design.md) - Detailed architecture and design decisions
 - [Usage Guide](docs/usage.md) - How to run, configure, and extend the stack
 - [API Reference](docs/api_reference.md) - ROS interfaces (topics/services/actions)
+- [Visual-Servo Grasp](docs/visual_servo_grasp.md) - Look-then-move grasp: state machine, MobileSAM mask, band selector, tuning
+- [Hand-eye Calibration](docs/handeye_calibration.md) - Wrist D405 → arm calibration (look-at orbit + depth-Kabsch)
 - [Grounding DINO Remote Guide](docs/grounding_dino_remote.md) - Remote detector setup, contracts, and tuning
 
 ## ROS 2 Interface
