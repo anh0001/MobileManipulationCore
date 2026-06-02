@@ -31,6 +31,17 @@ RUN python3 -m pip install --no-cache-dir --index-url https://pypi.org/simple \
     pillow \
     requests
 
+# MobileSAM (box-prompted segmentation masks for the grasp estimate). TinyViT
+# encoder is light enough for the Orin and only runs at grasp time. The checkpoint
+# (~40 MB) is baked in at the default path the detection server looks for.
+RUN python3 -m pip install --no-cache-dir --index-url https://pypi.org/simple \
+    timm \
+    "git+https://github.com/ChaoningZhang/MobileSAM.git"
+RUN mkdir -p /weights && \
+    curl -fSL -o /weights/mobile_sam.pt \
+    https://raw.githubusercontent.com/ChaoningZhang/MobileSAM/master/weights/mobile_sam.pt
+
 WORKDIR /workspace/app
 ENV HF_HOME=/root/.cache/huggingface
+ENV MOBILE_SAM_CHECKPOINT=/weights/mobile_sam.pt
 EXPOSE 30543

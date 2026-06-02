@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <random>
 #include <vector>
 
 #include <sensor_msgs/image_encodings.hpp>
@@ -299,36 +300,48 @@ TableGraspEstimate estimate_table_grasp(
       return true;
     };
 
-  // Robust refit: a plain least-squares plane is dragged by outliers (the
-  // object base, its shadow, or D405 depth spikes), inflating the RMS and
-  // shifting the plane by centimetres -> the grasp closes above the object.
-  // So fit, drop points whose |residual| > 2.5*RMS, and refit (a few passes).
+  // Robust plane via RANSAC. The annulus around a detection bbox can contain a
+  // SECOND surface — the table edge, the floor beyond it, or a neighbouring
+  // object — plus D405 depth spikes. A least-squares or trimmed fit averages
+  // those in (RMS ~0.02 m, normal tilted), which throws the grasp height off by
+  // centimetres. RANSAC instead locks onto the largest coplanar consensus (the
+  // table), then least-squares refits on just those inliers.
   cv::Point3d centroid;
   cv::Vec3d normal;
   double rms = 0.0;
-  std::vector<cv::Point3d> inliers = pts;
-  for (int iter = 0; iter < 3; ++iter) {
-    if (!fit_plane(inliers, centroid, normal, rms)) {
+  {
+    const double inlier_thresh = 0.006;  // m — table flatness tolerance
+    std::mt19937 rng(20240601u);         // fixed seed: deterministic estimate
+    std::uniform_int_distribution<std::size_t> pick(0, pts.size() - 1);
+    std::vector<cv::Point3d> best;
+    for (int iter = 0; iter < 150; ++iter) {
+      const cv::Point3d & a = pts[pick(rng)];
+      const cv::Point3d & b = pts[pick(rng)];
+      const cv::Point3d & c = pts[pick(rng)];
+      cv::Vec3d ab(b.x - a.x, b.y - a.y, b.z - a.z);
+      cv::Vec3d ac(c.x - a.x, c.y - a.y, c.z - a.z);
+      cv::Vec3d nrm = ab.cross(ac);
+      const double nn = std::sqrt(nrm.dot(nrm));
+      if (nn < 1e-9) {continue;}
+      nrm *= (1.0 / nn);
+      std::vector<cv::Point3d> inl;
+      inl.reserve(pts.size());
+      for (const auto & q : pts) {
+        const double r = std::fabs(
+          nrm[0] * (q.x - a.x) + nrm[1] * (q.y - a.y) + nrm[2] * (q.z - a.z));
+        if (r <= inlier_thresh) {inl.push_back(q);}
+      }
+      if (inl.size() > best.size()) {best.swap(inl);}
+    }
+    result.plane_points = best.size();  // report inlier count for diagnostics
+    if (best.size() < min_plane_points) {
       return result;
     }
-    if (rms < 1e-4) {break;}
-    const double thresh = 2.5 * rms;
-    std::vector<cv::Point3d> kept;
-    kept.reserve(inliers.size());
-    for (const auto & q : inliers) {
-      const double r = std::fabs(
-        normal[0] * (q.x - centroid.x) + normal[1] * (q.y - centroid.y) +
-        normal[2] * (q.z - centroid.z));
-      if (r <= thresh) {kept.push_back(q);}
+    if (!fit_plane(best, centroid, normal, rms)) {
+      return result;
     }
-    // Stop if nothing trimmed or trimming would drop below the point floor.
-    if (kept.size() == inliers.size() || kept.size() < min_plane_points) {
-      break;
-    }
-    inliers.swap(kept);
   }
 
-  result.plane_points = inliers.size();  // report inlier count for diagnostics
   result.plane_rms_m = rms;  // report for diagnostics even on failure
   if (rms > max_plane_rms_m) {
     return result;
@@ -382,12 +395,29 @@ TableGraspEstimate estimate_table_grasp(
       return v[v.size() / 2];
     };
 
+  // Object top height from the RGB detection bbox top edge: the true top sits
+  // directly above the footprint along the table normal, at the height whose
+  // projection lands on the bbox top row. Solve
+  //   (bbox.y - cy)/fy = (Yf + ny*H) / (Zf + nz*H)   for H.
+  // RGB sees the whole object, so this works even when the upper body is
+  // translucent and returns no depth (where the depth-based height fails).
+  auto bbox_top_height = [&](const cv::Vec3d & fp_cam) -> double {
+      const double k = (bbox.y - cy) / fy;
+      const double denom_h = k * normal[2] - normal[1];
+      if (std::abs(denom_h) < 1e-6) {return -1.0;}
+      return (fp_cam[1] - k * fp_cam[2]) / denom_h;
+    };
+
   if (px_.size() >= OBJ_MIN_PTS) {
     const cv::Vec3d fp(median(px_), median(py_), median(pz_));
-    // Robust top of the object: 90th percentile of the object-point heights
-    // (avoids a single noisy spike while capturing the real top/cap height).
+    // Prefer the RGB-bbox top height; fall back to the 90th-percentile of the
+    // object-point heights (depth) only if the bbox solve is out of range.
     std::sort(ph_.begin(), ph_.end());
-    const double top_h = ph_[static_cast<std::size_t>(ph_.size() * 0.9)];
+    double top_h = ph_[static_cast<std::size_t>(ph_.size() * 0.9)];
+    const double h_bbox = bbox_top_height(fp);
+    if (h_bbox > OBJ_MIN_H && h_bbox < OBJ_MAX_H) {
+      top_h = h_bbox;
+    }
     result.footprint_cam = CartesianVector{fp[0], fp[1], fp[2]};
     result.up_cam = CartesianVector{normal[0], normal[1], normal[2]};
     result.plane_points = pts.size();
@@ -413,11 +443,16 @@ TableGraspEstimate estimate_table_grasp(
     return result;
   }
 
-  result.footprint_cam = CartesianVector{dir[0] * t, dir[1] * t, dir[2] * t};
+  const cv::Vec3d fp_ray(dir[0] * t, dir[1] * t, dir[2] * t);
+  const double h_bbox_ray = bbox_top_height(fp_ray);
+  result.footprint_cam = CartesianVector{fp_ray[0], fp_ray[1], fp_ray[2]};
   result.up_cam = CartesianVector{normal[0], normal[1], normal[2]};
   result.plane_points = pts.size();
   result.plane_rms_m = rms;
-  result.footprint_depth_m = dir[2] * t;
+  result.footprint_depth_m = fp_ray[2];
+  result.object_height_m =
+    (h_bbox_ray > OBJ_MIN_H && h_bbox_ray < OBJ_MAX_H) ? h_bbox_ray : 0.0;
+  result.object_points = 0;
   result.valid = true;
   return result;
 }

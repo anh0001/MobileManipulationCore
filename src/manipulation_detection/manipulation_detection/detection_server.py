@@ -30,21 +30,32 @@ from http.server import ThreadingHTTPServer
 from typing import Any, Dict, List, Tuple
 
 try:  # Optional runtime dependencies for remote detector host.
+    import numpy as np
     import torch
     from PIL import Image
     from transformers import AutoModelForZeroShotObjectDetection
     from transformers import AutoProcessor
 except ImportError:  # pragma: no cover - optional dependency
+    np = None
     torch = None
     Image = None
     AutoModelForZeroShotObjectDetection = None
     AutoProcessor = None
+
+try:  # Optional MobileSAM for box-prompted segmentation masks.
+    from mobile_sam import sam_model_registry as _sam_registry
+    from mobile_sam import SamPredictor as _SamPredictor
+except ImportError:  # pragma: no cover - optional dependency
+    _sam_registry = None
+    _SamPredictor = None
 
 
 _DETECTOR_LOCK = threading.Lock()
 _DETECTOR_MODEL = None
 _DETECTOR_PROCESSOR = None
 _DETECTOR_DEVICE = None
+_SEGMENTER_LOCK = threading.Lock()
+_SEGMENTER = None
 _CLIENT_DISCONNECT_ERRNOS = {
     errno.EPIPE,
     errno.ECONNRESET,
@@ -160,6 +171,60 @@ def _load_detector():
         return _DETECTOR_MODEL, _DETECTOR_PROCESSOR, _DETECTOR_DEVICE
 
 
+def _load_segmenter():
+    """Lazily load MobileSAM (box-prompted segmentation). None if unavailable."""
+    global _SEGMENTER
+    if _SEGMENTER is not None:
+        return _SEGMENTER
+    if _sam_registry is None or _SamPredictor is None or torch is None:
+        return None
+    with _SEGMENTER_LOCK:
+        if _SEGMENTER is not None:
+            return _SEGMENTER
+        ckpt = os.getenv("MOBILE_SAM_CHECKPOINT", "/weights/mobile_sam.pt")
+        if not os.path.exists(ckpt):
+            logging.warning("MobileSAM checkpoint not found at %s; masks disabled", ckpt)
+            return None
+        device = os.getenv("GROUNDING_DINO_DEVICE") or (
+            "cuda" if torch.cuda.is_available() else "cpu")
+        sam = _sam_registry["vit_t"](checkpoint=ckpt)
+        sam.to(device)
+        sam.eval()
+        _SEGMENTER = _SamPredictor(sam)
+        logging.info("Loaded MobileSAM (vit_t) on %s", device)
+        return _SEGMENTER
+
+
+def _encode_mask_png(mask) -> str:
+    """Encode a HxW boolean/uint8 mask as a base64 PNG (mode L, 255=object)."""
+    arr = (np.asarray(mask).astype("uint8")) * 255
+    img = Image.fromarray(arr, mode="L")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _segment_detections(image, detections: List[Dict[str, Any]]) -> None:
+    """Run MobileSAM per detection box; attach a base64 PNG mask in-place."""
+    predictor = _load_segmenter()
+    if predictor is None or not detections:
+        return
+    image_np = np.asarray(image)  # HxWx3 RGB uint8
+    with _SEGMENTER_LOCK:
+        predictor.set_image(image_np)
+        for det in detections:
+            x1 = det["cx"] - det["w"] * 0.5
+            y1 = det["cy"] - det["h"] * 0.5
+            x2 = det["cx"] + det["w"] * 0.5
+            y2 = det["cy"] + det["h"] * 0.5
+            box = np.array([x1, y1, x2, y2], dtype="float32")
+            with torch.inference_mode():
+                masks, scores, _ = predictor.predict(
+                    box=box, multimask_output=False)
+            det["mask_png"] = _encode_mask_png(masks[0])
+            det["mask_score"] = float(scores[0])
+
+
 def _normalize_detections(
     boxes,
     scores,
@@ -222,11 +287,19 @@ def run_detection(request: Dict[str, Any]) -> Dict[str, Any]:
     labels = raw.get("labels", [])
     detections = _normalize_detections(boxes, scores, labels, max_detections=max_detections)
 
+    if request.get("return_masks") and detections:
+        try:
+            _segment_detections(image, detections)
+        except Exception:  # pragma: no cover - masks are best-effort
+            logging.exception("MobileSAM segmentation failed; returning boxes only")
+
     return {
         "detections": detections,
         "inference_ms": float(inference_ms),
         "prompt": prompt,
         "num_detections": len(detections),
+        "image_height": int(image.size[1]),
+        "image_width": int(image.size[0]),
     }
 
 

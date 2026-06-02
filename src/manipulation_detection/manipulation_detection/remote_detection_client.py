@@ -21,6 +21,7 @@ and republishes results as `vision_msgs/msg/Detection2DArray`.
 """
 
 import base64
+import base64
 import json
 import math
 import threading
@@ -28,6 +29,11 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import error as urlerror
 from urllib import request as urlrequest
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - optional dependency
+    np = None
 
 import rclpy
 from cv_bridge import CvBridge
@@ -209,6 +215,8 @@ class RemoteDetectionClientNode(Node):
         self.declare_parameter("min_score", 0.35)
         self.declare_parameter("max_detections", 5)
         self.declare_parameter("metrics_log_interval_sec", 5.0)
+        self.declare_parameter("request_masks", True)
+        self.declare_parameter("mask_topic", "/manipulation/target_mask")
 
         self.image_topic = str(self.get_parameter("image_topic").value)
         self.detection_topic = str(self.get_parameter("detection_topic").value)
@@ -230,6 +238,9 @@ class RemoteDetectionClientNode(Node):
         self.text_threshold = _safe_float(self.get_parameter("text_threshold").value, 0.25)
         self.min_score = _safe_float(self.get_parameter("min_score").value, 0.35)
         self.max_detections = max(1, int(self.get_parameter("max_detections").value))
+        self.request_masks = bool(self.get_parameter("request_masks").value) and (
+            np is not None and cv2 is not None)
+        self.mask_topic = str(self.get_parameter("mask_topic").value)
         self.metrics_log_interval_sec = max(
             1.0,
             float(self.get_parameter("metrics_log_interval_sec").value),
@@ -272,6 +283,7 @@ class RemoteDetectionClientNode(Node):
             10,
         )
         self.detection_pub = self.create_publisher(Detection2DArray, self.detection_topic, 10)
+        self.mask_pub = self.create_publisher(Image, self.mask_topic, 1)
 
         self.request_timer = self.create_timer(1.0 / self.request_rate_hz, self.request_timer_callback)
         self.metrics_timer = self.create_timer(
@@ -303,6 +315,25 @@ class RemoteDetectionClientNode(Node):
             self.get_logger().info(f"Updated detection prompt: '{self.current_prompt}'")
         else:
             self.get_logger().warn("Detection prompt cleared. Requests will pause until prompt is set.")
+
+    def _publish_target_mask(self, mask_png, header, width: int, height: int) -> None:
+        """Decode a base64-PNG mask, resize to the source/depth resolution, publish mono8."""
+        if not mask_png or np is None or cv2 is None:
+            return
+        try:
+            raw = base64.b64decode(mask_png)
+            arr = np.frombuffer(raw, dtype=np.uint8)
+            mask = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)  # detector-resolution mask
+            if mask is None:
+                return
+            if mask.shape[1] != width or mask.shape[0] != height:
+                mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+            mask = (mask > 127).astype(np.uint8) * 255
+            mask_msg = self.bridge.cv2_to_imgmsg(mask, encoding="mono8")
+            mask_msg.header = header
+            self.mask_pub.publish(mask_msg)
+        except Exception as exc:  # pragma: no cover - mask is best-effort
+            self.get_logger().warn(f"Failed to publish target mask: {exc}")
 
     def request_timer_callback(self):
         if cv2 is None:
@@ -360,6 +391,7 @@ class RemoteDetectionClientNode(Node):
                 "box_threshold": self.box_threshold,
                 "text_threshold": self.text_threshold,
                 "max_detections": self.max_detections,
+                "return_masks": self.request_masks,
             }
 
             response = None
@@ -411,6 +443,16 @@ class RemoteDetectionClientNode(Node):
             self.total_published_messages += 1
             self.total_published_detections += len(detections_msg.detections)
             self.total_latency_sec += max(0.0, time.monotonic() - started)
+
+            # Publish the top detection's MobileSAM mask (aligned to the source
+            # image / depth resolution) for the grasp estimate.
+            if self.request_masks and detections:
+                self._publish_target_mask(
+                    detections[0].get("mask_png"),
+                    image_msg.header,
+                    source_width,
+                    source_height,
+                )
         except Exception as exc:
             self.total_failures += 1
             self.get_logger().warn(f"Remote detection worker error: {exc}")
