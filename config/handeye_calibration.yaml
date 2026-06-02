@@ -1,0 +1,16 @@
+# Eye-in-hand calibration: PiPER piper_tcp -> wrist D405 camera optical frame.
+# scripts/handeye_calibrate.py (cv2.calibrateHandEye), ChArUco 10x7 sq=0.025 mk=0.018 DICT_4X4_50.
+# samples: 15  translation spread across solvers: 41.8 mm
+# STATUS: NOT CONVERGED - do NOT apply; grazing 52deg view (vertical hits lidar) makes PnP noisy. Needs a head-on board view.
+handeye_tcp_to_camera:
+  method: PARK
+  converged: false
+  spread_mm: 41.81
+  samples: 15
+  translation_xyz_m: [-0.06917, 0.07283, -0.25474]
+  rotation_rpy_rad: [-2.66042, -0.23030, 0.67768]
+  rotation_quat_xyzw: [0.000000, 0.000000, 0.000000, 1.000000]
+  all_methods:
+    TSAI: {xyz: [-0.01579, 0.00669, -0.23328], rpy: [-0.42495, -0.31189, 0.21537]}
+    PARK: {xyz: [-0.06917, 0.07283, -0.25474], rpy: [-2.66042, -0.23030, 0.67768]}
+    HORAUD: {xyz: [-0.06314, 0.07891, -0.25595], rpy: [-2.72241, -0.15674, 0.61527]}
