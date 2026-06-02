@@ -2071,6 +2071,7 @@ void VisualServoNode::handle_done()
   publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_, false, false, 0.0);
   // Autonomous tuning: after holding briefly in DONE, fall back to IDLE so the
   // next grasp_enabled=true starts a fresh attempt (gated in handle_idle).
+  grasp_auto_loop_ = this->get_parameter("grasp_auto_loop").as_bool();
   if (grasp_auto_loop_) {
     const double elapsed = (this->now() - state_entry_time_).seconds();
     if (elapsed >= std::max(0.5, grasp_settle_sec_)) {

@@ -46,6 +46,8 @@ from std_msgs.msg import String
 from vision_msgs.msg import Detection2DArray
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.msg import Parameter as ParamMsg, ParameterValue, ParameterType
 
 NODE = "/visual_servo_node"
 ARM_FJT = "/piper_arm_controller/follow_joint_trajectory"
@@ -66,14 +68,21 @@ PARAMS = {
 
 BAG_DIR = os.path.expanduser("~/grasp_autotune_bags")
 RESULT_LOG = os.path.expanduser("~/grasp_autotune.jsonl")
+# Light topic set — recording the raw color/depth image streams loads the Jetson
+# enough to starve the visual_servo RGB callback (ACQUIRE then times out). These
+# are sufficient for the joint7/state/detection classifier; set RECORD_IMAGES=1
+# to add the heavy image topics for offline debugging on a less-loaded machine.
 RECORD_TOPICS = [
     "/piper/joint_states", "/arm_status", "/visual_servo/state",
     "/manipulation/target_detections",
-    "/piper/wrist_camera/piper_d405/color/image_raw",
-    "/piper/wrist_camera/piper_d405/depth/image_rect_raw",
     "/piper/wrist_camera/piper_d405/color/camera_info",
     "/tf", "/tf_static", "/rosout",
 ]
+if os.environ.get("RECORD_IMAGES") == "1":
+    RECORD_TOPICS += [
+        "/piper/wrist_camera/piper_d405/color/image_raw",
+        "/piper/wrist_camera/piper_d405/depth/image_rect_raw",
+    ]
 SUCCESS_TARGET = 3        # consecutive successes to declare done
 ATTEMPT_TIMEOUT = 60.0    # s, abort an attempt that never reaches DONE
 MAX_ATTEMPTS = 40
@@ -113,6 +122,7 @@ class AutoTuner(Node):
         except Exception:
             self.get_logger().warn("piper_msgs PiperStatusMsg unavailable; err_code abort disabled")
         self.arm = ActionClient(self, FollowJointTrajectory, ARM_FJT)
+        self.param_cli = self.create_client(SetParameters, NODE + "/set_parameters")
         os.makedirs(BAG_DIR, exist_ok=True)
 
     # --- callbacks ---
@@ -147,10 +157,28 @@ class AutoTuner(Node):
 
     # --- robot control ---
     def set_param(self, name, value):
-        t = "double" if isinstance(value, float) else ("bool" if isinstance(value, bool) else "string")
-        v = str(value).lower() if isinstance(value, bool) else str(value)
-        subprocess.run(["ros2", "param", "set", NODE, name, v],
-                       capture_output=True, text=True, timeout=10)
+        # Use the SetParameters service (the `ros2 param set` CLI mangles negative
+        # numeric values, treating the leading '-' as an option).
+        if not self.param_cli.wait_for_service(timeout_sec=3.0):
+            self.get_logger().warn(f"set_parameters service unavailable for {name}")
+            return False
+        pv = ParameterValue()
+        if isinstance(value, bool):
+            pv.type = ParameterType.PARAMETER_BOOL
+            pv.bool_value = value
+        elif isinstance(value, float):
+            pv.type = ParameterType.PARAMETER_DOUBLE
+            pv.double_value = float(value)
+        elif isinstance(value, int):
+            pv.type = ParameterType.PARAMETER_INTEGER
+            pv.integer_value = value
+        else:
+            pv.type = ParameterType.PARAMETER_STRING
+            pv.string_value = str(value)
+        req = SetParameters.Request(parameters=[ParamMsg(name=name, value=pv)])
+        fut = self.param_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=5.0)
+        return fut.result() is not None
 
     def move_to_capture(self):
         if not self.arm.wait_for_server(timeout_sec=5.0):
@@ -204,13 +232,18 @@ class AutoTuner(Node):
         self.state_hist = []
         self.j7_hist = []
         self.set_param("grasp_enabled", True)
-        # 3. observe until DONE / LOST-cycle-end / timeout
+        # 3. observe a FRESH grasp cycle: wait for the grasp to actually start
+        # (OPEN/approach/close), then for DONE. A stale "DONE" from a prior cycle
+        # must not be mistaken for this attempt's completion.
         t0 = time.time()
         reached_done = False
+        saw_grasp = False
+        active = {"OPEN_GRIPPER", "GUARDED_APPROACH", "APPROACH_DEPTH", "CLOSE_GRIPPER", "LIFT"}
         while time.time() - t0 < ATTEMPT_TIMEOUT and rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.05)
-            if self.state == "DONE":
-                # let it settle/inspect, then capture final
+            if self.state in active:
+                saw_grasp = True
+            if saw_grasp and self.state == "DONE":
                 self.spin_for(1.5)
                 reached_done = True
                 break
@@ -221,10 +254,12 @@ class AutoTuner(Node):
         # 4. fill timeline + classify
         a.states = [(round(t - t0, 2), s) for (t, s) in self.state_hist]
         a.j7 = [(round(t - t0, 2), round(v, 4)) for (t, v) in self.j7_hist if t >= t0]
-        a.outcome, a.j7_peak, a.j7_final, a.note = self.classify(a, reached_done)
+        a.outcome, a.j7_peak, a.j7_final, a.note = self.classify(a, reached_done, saw_grasp)
         return a
 
-    def classify(self, a, reached_done):
+    def classify(self, a, reached_done, saw_grasp=True):
+        if not saw_grasp:
+            return "no_grasp_started", 0.0, 0.0, "node never entered the grasp sequence (detection/gate?)"
         j7 = [v for _, v in a.j7]
         peak = max(j7) if j7 else 0.0
         # state phase windows
@@ -319,7 +354,8 @@ def main():
             # escalate on repeated code-level failure
             recent = history[-ESCALATE_REPEAT:]
             if len(recent) >= ESCALATE_REPEAT and len(set(recent)) == 1 and \
-               recent[0] in ("gripper_did_not_open", "gripper_closed_early", "abort_err", "abort_timeout"):
+               recent[0] in ("gripper_did_not_open", "gripper_closed_early", "abort_err",
+                             "abort_timeout", "no_grasp_started"):
                 tuner.get_logger().error(
                     f"ESCALATE: '{recent[0]}' x{ESCALATE_REPEAT} — not a param issue, needs a human/code fix. Stopping.")
                 break
