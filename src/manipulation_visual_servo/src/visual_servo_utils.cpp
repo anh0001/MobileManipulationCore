@@ -265,54 +265,70 @@ TableGraspEstimate estimate_table_grasp(
     return result;
   }
 
-  const double n = static_cast<double>(pts.size());
-  const cv::Point3d centroid(sx / n, sy / n, sz / n);
+  // Least-squares plane fit (PCA): centroid + normal (smallest-eigenvalue
+  // eigenvector of the point covariance) + RMS residual, for one point set.
+  auto fit_plane = [](const std::vector<cv::Point3d> & p,
+      cv::Point3d & c_out, cv::Vec3d & n_out, double & rms_out) -> bool {
+      const double m = static_cast<double>(p.size());
+      if (m < 3.0) {return false;}
+      double ax = 0, ay = 0, az = 0;
+      for (const auto & q : p) {ax += q.x; ay += q.y; az += q.z;}
+      const cv::Point3d c(ax / m, ay / m, az / m);
+      double cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
+      for (const auto & q : p) {
+        const double dx = q.x - c.x, dy = q.y - c.y, dz = q.z - c.z;
+        cxx += dx * dx; cyy += dy * dy; czz += dz * dz;
+        cxy += dx * dy; cxz += dx * dz; cyz += dy * dz;
+      }
+      cv::Mat cov = (cv::Mat_<double>(3, 3) <<
+        cxx, cxy, cxz, cxy, cyy, cyz, cxz, cyz, czz);
+      cv::Mat eval, evec;
+      cv::eigen(cov, eval, evec);  // eigenvalues descending; rows = eigenvectors
+      cv::Vec3d nrm(evec.at<double>(2, 0), evec.at<double>(2, 1), evec.at<double>(2, 2));
+      const double nn = std::sqrt(nrm.dot(nrm));
+      if (nn < 1e-9) {return false;}
+      nrm *= (1.0 / nn);
+      // Orient toward the camera (origin): centroid is in front (z>0).
+      if (nrm.dot(cv::Vec3d(c.x, c.y, c.z)) > 0.0) {nrm = -nrm;}
+      double sse = 0.0;
+      for (const auto & q : p) {
+        const double r = nrm[0] * (q.x - c.x) + nrm[1] * (q.y - c.y) + nrm[2] * (q.z - c.z);
+        sse += r * r;
+      }
+      c_out = c; n_out = nrm; rms_out = std::sqrt(sse / m);
+      return true;
+    };
 
-  // 3x3 covariance of the centered points.
-  double cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
-  for (const auto & p : pts) {
-    const double dx = p.x - centroid.x;
-    const double dy = p.y - centroid.y;
-    const double dz = p.z - centroid.z;
-    cxx += dx * dx;
-    cyy += dy * dy;
-    czz += dz * dz;
-    cxy += dx * dy;
-    cxz += dx * dz;
-    cyz += dy * dz;
-  }
-  cv::Mat cov = (cv::Mat_<double>(3, 3) <<
-    cxx, cxy, cxz,
-    cxy, cyy, cyz,
-    cxz, cyz, czz);
-  cv::Mat eval;
-  cv::Mat evec;
-  cv::eigen(cov, eval, evec);  // eigenvalues descending; rows of evec are eigenvectors
-  // Smallest eigenvalue -> plane normal (last row).
-  cv::Vec3d normal(
-    evec.at<double>(2, 0), evec.at<double>(2, 1), evec.at<double>(2, 2));
-  const double nn = std::sqrt(normal.dot(normal));
-  if (nn < 1e-9) {
-    return result;
-  }
-  normal *= (1.0 / nn);
-
-  // Orient the normal toward the camera (origin). The centroid is in front of
-  // the camera (z>0); a normal pointing back toward the camera has a negative
-  // dot with the centroid position vector.
-  if (normal.dot(cv::Vec3d(centroid.x, centroid.y, centroid.z)) > 0.0) {
-    normal = -normal;
+  // Robust refit: a plain least-squares plane is dragged by outliers (the
+  // object base, its shadow, or D405 depth spikes), inflating the RMS and
+  // shifting the plane by centimetres -> the grasp closes above the object.
+  // So fit, drop points whose |residual| > 2.5*RMS, and refit (a few passes).
+  cv::Point3d centroid;
+  cv::Vec3d normal;
+  double rms = 0.0;
+  std::vector<cv::Point3d> inliers = pts;
+  for (int iter = 0; iter < 3; ++iter) {
+    if (!fit_plane(inliers, centroid, normal, rms)) {
+      return result;
+    }
+    if (rms < 1e-4) {break;}
+    const double thresh = 2.5 * rms;
+    std::vector<cv::Point3d> kept;
+    kept.reserve(inliers.size());
+    for (const auto & q : inliers) {
+      const double r = std::fabs(
+        normal[0] * (q.x - centroid.x) + normal[1] * (q.y - centroid.y) +
+        normal[2] * (q.z - centroid.z));
+      if (r <= thresh) {kept.push_back(q);}
+    }
+    // Stop if nothing trimmed or trimming would drop below the point floor.
+    if (kept.size() == inliers.size() || kept.size() < min_plane_points) {
+      break;
+    }
+    inliers.swap(kept);
   }
 
-  // Plane fit RMS residual.
-  double sse = 0.0;
-  for (const auto & p : pts) {
-    const double r = normal[0] * (p.x - centroid.x) +
-      normal[1] * (p.y - centroid.y) +
-      normal[2] * (p.z - centroid.z);
-    sse += r * r;
-  }
-  const double rms = std::sqrt(sse / n);
+  result.plane_points = inliers.size();  // report inlier count for diagnostics
   result.plane_rms_m = rms;  // report for diagnostics even on failure
   if (rms > max_plane_rms_m) {
     return result;

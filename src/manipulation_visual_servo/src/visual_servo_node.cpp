@@ -134,7 +134,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("grasp_plane_max_rms_m", 0.03);
   this->declare_parameter("grasp_height_above_table_m", 0.055);
   this->declare_parameter("grasp_object_radius_m", 0.03);
-  this->declare_parameter("neck_grasp_offset_m", 0.30);  // disable cap-reach; use fixed body height from teach demo
+  this->declare_parameter("neck_grasp_offset_m", 0.025);  // neck grasp: aim this far below the measured object top
   this->declare_parameter("pregrasp_standoff_m", 0.12);
   this->declare_parameter("guarded_approach_speed_mps", 0.02);
   this->declare_parameter("guarded_reach_tolerance_m", 0.01);
@@ -1279,6 +1279,10 @@ void VisualServoNode::handle_idle()
   grasp_offset_z_ = this->get_parameter("grasp_offset_z").as_double();
   grasp_height_above_table_m_ = this->get_parameter("grasp_height_above_table_m").as_double();
   neck_grasp_offset_m_ = this->get_parameter("neck_grasp_offset_m").as_double();
+  // Plane-fit tunables — live so the threshold can be tightened without relaunch.
+  grasp_plane_max_rms_m_ = this->get_parameter("grasp_plane_max_rms_m").as_double();
+  grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
+  grasp_plane_min_points_ = static_cast<int>(this->get_parameter("grasp_plane_min_points").as_int());
 
   std::lock_guard<std::mutex> lock(detection_mutex_);
   if (detection_available_) {
@@ -1552,6 +1556,18 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
       this->get_logger(), *this->get_clock(), 1000,
       "[ESTIMATE] table-plane fit failed: got %zu pts (need %d) rms=%.4f (need<=%.3f)",
       est.plane_points, grasp_plane_min_points_, est.plane_rms_m, grasp_plane_max_rms_m_);
+    return false;
+  }
+
+  // A top-down grasp must aim at the narrow neck, which needs the object's
+  // measured top height. If the estimate fell back to the bbox-ray (too few
+  // object surface points -> object_height == 0), reject it and retry for a
+  // frame with real object points, rather than blindly grasping at the body
+  // floor height (which closes on the ~gripper-wide body and misses).
+  if (grasp_top_down_ && est.object_height_m <= 0.0) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[ESTIMATE] no object height (sparse object points); retrying for a cleaner frame");
     return false;
   }
 
