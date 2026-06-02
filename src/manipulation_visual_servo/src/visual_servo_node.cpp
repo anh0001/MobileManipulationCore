@@ -1624,7 +1624,10 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
   double grasp_h = grasp_height_above_table_m_;
   bool used_band = false;
   if (grasp_top_down_ && est.mask_used && est.grasp_height_m > 0.0) {
-    grasp_h = std::max(grasp_height_above_table_m_, est.grasp_height_m);
+    // The band selector already chose the graspable height. Clamp only to a
+    // small collision clearance above the surface — NOT the body-grasp floor,
+    // which would push a flat object's grasp up into the air above it.
+    grasp_h = std::max(0.010, est.grasp_height_m);
     used_band = true;
     // Reject if even the best band is wider than the jaw can open.
     if (est.object_width_m > 0.0 &&

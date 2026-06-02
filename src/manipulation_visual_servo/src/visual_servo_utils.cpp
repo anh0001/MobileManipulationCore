@@ -356,7 +356,7 @@ TableGraspEstimate estimate_table_grasp(
   // project them straight down onto the plane and take the robust median. This
   // avoids the grazing-angle projection error of the bbox-bottom ray and is far
   // more accurate for the object's true footprint XY.
-  const double OBJ_MIN_H = 0.015;   // m above the table to count as object
+  const double OBJ_MIN_H = 0.008;   // m above the table to count as object
   const double OBJ_MAX_H = 0.300;   // m above the table (ignore tall background)
   const std::size_t OBJ_MIN_PTS = 15;
 
@@ -423,8 +423,19 @@ TableGraspEstimate estimate_table_grasp(
       const double max_w = gripper_max_opening_m - margin;
       double best_h = 0.0, best_w = 0.0;
       double best_cost = 1e9;
-      for (double lo = OBJ_MIN_H; lo + band <= obj_h + 1e-6; lo += band) {
-        const double hi = lo + band;
+      // Bands across the object height. A short object (flat loaf / roll, under
+      // ~1.5 bands tall) is handled as ONE band spanning its full height so it
+      // is still graspable; taller objects are sliced into 2 cm bands.
+      std::vector<std::pair<double, double>> ranges;
+      if (obj_h - OBJ_MIN_H < 1.5 * band) {
+        ranges.emplace_back(OBJ_MIN_H, std::max(obj_h, OBJ_MIN_H + 0.006));
+      } else {
+        for (double lo = OBJ_MIN_H; lo + band <= obj_h + 1e-6; lo += band) {
+          ranges.emplace_back(lo, lo + band);
+        }
+      }
+      for (const auto & rg : ranges) {
+        const double lo = rg.first, hi = rg.second;
         std::vector<double> bx, by;
         for (std::size_t i = 0; i < ph_.size(); ++i) {
           if (ph_[i] >= lo && ph_[i] < hi) {bx.push_back(px_[i]); by.push_back(py_[i]);}
