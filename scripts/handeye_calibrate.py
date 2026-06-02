@@ -39,6 +39,7 @@ MARKER_LEN = 0.018      # m (~0.7 * square; approximate is fine for ChArUco)
 DICT = cv2.aruco.DICT_4X4_50
 
 RGB_TOPIC = "/piper/wrist_camera/piper_d405/color/image_raw"
+DEPTH_TOPIC = "/piper/wrist_camera/piper_d405/depth/image_rect_raw"
 INFO_TOPIC = "/piper/wrist_camera/piper_d405/color/camera_info"
 ARM_ACTION = "/piper_arm_controller/follow_joint_trajectory"
 BASE_FRAME = "piper_base_link"
@@ -78,7 +79,8 @@ POSES = [[round(s + d, 4) for s, d in zip(START, dl)] for dl in DELTAS]
 
 MOVE_SEC = 7            # slow moves
 SETTLE_SEC = 2.0
-MIN_CORNERS = 6
+MIN_CORNERS = 20        # strict: reject partial-board views (PnP/depth poison)
+MAX_FIT_RMS = 0.004     # reject depth-Kabsch fits worse than 4 mm
 
 
 def make_board():
@@ -90,34 +92,60 @@ def make_board():
     return d, board
 
 
-def detect_charuco(gray, d, board, K, dist):
-    """Return (rvec, tvec, n_corners) of board in camera, or (None, None, 0)."""
-    try:  # new API
-        cd = cv2.aruco.CharucoDetector(board)
-        ch_corners, ch_ids, _, _ = cd.detectBoard(gray)
-    except Exception:  # legacy API
-        try:
-            ad = cv2.aruco.ArucoDetector(d, cv2.aruco.DetectorParameters())
-            m_corners, m_ids, _ = ad.detectMarkers(gray)
-        except Exception:
-            m_corners, m_ids, _ = cv2.aruco.detectMarkers(gray, d)
-        if m_ids is None or len(m_ids) == 0:
-            return None, None, 0
-        _, ch_corners, ch_ids = cv2.aruco.interpolateCornersCharuco(
-            m_corners, m_ids, gray, board)
-    if ch_ids is None or len(ch_ids) < MIN_CORNERS:
-        return None, None, 0 if ch_ids is None else len(ch_ids)
-    # Pose: match charuco corners to board object points, solvePnP.
-    try:
-        obj_pts, img_pts = board.matchImagePoints(ch_corners, ch_ids)
-        ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, K, dist)
-    except Exception:
-        rvec = np.zeros((3, 1)); tvec = np.zeros((3, 1))
-        ok = cv2.aruco.estimatePoseCharucoBoard(
-            ch_corners, ch_ids, board, K, dist, rvec, tvec)
-    if not ok:
-        return None, None, len(ch_ids)
-    return rvec, tvec, len(ch_ids)
+def _kabsch(P, Q):
+    """Rigid fit (scale=1) mapping board points P -> camera points Q: Q = P R^T + t."""
+    Pm = P.mean(0); Qm = Q.mean(0)
+    H = (P - Pm).T @ (Q - Qm)
+    U, S, Vt = np.linalg.svd(H)
+    D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
+    R = Vt.T @ D @ U.T
+    t = Qm - R @ Pm
+    return R, t
+
+
+def board_pose_depth(gray, depth, d, board, K):
+    """Board pose in camera from DEPTH at ChArUco corners (no PnP ambiguity).
+
+    Returns (R, t, n_inliers, rms_m) where R,t map board->camera, or None.
+    """
+    m_corners, m_ids, _ = cv2.aruco.detectMarkers(gray, d)
+    if m_ids is None or len(m_ids) == 0:
+        return None
+    rv, ch, ci = cv2.aruco.interpolateCornersCharuco(m_corners, m_ids, gray, board)
+    if ci is None or rv < MIN_CORNERS:
+        return None
+    objp = board.chessboardCorners  # Nx3 board-frame corner coords (z=0)
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    P, Q = [], []
+    for corner, cid in zip(ch.reshape(-1, 2), ci.ravel()):
+        u, v = float(corner[0]), float(corner[1])
+        ui, vi = int(round(u)), int(round(v))
+        patch = depth[max(0, vi - 3):vi + 4, max(0, ui - 3):ui + 4].astype(np.float64)
+        patch = patch[patch > 0]
+        if patch.size < 4:
+            continue
+        z = float(np.median(patch)) * 0.001  # mm -> m
+        if z < 0.05 or z > 0.8:
+            continue
+        Q.append([(u - cx) * z / fx, (v - cy) * z / fy, z])
+        P.append(objp[int(cid)])
+    if len(P) < 20:
+        return None
+    P = np.array(P); Q = np.array(Q)
+    idx = np.arange(len(P))
+    for _ in range(3):  # RANSAC-ish trimming
+        R, t = _kabsch(P[idx], Q[idx])
+        res = np.linalg.norm(P @ R.T + t - Q, axis=1)
+        rms = float(np.sqrt((res[idx] ** 2).mean()))
+        keep = np.where(res < max(3 * rms, 0.002))[0]
+        if len(keep) < 20 or len(keep) == len(idx):
+            idx = keep if len(keep) >= 20 else idx
+            break
+        idx = keep
+    R, t = _kabsch(P[idx], Q[idx])
+    res = np.linalg.norm(P[idx] @ R.T + t - Q[idx], axis=1)
+    rms = float(np.sqrt((res ** 2).mean()))
+    return R, t.reshape(3, 1), len(idx), rms
 
 
 def quat_to_R(x, y, z, w):
@@ -141,16 +169,20 @@ def main():
     rclpy.init()
     n = Node("handeye")
     bridge = cv_bridge.CvBridge()
-    state = {"img": None, "K": None, "dist": None}
+    state = {"img": None, "depth": None, "K": None, "dist": None}
 
     def img_cb(m):
         state["img"] = m
+
+    def depth_cb(m):
+        state["depth"] = m
 
     def info_cb(m):
         state["K"] = np.array(m.k, dtype=np.float64).reshape(3, 3)
         state["dist"] = np.array(m.d, dtype=np.float64).reshape(1, -1)
 
     n.create_subscription(Image, RGB_TOPIC, img_cb, 10)
+    n.create_subscription(Image, DEPTH_TOPIC, depth_cb, 10)
     n.create_subscription(CameraInfo, INFO_TOPIC, info_cb, 10)
     buf = Buffer(); TransformListener(buf, n)
     ac = ActionClient(n, FollowJointTrajectory, ARM_ACTION)
@@ -180,18 +212,22 @@ def main():
     for i, pose in enumerate(POSES):
         print(f"\n[{i+1}/{len(POSES)}] moving to {pose} ...")
         goto(pose)
-        # fresh frame
-        state["img"] = None
+        # fresh rgb + depth
+        state["img"] = None; state["depth"] = None
         t0 = time.time()
-        while state["img"] is None and time.time() - t0 < 4:
+        while (state["img"] is None or state["depth"] is None) and time.time() - t0 < 4:
             rclpy.spin_once(n, timeout_sec=0.2)
-        if state["img"] is None:
-            print("  no image, skip"); continue
+        if state["img"] is None or state["depth"] is None:
+            print("  no rgb/depth, skip"); continue
         cv = bridge.imgmsg_to_cv2(state["img"], "bgr8")
         gray = cv2.cvtColor(cv, cv2.COLOR_BGR2GRAY)
-        rvec, tvec, ncor = detect_charuco(gray, d, board, state["K"], state["dist"])
-        if rvec is None:
-            print(f"  board not detected ({ncor} corners), skip"); continue
+        depth = bridge.imgmsg_to_cv2(state["depth"], "passthrough")
+        res = board_pose_depth(gray, depth, d, board, state["K"])
+        if res is None:
+            print("  board pose rejected (too few depth-valid corners), skip"); continue
+        Rc, tvec, ncor, rms = res
+        if rms > MAX_FIT_RMS:
+            print(f"  fit rms {rms*1000:.1f}mm > {MAX_FIT_RMS*1000:.0f}mm, skip"); continue
         # base<-TCP
         try:
             tf = buf.lookup_transform(BASE_FRAME, TCP_FRAME, rclpy.time.Time())
@@ -200,10 +236,9 @@ def main():
         q = tf.transform.rotation; tr = tf.transform.translation
         Rb = quat_to_R(q.x, q.y, q.z, q.w)
         tb = np.array([[tr.x], [tr.y], [tr.z]])
-        Rc, _ = cv2.Rodrigues(rvec)
         R_g2b.append(Rb); t_g2b.append(tb)
         R_t2c.append(Rc); t_t2c.append(tvec.reshape(3, 1))
-        print(f"  OK  corners={ncor}  board_dist={float(np.linalg.norm(tvec)):.3f} m  TCP=({tr.x:.3f},{tr.y:.3f},{tr.z:.3f})")
+        print(f"  OK  inliers={ncor} rms={rms*1000:.1f}mm  board_dist={float(np.linalg.norm(tvec)):.3f} m  TCP=({tr.x:.3f},{tr.y:.3f},{tr.z:.3f})")
 
     print(f"\nCollected {len(R_g2b)} valid samples.")
     if len(R_g2b) < 4:

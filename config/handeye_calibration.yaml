@@ -1,17 +1,17 @@
 # Eye-in-hand calibration: PiPER TCP (piper_tcp) -> wrist D405 camera optical frame.
 # Produced by scripts/handeye_calibrate.py (cv2.calibrateHandEye).
-# samples: 11  board: ChArUco 10x7 square=0.025 marker=0.018 DICT_4X4_50
-# translation spread across solvers: 178.1 mm (NOT CONVERGED - review before use)
+# samples: 10  board: ChArUco 10x7 square=0.025 marker=0.018 DICT_4X4_50
+# translation spread across solvers: 60.6 mm (NOT CONVERGED - review before use)
 handeye_tcp_to_camera:
-  method: PARK
+  method: TSAI
   converged: false
-  spread_mm: 178.10
-  samples: 11
-  translation_xyz_m: [-0.07110, 0.00414, -0.17879]
-  rotation_rpy_rad: [2.23896, -0.69348, 1.22829]
-  rotation_quat_xyzw: [0.706977, -0.009801, 0.011617, -0.011666]
+  spread_mm: 60.63
+  samples: 10
+  translation_xyz_m: [0.00345, 0.03469, -0.23600]
+  rotation_rpy_rad: [0.30276, 0.05560, 0.86901]
+  rotation_quat_xyzw: [0.125167, 0.088383, 0.412182, 0.898124]
   all_methods:
-    TSAI: {xyz: [-0.03926, 0.03418, -0.21641], rpy: [-0.08946, -0.33430, 0.53101]}
-    PARK: {xyz: [-0.07110, 0.00414, -0.17879], rpy: [2.23896, -0.69348, 1.22829]}
-    HORAUD: {xyz: [-0.00514, -0.04270, -0.25501], rpy: [1.56804, 0.01673, 2.84860]}
-    DANIILIDIS: {xyz: [-0.40699, -0.15161, -0.20926], rpy: [-1.93580, -0.38576, 2.98782]}
+    TSAI: {xyz: [0.00345, 0.03469, -0.23600], rpy: [0.30276, 0.05560, 0.86901]}
+    PARK: {xyz: [-0.04262, 0.04661, -0.16774], rpy: [1.96506, -0.24259, 0.99442]}
+    HORAUD: {xyz: [-0.00330, -0.02435, -0.23919], rpy: [1.33512, 0.48221, 2.66376]}
+    DANIILIDIS: {xyz: [0.03719, -0.05141, -0.26085], rpy: [2.02288, 0.57673, -2.74879]}
