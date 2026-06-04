@@ -699,6 +699,27 @@ def generate_launch_description():
         }]
     )
 
+    # Pick orchestrator - exposes the grasp pipeline as a single PickObject action
+    # (/pick_object) so AI clients can request "pick object X" with one call.
+    pick_orchestrator_node = Node(
+        package='manipulation_policy',
+        executable='pick_orchestrator',
+        name='pick_orchestrator',
+        output='screen',
+        condition=is_visual_servo_mode,
+        parameters=[{
+            'visual_servo_node': '/visual_servo_node',
+            'prompt_topic': str(
+                detection_cfg.get('prompt_topic', '/visual_servo/target_prompt')),
+            'state_topic': str(vs_debug_cfg.get('state_topic', '/visual_servo/state')),
+            'joint_states_topic': joint_states_topic,
+            'gripper_joint': str(gripper_cfg.get('joint_name', 'piper_joint7')),
+            'capture_pose': [
+                float(v) for v in moveit_cfg.get(
+                    'ready_pose_joint_positions', [0.0, 1.2, -0.2, 0.0, -0.35, 0.0])],
+        }],
+    )
+
     return LaunchDescription([
         # Arguments
         use_remote_policy_arg,
@@ -719,4 +740,5 @@ def generate_launch_description():
         # Visual servo mode nodes (conditional)
         remote_detection_client_node,
         visual_servo_node,
+        pick_orchestrator_node,
     ])

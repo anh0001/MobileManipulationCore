@@ -15,6 +15,9 @@
   <depend>std_msgs</depend>
   <depend>manipulation_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>control_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>rcl_interfaces</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

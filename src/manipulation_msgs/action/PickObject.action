@@ -1,0 +1,18 @@
+# Pick a single object by open-vocabulary label using the visual-servo grasp
+# pipeline. Encapsulates the full sequence (prompt -> detect -> align -> grasp ->
+# lift) so any client (AI agent, MCP tool, CLI) can request a pick with one call.
+
+# --- Goal ---
+string object            # detection prompt / label, e.g. "bread", "toy banana"
+float32 timeout_sec      # max time for the whole attempt; <= 0 -> server default
+---
+# --- Result ---
+bool success             # reached DONE without abort
+bool object_held         # gripper closed on something (jaw blocked before full close)
+geometry_msgs/Pose grasp_pose   # commanded grasp pose in the arm base frame
+float32 gripper_width    # final gripper opening (m)
+string message           # human-readable outcome / failure reason
+---
+# --- Feedback ---
+string state             # current visual-servo state (ACQUIRE/GUARDED_APPROACH/...)
+float32 gripper_width    # live gripper opening (m)

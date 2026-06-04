@@ -18,6 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Observation.msg"
   "msg/PolicyOutput.msg"
   "action/ManipulationTask.action"
+  "action/PickObject.action"
   DEPENDENCIES std_msgs geometry_msgs sensor_msgs action_msgs
 )
 

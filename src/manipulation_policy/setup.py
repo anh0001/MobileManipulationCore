@@ -26,6 +26,7 @@ setup(
             'policy_node = manipulation_policy.policy_node:main',
             'policy_server = manipulation_policy.policy_server:main',
             'task_prompt_cli = manipulation_policy.task_prompt_cli:main',
+            'pick_orchestrator = manipulation_policy.pick_orchestrator:main',
         ],
     },
 )
