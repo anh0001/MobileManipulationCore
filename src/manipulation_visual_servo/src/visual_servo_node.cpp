@@ -146,6 +146,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("neck_grasp_offset_m", 0.025);  // neck grasp: aim this far below the measured object top
   this->declare_parameter("grasp_band_width_margin_m", 0.012);  // jaw clearance for band width check
   this->declare_parameter("grasp_mask_max_age_sec", 1.0);  // ignore SAM masks older than this
+  this->declare_parameter("grasp_mask_wait_sec", 2.5);  // wait this long for a fresh mask before estimating depth-only
   this->declare_parameter("pregrasp_standoff_m", 0.12);
   this->declare_parameter("guarded_approach_speed_mps", 0.02);
   this->declare_parameter("guarded_reach_tolerance_m", 0.01);
@@ -262,6 +263,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   neck_grasp_offset_m_ = this->get_parameter("neck_grasp_offset_m").as_double();
   grasp_band_width_margin_m_ = this->get_parameter("grasp_band_width_margin_m").as_double();
   grasp_mask_max_age_sec_ = this->get_parameter("grasp_mask_max_age_sec").as_double();
+  grasp_mask_wait_sec_ = this->get_parameter("grasp_mask_wait_sec").as_double();
   pregrasp_standoff_m_ = this->get_parameter("pregrasp_standoff_m").as_double();
   guarded_approach_speed_mps_ = this->get_parameter("guarded_approach_speed_mps").as_double();
   guarded_reach_tolerance_m_ = this->get_parameter("guarded_reach_tolerance_m").as_double();
@@ -1880,6 +1882,34 @@ void VisualServoNode::handle_estimate_grasp()
     static_cast<double>(grasp_estimate_settle_cycles_) / std::max(1.0, control_rate_hz_);
   if (elapsed < settle_sec) {
     return;
+  }
+
+  // Wait for a fresh SAM mask before estimating. A mask-less estimate uses the
+  // unstable bbox-height fallback (object_pts tiny, band=no) and lands the grasp
+  // high -> empty close. The mask arrives with each ~1Hz detection, so hold here
+  // up to grasp_mask_wait_sec past settle; only then fall back to depth-only.
+  if (grasp_use_mask_) {
+    bool fresh_mask;
+    {
+      std::lock_guard<std::mutex> lock(mask_mutex_);
+      const double age = mask_available_ ?
+        (this->now() - last_mask_receive_time_).seconds() : 1e9;
+      fresh_mask = mask_available_ && !latest_mask_frame_.empty() &&
+        age <= grasp_mask_max_age_sec_;
+    }
+    const double waited = elapsed - settle_sec;
+    if (!fresh_mask && waited < grasp_mask_wait_sec_) {
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[ESTIMATE] waiting for a fresh mask (%.1f/%.1fs)", waited, grasp_mask_wait_sec_);
+      return;
+    }
+    if (!fresh_mask) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[ESTIMATE] no fresh mask after %.1fs; proceeding depth-only (grasp may be high)",
+        grasp_mask_wait_sec_);
+    }
   }
 
   if (estimate_grasp_pose_in_reference()) {

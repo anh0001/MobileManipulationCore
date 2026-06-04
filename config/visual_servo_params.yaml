@@ -68,7 +68,7 @@ visual_servo:
     objects: ["bread", "banana"]
     x: [-0.0289, -0.0289]
     y: [-0.018, -0.018]
-    z: [-0.045, -0.012]
+    z: [-0.012, -0.012]
 
   control:
     lambda_xy: 2.0                     # Higher gain to overcome arm dead-band at small errors

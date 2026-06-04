@@ -96,26 +96,37 @@ class PickSkill(Skill):
                         "could not reach visual-servo node to enable grasp")
 
         # 4. wait for the grasp sequence to start, then for DONE
+        #
+        # auto_loop was enabled above ONLY to bump a stale prior DONE back to
+        # IDLE (DONE->IDLE->fresh ACQUIRE). The moment the node leaves DONE a
+        # fresh attempt has started, so we disable auto_loop immediately —
+        # otherwise the REAL result DONE re-arms into another grasp, looping
+        # "grasp -> open -> re-approach -> grasp ..." forever. Disabling on the
+        # first non-DONE state (seconds before the grasp completes) closes the
+        # race that the old "disable on ACTIVE_STATES" had.
         t0 = _mono(ctx)
         saw_grasp = False
+        loop_disabled = False
         while ctx.ok():
             if is_cancelled():
                 gate_off()
                 return SkillResult(False, "canceled", {
                     "gripper_width": round(float(ctx.gripper_width), 4)})
+            st = ctx.vs_state
             now = _mono(ctx)
             elapsed = now - t0
-            feedback(ctx.vs_state, min(0.95, elapsed / timeout) if timeout else 0.0)
-            if ctx.vs_state in ACTIVE_STATES:
-                if not saw_grasp:
-                    # pick started — stop auto_loop so it won't re-fire after DONE
-                    ctx.set_bool_param("grasp_auto_loop", False)
+            feedback(st, min(0.95, elapsed / timeout) if timeout else 0.0)
+            if not loop_disabled and st not in ("", "DONE"):
+                # fresh attempt under way -> never re-arm again
+                loop_disabled = ctx.set_bool_param("grasp_auto_loop", False)
+            if st in ACTIVE_STATES:
                 saw_grasp = True
             if not saw_grasp and elapsed > acquire_timeout:
                 return done(False, False,
                             f"'{obj}' not acquired within {acquire_timeout:.0f}s "
                             "(not detected, or grasp pose out of workspace)")
-            if saw_grasp and ctx.vs_state == "DONE":
+            if saw_grasp and st == "DONE":
+                ctx.set_bool_param("grasp_auto_loop", False)  # belt-and-suspenders
                 ctx.sleep(1.0)  # let the lift/width settle
                 held = ctx.gripper_width > held_threshold
                 msg = (f"picked '{obj}'; width={ctx.gripper_width:.4f} "
@@ -123,7 +134,7 @@ class PickSkill(Skill):
                 return done(True, held, msg)
             if elapsed > timeout:
                 return done(False, False,
-                            f"timeout after {timeout:.0f}s in state '{ctx.vs_state}' "
+                            f"timeout after {timeout:.0f}s in state '{st}' "
                             "(stuck — e.g. grasp target rejected by workspace gate)")
             ctx.sleep(0.1)
         return done(False, False, "node shutting down")

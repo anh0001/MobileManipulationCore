@@ -91,23 +91,29 @@ class PlaceSkill(Skill):
         if not ctx.set_bool_param("grasp_enabled", True):
             return done(False, "could not reach visual-servo node to start place")
 
-        # 4. wait for the place sequence to start, then for DONE
+        # 4. wait for the place sequence to start, then for DONE.
+        # auto_loop was enabled only to bump a stale DONE -> IDLE; disable it the
+        # moment the node leaves DONE so the real result can't re-arm into
+        # another place (see pick_skill for the full rationale).
         t0 = ctx.now()
         saw_seq = False
+        loop_disabled = False
         while ctx.ok():
             if is_cancelled():
                 return done(False, "canceled")
+            st = ctx.vs_state
             elapsed = ctx.now() - t0
-            feedback(ctx.vs_state, min(0.95, elapsed / timeout) if timeout else 0.0)
-            if ctx.vs_state in ACTIVE_STATES:
-                if not saw_seq:
-                    ctx.set_bool_param("grasp_auto_loop", False)  # one place only
+            feedback(st, min(0.95, elapsed / timeout) if timeout else 0.0)
+            if not loop_disabled and st not in ("", "DONE"):
+                loop_disabled = ctx.set_bool_param("grasp_auto_loop", False)
+            if st in ACTIVE_STATES:
                 saw_seq = True
             if not saw_seq and elapsed > acquire_timeout:
                 return done(False,
                             f"'{target}' not acquired within {acquire_timeout:.0f}s "
                             "(not detected, or out of workspace)")
-            if saw_seq and ctx.vs_state == "DONE":
+            if saw_seq and st == "DONE":
+                ctx.set_bool_param("grasp_auto_loop", False)  # belt-and-suspenders
                 ctx.sleep(0.5)
                 width = round(float(ctx.gripper_width), 4)
                 # gate off first so the servo won't fight the return move, then

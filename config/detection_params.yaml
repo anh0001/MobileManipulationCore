@@ -38,7 +38,7 @@ detection:
   # is below clip_min_score, or within clip_margin of the runner-up, the result is
   # AMBIGUOUS and no detection is published -> the robot declines instead of
   # grasping the wrong item. List every object expected on the table here.
-  clip_rerank: true
+  clip_rerank: false
   # Disambiguation selector: "color" (dominant masked colour — robust when objects
   # are colour-distinct) or "clip" (vision-language). DINO+SAM run regardless.
   selector: "color"

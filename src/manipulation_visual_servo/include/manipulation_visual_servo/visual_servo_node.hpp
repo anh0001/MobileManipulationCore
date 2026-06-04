@@ -222,6 +222,7 @@ private:
   rclcpp::Time last_mask_receive_time_;
   bool mask_available_{false};
   double grasp_mask_max_age_sec_{1.0};  // reject SAM masks older than this
+  double grasp_mask_wait_sec_{2.5};     // wait this long for a fresh mask before depth-only estimate
 
   std::mutex detection_mutex_;
   cv::Rect2d latest_detection_roi_;
