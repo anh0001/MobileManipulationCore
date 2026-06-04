@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 import rclpy
 from cv_bridge import CvBridge
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -222,10 +223,15 @@ class RemoteDetectionClientNode(Node):
         # box that actually matches the requested object, and an ambiguous result
         # publishes no detection so the robot declines rather than grasping wrong.
         self.declare_parameter("clip_rerank", False)
+        self.declare_parameter("selector", "clip")
         self.declare_parameter("scene_vocabulary", [""])
         self.declare_parameter("clip_descriptions", [""])
+        self.declare_parameter("scene_colors", [""])
         self.declare_parameter("clip_margin", 0.10)
         self.declare_parameter("clip_min_score", 0.30)
+        self.declare_parameter("clip_elimination_max_other", 0.55)
+        self.declare_parameter("color_max_dist", 95.0)
+        self.declare_parameter("color_margin", 25.0)
 
         self.image_topic = str(self.get_parameter("image_topic").value)
         self.detection_topic = str(self.get_parameter("detection_topic").value)
@@ -259,6 +265,30 @@ class RemoteDetectionClientNode(Node):
             if str(v).strip()]
         self.clip_margin = _safe_float(self.get_parameter("clip_margin").value, 0.10)
         self.clip_min_score = _safe_float(self.get_parameter("clip_min_score").value, 0.30)
+        self.clip_elimination_max_other = _safe_float(
+            self.get_parameter("clip_elimination_max_other").value, 0.55)
+        self.selector = str(self.get_parameter("selector").value or "clip").strip().lower()
+        self.scene_colors = [
+            str(v) for v in (self.get_parameter("scene_colors").value or [])
+            if str(v).strip()]
+        self.color_max_dist = _safe_float(self.get_parameter("color_max_dist").value, 95.0)
+        self.color_margin = _safe_float(self.get_parameter("color_margin").value, 25.0)
+
+        # Live toggle: `ros2 param set /remote_detection_client clip_rerank false`
+        # turns CLIP re-rank off (DINO-only, single-prompt) without a relaunch.
+        def _on_set_params(params):
+            for p in params:
+                if p.name == "clip_rerank":
+                    self.clip_rerank = bool(p.value)
+                    self.get_logger().info(f"clip_rerank -> {self.clip_rerank}")
+                elif p.name == "clip_min_score":
+                    self.clip_min_score = float(p.value)
+                    self.get_logger().info(f"clip_min_score -> {self.clip_min_score:.2f}")
+                elif p.name == "clip_margin":
+                    self.clip_margin = float(p.value)
+                    self.get_logger().info(f"clip_margin -> {self.clip_margin:.2f}")
+            return SetParametersResult(successful=True)
+        self.add_on_set_parameters_callback(_on_set_params)
         self.metrics_log_interval_sec = max(
             1.0,
             float(self.get_parameter("metrics_log_interval_sec").value),
@@ -413,10 +443,17 @@ class RemoteDetectionClientNode(Node):
                     "candidate_labels": self.scene_vocabulary,
                     "clip_margin": self.clip_margin,
                     "clip_min_score": self.clip_min_score,
+                    "clip_elimination_max_other": self.clip_elimination_max_other,
+                    "selector": self.selector,
+                    "color_max_dist": self.color_max_dist,
+                    "color_margin": self.color_margin,
                 }
                 if self.clip_descriptions and \
                         len(self.clip_descriptions) == len(self.scene_vocabulary):
                     clip_fields["candidate_descriptions"] = self.clip_descriptions
+                if self.scene_colors and \
+                        len(self.scene_colors) == len(self.scene_vocabulary):
+                    clip_fields["scene_colors"] = self.scene_colors
 
             payload = {
                 "image": image_b64,
@@ -484,12 +521,20 @@ class RemoteDetectionClientNode(Node):
                 self.detection_pub.publish(empty)
                 self.total_published_messages += 1
                 top = detections[0] if detections else {}
-                self.get_logger().warn(
-                    f"Ambiguous match for '{prompt}' among {len(detections)} "
-                    f"candidates; declining. best: P(target)={top.get('clip_target_score', 0.0):.2f} "
-                    f"argmax='{top.get('clip_argmax_label', '?')}' "
-                    f"P(argmax)={top.get('clip_argmax_score', 0.0):.2f} "
-                    f"(need P>={self.clip_min_score:.2f}, margin>={self.clip_margin:.2f})")
+                if "color_dist_target" in top:
+                    self.get_logger().warn(
+                        f"Ambiguous match for '{prompt}' among {len(detections)} "
+                        f"candidates [color]; declining. best: dist={top.get('color_dist_target', 0.0):.0f} "
+                        f"mean_rgb={top.get('color_mean_rgb')} "
+                        f"closest='{top.get('color_closest_label', '?')}' "
+                        f"(need dist<={self.color_max_dist:.0f}, margin>={self.color_margin:.0f})")
+                else:
+                    self.get_logger().warn(
+                        f"Ambiguous match for '{prompt}' among {len(detections)} "
+                        f"candidates [clip]; declining. best: P(target)={top.get('clip_target_score', 0.0):.2f} "
+                        f"argmax='{top.get('clip_argmax_label', '?')}' "
+                        f"P(argmax)={top.get('clip_argmax_score', 0.0):.2f} "
+                        f"(need P>={self.clip_min_score:.2f}, margin>={self.clip_margin:.2f})")
                 return
 
             detections_msg = _build_detection_message(

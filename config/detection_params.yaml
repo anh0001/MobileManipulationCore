@@ -39,25 +39,37 @@ detection:
   # AMBIGUOUS and no detection is published -> the robot declines instead of
   # grasping the wrong item. List every object expected on the table here.
   clip_rerank: true
+  # Disambiguation selector: "color" (dominant masked colour — robust when objects
+  # are colour-distinct) or "clip" (vision-language). DINO+SAM run regardless.
+  selector: "color"
   # DINO detection labels (also become the published class_id for per-object offset).
+  # List exactly the objects on the table.
   scene_vocabulary:
     - "toy bread"
-    - "toy banana"
-    - "toy watermelon"
-    - "toy pineapple"
+    - "yellow banana"
     - "red apple"
+  # Expected dominant colour per object, ALIGNED 1:1 with scene_vocabulary. Used by
+  # the "color" selector. Names: brown/red/yellow/green/orange/white/black/purple/
+  # pink/blue.
+  scene_colors:
+    - "brown"
+    - "yellow"
+    - "red"
+  color_max_dist: 95.0     # max RGB distance from the target colour to accept
+  color_margin: 25.0       # target box must beat the nearest other-colour box by this
   # CLIP scoring text, ALIGNED 1:1 with scene_vocabulary. Decoupled from the DINO
-  # label so CLIP gets a discriminative description (DINO's "toy bread" reads weak
-  # to CLIP; "a brown loaf of bread" reads far stronger). Leave empty to fall back
-  # to "a photo of a <label>".
+  # label so CLIP gets a discriminative description. Leave empty to fall back to
+  # "a photo of a <label>".
   clip_descriptions:
     - "a brown loaf of bread"
     - "a yellow banana"
-    - "a slice of watermelon with green rind and red flesh"
-    - "a pineapple"
     - "a red apple"
   clip_margin: 0.10
   clip_min_score: 0.30
+  # Odd-one-out fallback: when CLIP cannot positively name the target (e.g. the
+  # plush bread), it picks the box that matches the OTHER known objects least.
+  # That box is accepted only if its best non-target match is below this.
+  clip_elimination_max_other: 0.55
 
   # Logging/metrics
   metrics_log_interval_sec: 5.0

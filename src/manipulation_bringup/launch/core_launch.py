@@ -558,14 +558,22 @@ def generate_launch_description():
             'min_score': float(detection_cfg.get('min_score', 0.35)),
             'max_detections': int(detection_cfg.get('max_detections', 5)),
             'clip_rerank': bool(detection_cfg.get('clip_rerank', False)),
+            'selector': str(detection_cfg.get('selector', 'clip')),
             'scene_vocabulary': [
                 str(v) for v in detection_cfg.get('scene_vocabulary', []) if str(v).strip()
             ] or [''],
+            'scene_colors': [
+                str(v) for v in detection_cfg.get('scene_colors', []) if str(v).strip()
+            ] or [''],
+            'color_max_dist': float(detection_cfg.get('color_max_dist', 95.0)),
+            'color_margin': float(detection_cfg.get('color_margin', 25.0)),
             'clip_descriptions': [
                 str(v) for v in detection_cfg.get('clip_descriptions', []) if str(v).strip()
             ] or [''],
             'clip_margin': float(detection_cfg.get('clip_margin', 0.10)),
             'clip_min_score': float(detection_cfg.get('clip_min_score', 0.30)),
+            'clip_elimination_max_other': float(
+                detection_cfg.get('clip_elimination_max_other', 0.55)),
             'metrics_log_interval_sec': float(
                 detection_cfg.get('metrics_log_interval_sec', 5.0)
             ),

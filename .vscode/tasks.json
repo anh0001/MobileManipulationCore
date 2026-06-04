@@ -98,6 +98,14 @@
       "options": { "cwd": "${workspaceFolder}" }
     },
     {
+      "label": "4. Detection: Toggle CLIP re-rank",
+      "type": "shell",
+      "command": "source install/setup.bash && ros2 param set /remote_detection_client clip_rerank ${input:clipRerank}",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
       "label": "6. Debug: Echo visual-servo state",
       "type": "shell",
       "command": "source install/setup.bash && ros2 topic echo /visual_servo/state",
@@ -134,6 +142,13 @@
       "type": "promptString",
       "description": "PiPER arm speed percent (1-100); lower = slower/smoother",
       "default": "20"
+    },
+    {
+      "id": "clipRerank",
+      "type": "pickString",
+      "description": "CLIP re-rank disambiguation: true = CLIP picks the object, false = DINO-only (highest score)",
+      "options": ["true", "false"],
+      "default": "false"
     }
   ]
 }

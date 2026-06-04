@@ -261,7 +261,7 @@ def _load_clip():
 
 
 def _rerank_clip(image, detections, candidate_labels, target_label, margin, min_score,
-                 candidate_descriptions=None):
+                 candidate_descriptions=None, elimination_max_other=0.55):
     """Re-rank DINO boxes by CLIP P(label | crop).
 
     Grounding DINO proposes boxes; CLIP decides which physical object each box is,
@@ -313,32 +313,120 @@ def _rerank_clip(image, detections, candidate_labels, target_label, margin, min_
         probs = out.logits_per_image.softmax(dim=1).detach().cpu().numpy()
     for det, prob in zip(detections, probs):
         amax = int(prob.argmax())
+        # other_conf = how strongly the box matches the best NON-target object.
+        other_conf = max(
+            (float(prob[i]) for i, lbl in enumerate(labels) if lbl != target_label),
+            default=0.0)
         det["dino_score"] = float(det.get("score", 0.0))
         det["clip_target_score"] = float(prob[tgt_idx])
         det["clip_argmax_label"] = labels[amax]
         det["clip_argmax_score"] = float(prob[amax])
+        det["clip_other_conf"] = other_conf
         det["class_id"] = labels[amax]
         det["score"] = float(prob[tgt_idx])
-    # Ambiguity is competition between DIFFERENT objects, not duplicate boxes on the
-    # same one. Compare the best box CLIP labels as the target against the best box
-    # of any OTHER object — so overlapping target duplicates (no NMS) don't trigger
-    # a false "ambiguous".
+
     target_dets = [d for d in detections if d["clip_argmax_label"] == target_label]
-    other_best = max(
-        (d["clip_target_score"] for d in detections
-         if d["clip_argmax_label"] != target_label),
-        default=0.0)
-    if not target_dets:
-        detections.sort(key=lambda d: d["clip_target_score"], reverse=True)
-        return True  # no box is confidently the target
-    best = max(target_dets, key=lambda d: d["clip_target_score"])
-    # Put the chosen target box first (client grasps detections[0] + its mask).
-    detections.sort(key=lambda d: (d is not best, -d["clip_target_score"]))
-    ambiguous = bool(
-        best["clip_target_score"] < min_score
-        or (best["clip_target_score"] - other_best) < margin
-    )
-    return ambiguous
+    if target_dets:
+        # Positive-ID path: CLIP recognizes the target directly. Ambiguity is
+        # competition between DIFFERENT objects (not duplicate boxes on the target).
+        best = max(target_dets, key=lambda d: d["clip_target_score"])
+        other_best = max(
+            (d["clip_target_score"] for d in detections
+             if d["clip_argmax_label"] != target_label),
+            default=0.0)
+        detections.sort(key=lambda d: (d is not best, -d["clip_target_score"]))
+        return bool(
+            best["clip_target_score"] < min_score
+            or (best["clip_target_score"] - other_best) < margin)
+
+    # Elimination / odd-one-out: CLIP cannot positively name the target (e.g. a
+    # plush bread it has no good concept for), but it CAN confidently identify the
+    # other objects. The target is then the box that matches the known objects
+    # LEAST — the odd one out. Accept only if that box is genuinely unrecognized
+    # (low other_conf) and distinctly more so than the runner-up.
+    best = min(detections, key=lambda d: d["clip_other_conf"])
+    detections.sort(key=lambda d: (d is not best, d["clip_other_conf"]))
+    runner_other = min(
+        (d["clip_other_conf"] for d in detections if d is not best), default=1.0)
+    best["class_id"] = target_label
+    best["score"] = float(1.0 - best["clip_other_conf"])
+    return bool(
+        best["clip_other_conf"] > elimination_max_other
+        or (runner_other - best["clip_other_conf"]) < margin)
+
+
+_COLOR_RGB = {
+    "brown": (120, 80, 55), "red": (190, 35, 35), "yellow": (225, 200, 50),
+    "green": (50, 140, 55), "orange": (220, 130, 40), "white": (235, 235, 235),
+    "black": (30, 30, 30), "purple": (120, 50, 140), "pink": (235, 150, 170),
+    "blue": (45, 70, 180),
+}
+
+
+def _select_by_color(image, detections, candidate_labels, scene_colors, target_label,
+                     color_max_dist=95.0, color_margin=25.0):
+    """Pick the box whose dominant (SAM-masked) colour matches the target colour.
+
+    Appearance models (DINO, CLIP) confuse a brown bread with a red apple by shape;
+    colour is orthogonal and unambiguous. Each object has an expected colour name
+    (scene_colors, aligned with candidate_labels). For every box we take the mean
+    RGB of its masked pixels, find the nearest reference colour, and select the box
+    whose nearest colour is the target's. Ambiguous if none matches, the match is
+    too far, or a differently-coloured box is about as close.
+    """
+    if np is None or not detections or not scene_colors:
+        return False
+    colormap = {lbl: str(scene_colors[i]).strip().lower()
+                for i, lbl in enumerate(candidate_labels) if i < len(scene_colors)}
+    target_color = colormap.get(target_label)
+    target_ref = _COLOR_RGB.get(target_color) if target_color else None
+    if target_ref is None:
+        return False  # no colour known for the target -> colour can't decide
+    arr = np.asarray(image).astype("float32")
+    target_np = np.asarray(target_ref, dtype="float32")
+    refs = {lbl: _COLOR_RGB.get(c) for lbl, c in colormap.items()}
+    scored = []
+    for det in detections:
+        mask = det.get("_mask_arr")
+        if mask is not None and getattr(mask, "any", lambda: False)():
+            pix = arr[mask]
+        else:
+            x1 = max(0, int(det["cx"] - det["w"] * 0.5))
+            y1 = max(0, int(det["cy"] - det["h"] * 0.5))
+            x2 = max(x1 + 1, int(det["cx"] + det["w"] * 0.5))
+            y2 = max(y1 + 1, int(det["cy"] + det["h"] * 0.5))
+            pix = arr[y1:y2, x1:x2].reshape(-1, 3)
+        if pix.size == 0:
+            continue
+        mean_rgb = pix.reshape(-1, 3).mean(axis=0)
+        dist_target = float(np.linalg.norm(mean_rgb - target_np))
+        closest_lbl, closest_d = None, 1e9
+        for lbl, ref in refs.items():
+            if ref is None:
+                continue
+            d = float(np.linalg.norm(mean_rgb - np.asarray(ref, dtype="float32")))
+            if d < closest_d:
+                closest_d, closest_lbl = d, lbl
+        det["color_dist_target"] = dist_target
+        det["color_closest_label"] = closest_lbl
+        det["color_mean_rgb"] = [round(float(v), 1) for v in mean_rgb]
+        scored.append(det)
+    if not scored:
+        return True
+    target_boxes = [d for d in scored if d["color_closest_label"] == target_label]
+    if not target_boxes:
+        detections.sort(key=lambda d: d.get("color_dist_target", 1e9))
+        return True
+    best = min(target_boxes, key=lambda d: d["color_dist_target"])
+    detections.sort(key=lambda d: (d is not best, d.get("color_dist_target", 1e9)))
+    best["class_id"] = target_label
+    best["score"] = float(max(0.0, 1.0 - best["color_dist_target"] / 255.0))
+    other_best = min(
+        (d["color_dist_target"] for d in scored
+         if d["color_closest_label"] != target_label), default=1e9)
+    return bool(
+        best["color_dist_target"] > color_max_dist
+        or (other_best - best["color_dist_target"]) < color_margin)
 
 
 def _normalize_detections(
@@ -409,26 +497,39 @@ def run_detection(request: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:  # pragma: no cover - masks are best-effort
             logging.exception("MobileSAM segmentation failed; returning boxes only")
 
-    # CLIP re-rank: let CLIP decide which proposed box is actually the requested
-    # object, and flag ambiguity so the caller can decline rather than grasp wrong.
+    # Disambiguation: decide which proposed box is actually the requested object,
+    # and flag ambiguity so the caller can decline rather than grasp wrong.
+    # selector = "color" (dominant masked colour) or "clip" (vision-language).
     ambiguous = False
     candidate_labels = request.get("candidate_labels")
+    selector = str(request.get("selector", "clip")).strip().lower()
     if request.get("clip_rerank") and isinstance(candidate_labels, list) \
             and candidate_labels and detections:
+        labels_list = [str(c) for c in candidate_labels]
+        target = str(request.get("target_label", "")).strip()
         try:
-            descs = request.get("candidate_descriptions")
-            ambiguous = _rerank_clip(
-                image,
-                detections,
-                candidate_labels=[str(c) for c in candidate_labels],
-                target_label=str(request.get("target_label", "")).strip(),
-                margin=_safe_float(request.get("clip_margin"), 0.10),
-                min_score=_safe_float(request.get("clip_min_score"), 0.30),
-                candidate_descriptions=[str(d) for d in descs]
-                if isinstance(descs, list) else None,
-            )
-        except Exception:  # pragma: no cover - re-rank is best-effort
-            logging.exception("CLIP re-rank failed; returning DINO order")
+            if selector == "color" and isinstance(request.get("scene_colors"), list):
+                ambiguous = _select_by_color(
+                    image, detections, labels_list,
+                    scene_colors=[str(c) for c in request.get("scene_colors")],
+                    target_label=target,
+                    color_max_dist=_safe_float(request.get("color_max_dist"), 95.0),
+                    color_margin=_safe_float(request.get("color_margin"), 25.0),
+                )
+            else:
+                descs = request.get("candidate_descriptions")
+                ambiguous = _rerank_clip(
+                    image, detections, candidate_labels=labels_list,
+                    target_label=target,
+                    margin=_safe_float(request.get("clip_margin"), 0.10),
+                    min_score=_safe_float(request.get("clip_min_score"), 0.30),
+                    candidate_descriptions=[str(d) for d in descs]
+                    if isinstance(descs, list) else None,
+                    elimination_max_other=_safe_float(
+                        request.get("clip_elimination_max_other"), 0.55),
+                )
+        except Exception:  # pragma: no cover - selection is best-effort
+            logging.exception("Disambiguation failed; returning DINO order")
 
     for det in detections:  # drop the numpy mask (not JSON serializable)
         det.pop("_mask_arr", None)
