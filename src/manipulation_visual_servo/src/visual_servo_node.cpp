@@ -1358,19 +1358,36 @@ void VisualServoNode::handle_idle()
 void VisualServoNode::handle_acquire()
 {
   const double elapsed = (this->now() - state_entry_time_).seconds();
-  if (elapsed > acquire_timeout_sec_) {
-    RCLCPP_WARN(this->get_logger(), "[ACQUIRE] timed out after %.1fs", elapsed);
-    transition_to(ServoState::IDLE, "acquire timeout");
-    return;
-  }
 
   cv::Mat frame;
-  if (!fetch_latest_frame(frame)) {
+  const bool fresh = fetch_latest_frame(frame);
+  if (fresh) {
+    if (acquire_from_detection(frame)) {
+      transition_to(ServoState::TRACK, "tracker initialized from detection");
+      return;
+    }
+  } else if (fallback_to_detection_tracking("ACQUIRE", false)) {
+    // RGB frame stalled but a fresh detection is available: take its ROI directly
+    // so acquisition is not blocked by a momentary image-callback stall. The
+    // table grasp re-reads depth + mask downstream, so a tracker frame is not
+    // strictly required to proceed.
+    const ServoState post = (use_table_grasp_ && grasp_use_move_group_) ?
+      ServoState::ESTIMATE_GRASP : ServoState::ALIGN_XY;
+    transition_to(post, "acquired from detection ROI (RGB stalled)");
     return;
   }
 
-  if (acquire_from_detection(frame)) {
-    transition_to(ServoState::TRACK, "tracker initialized from detection");
+  if (elapsed > acquire_timeout_sec_) {
+    bool det_avail;
+    {
+      std::lock_guard<std::mutex> lock(detection_mutex_);
+      det_avail = detection_available_;
+    }
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[ACQUIRE] timed out after %.1fs (last cycle: fresh_frame=%s detection_available=%s)",
+      elapsed, fresh ? "yes" : "no", det_avail ? "yes" : "no");
+    transition_to(ServoState::IDLE, "acquire timeout");
   }
 }
 
