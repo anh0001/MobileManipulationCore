@@ -217,6 +217,14 @@ class RemoteDetectionClientNode(Node):
         self.declare_parameter("metrics_log_interval_sec", 5.0)
         self.declare_parameter("request_masks", True)
         self.declare_parameter("mask_topic", "/manipulation/target_mask")
+        # CLIP re-rank / disambiguation. When enabled, Grounding DINO is prompted
+        # with the whole scene vocabulary (proposes every object), CLIP picks the
+        # box that actually matches the requested object, and an ambiguous result
+        # publishes no detection so the robot declines rather than grasping wrong.
+        self.declare_parameter("clip_rerank", False)
+        self.declare_parameter("scene_vocabulary", [""])
+        self.declare_parameter("clip_margin", 0.10)
+        self.declare_parameter("clip_min_score", 0.30)
 
         self.image_topic = str(self.get_parameter("image_topic").value)
         self.detection_topic = str(self.get_parameter("detection_topic").value)
@@ -241,6 +249,12 @@ class RemoteDetectionClientNode(Node):
         self.request_masks = bool(self.get_parameter("request_masks").value) and (
             np is not None and cv2 is not None)
         self.mask_topic = str(self.get_parameter("mask_topic").value)
+        self.clip_rerank = bool(self.get_parameter("clip_rerank").value)
+        self.scene_vocabulary = [
+            str(v).strip() for v in (self.get_parameter("scene_vocabulary").value or [])
+            if str(v).strip()]
+        self.clip_margin = _safe_float(self.get_parameter("clip_margin").value, 0.10)
+        self.clip_min_score = _safe_float(self.get_parameter("clip_min_score").value, 0.30)
         self.metrics_log_interval_sec = max(
             1.0,
             float(self.get_parameter("metrics_log_interval_sec").value),
@@ -377,12 +391,31 @@ class RemoteDetectionClientNode(Node):
                 max_long_side_px=self.max_image_long_side_px,
             )
 
+            # Multi-label prompt: ground DINO on the whole scene vocabulary so it
+            # proposes every object; CLIP (server-side) then selects the requested
+            # one. Falls back to the single prompt when re-rank is off.
+            dino_prompt = prompt
+            clip_fields: Dict[str, Any] = {}
+            if self.clip_rerank and self.scene_vocabulary:
+                vocab = list(self.scene_vocabulary)
+                if prompt and prompt not in vocab:
+                    vocab = [prompt] + vocab
+                dino_prompt = " . ".join(vocab)
+                clip_fields = {
+                    "clip_rerank": True,
+                    "target_label": prompt,
+                    "candidate_labels": vocab,
+                    "clip_margin": self.clip_margin,
+                    "clip_min_score": self.clip_min_score,
+                }
+
             payload = {
                 "image": image_b64,
                 "image_encoding": "jpeg",
                 "image_width": detector_width,
                 "image_height": detector_height,
-                "prompt": prompt,
+                "prompt": dino_prompt,
+                **clip_fields,
                 "stamp": {
                     "sec": int(image_msg.header.stamp.sec),
                     "nanosec": int(image_msg.header.stamp.nanosec),
@@ -431,6 +464,23 @@ class RemoteDetectionClientNode(Node):
                     "Dropping stale detection result "
                     f"(age={age_sec:.3f}s > {self.max_result_staleness_sec:.3f}s)."
                 )
+                return
+
+            # CLIP says the requested object cannot be confidently picked out of the
+            # candidates -> publish no detection so the grasp pipeline declines
+            # rather than grabbing the wrong object.
+            if response.get("ambiguous"):
+                empty = Detection2DArray()
+                empty.header = image_msg.header
+                self.detection_pub.publish(empty)
+                self.total_published_messages += 1
+                top = detections[0] if detections else {}
+                self.get_logger().warn(
+                    f"Ambiguous match for '{prompt}' among {len(detections)} "
+                    f"candidates; declining. best: P(target)={top.get('clip_target_score', 0.0):.2f} "
+                    f"argmax='{top.get('clip_argmax_label', '?')}' "
+                    f"P(argmax)={top.get('clip_argmax_score', 0.0):.2f} "
+                    f"(need P>={self.clip_min_score:.2f}, margin>={self.clip_margin:.2f})")
                 return
 
             detections_msg = _build_detection_message(

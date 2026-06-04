@@ -557,6 +557,12 @@ def generate_launch_description():
             'text_threshold': float(detection_cfg.get('text_threshold', 0.25)),
             'min_score': float(detection_cfg.get('min_score', 0.35)),
             'max_detections': int(detection_cfg.get('max_detections', 5)),
+            'clip_rerank': bool(detection_cfg.get('clip_rerank', False)),
+            'scene_vocabulary': [
+                str(v) for v in detection_cfg.get('scene_vocabulary', []) if str(v).strip()
+            ] or [''],
+            'clip_margin': float(detection_cfg.get('clip_margin', 0.10)),
+            'clip_min_score': float(detection_cfg.get('clip_min_score', 0.30)),
             'metrics_log_interval_sec': float(
                 detection_cfg.get('metrics_log_interval_sec', 5.0)
             ),

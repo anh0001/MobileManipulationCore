@@ -49,6 +49,13 @@ except ImportError:  # pragma: no cover - optional dependency
     _sam_registry = None
     _SamPredictor = None
 
+try:  # Optional CLIP for masked-crop re-ranking / disambiguation.
+    from transformers import CLIPModel as _CLIPModel
+    from transformers import CLIPProcessor as _CLIPProcessor
+except ImportError:  # pragma: no cover - optional dependency
+    _CLIPModel = None
+    _CLIPProcessor = None
+
 
 _DETECTOR_LOCK = threading.Lock()
 _DETECTOR_MODEL = None
@@ -56,6 +63,10 @@ _DETECTOR_PROCESSOR = None
 _DETECTOR_DEVICE = None
 _SEGMENTER_LOCK = threading.Lock()
 _SEGMENTER = None
+_CLIP_LOCK = threading.Lock()
+_CLIP_MODEL = None
+_CLIP_PROCESSOR = None
+_CLIP_DEVICE = None
 _CLIENT_DISCONNECT_ERRNOS = {
     errno.EPIPE,
     errno.ECONNRESET,
@@ -225,6 +236,79 @@ def _segment_detections(image, detections: List[Dict[str, Any]]) -> None:
             det["mask_score"] = float(scores[0])
 
 
+def _load_clip():
+    """Lazily load CLIP for crop re-ranking. Returns (None, None, None) if absent."""
+    global _CLIP_MODEL, _CLIP_PROCESSOR, _CLIP_DEVICE
+    if _CLIP_MODEL is not None:
+        return _CLIP_MODEL, _CLIP_PROCESSOR, _CLIP_DEVICE
+    if _CLIPModel is None or _CLIPProcessor is None or torch is None:
+        return None, None, None
+    with _CLIP_LOCK:
+        if _CLIP_MODEL is not None:
+            return _CLIP_MODEL, _CLIP_PROCESSOR, _CLIP_DEVICE
+        model_id = os.getenv("CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
+        device = os.getenv("GROUNDING_DINO_DEVICE") or (
+            "cuda" if torch.cuda.is_available() else "cpu")
+        processor = _CLIPProcessor.from_pretrained(model_id)
+        model = _CLIPModel.from_pretrained(model_id).to(device)
+        model.eval()
+        _CLIP_MODEL = model
+        _CLIP_PROCESSOR = processor
+        _CLIP_DEVICE = device
+        logging.info("Loaded CLIP model '%s' on %s", model_id, device)
+        return _CLIP_MODEL, _CLIP_PROCESSOR, _CLIP_DEVICE
+
+
+def _rerank_clip(image, detections, candidate_labels, target_label, margin, min_score):
+    """Re-rank DINO boxes by CLIP P(label | crop).
+
+    Grounding DINO proposes boxes; CLIP decides which physical object each box is,
+    so the wrong-but-confident DINO box no longer wins. Mutates `detections` in
+    place: sets score = P(target | crop), class_id = CLIP argmax label, and sorts
+    best-target-first. Returns True when the choice is AMBIGUOUS (best is not the
+    target, or below min_score, or within `margin` of the runner-up) so the caller
+    can decline to grasp instead of picking wrong.
+    """
+    model, processor, device = _load_clip()
+    if model is None or not detections or not candidate_labels:
+        return False
+    labels = list(candidate_labels)
+    if target_label and target_label not in labels:
+        labels = [target_label] + labels
+    tgt_idx = labels.index(target_label) if target_label in labels else 0
+    texts = [f"a photo of a {lbl}" for lbl in labels]
+    crops = []
+    for det in detections:
+        x1 = max(0, int(det["cx"] - det["w"] * 0.5))
+        y1 = max(0, int(det["cy"] - det["h"] * 0.5))
+        x2 = max(x1 + 1, int(det["cx"] + det["w"] * 0.5))
+        y2 = max(y1 + 1, int(det["cy"] + det["h"] * 0.5))
+        crops.append(image.crop((x1, y1, x2, y2)))
+    with _CLIP_LOCK:
+        inputs = processor(text=texts, images=crops, return_tensors="pt", padding=True)
+        inputs = {name: value.to(device) for name, value in inputs.items()}
+        with torch.inference_mode():
+            out = model(**inputs)
+        probs = out.logits_per_image.softmax(dim=1).detach().cpu().numpy()
+    for det, prob in zip(detections, probs):
+        amax = int(prob.argmax())
+        det["dino_score"] = float(det.get("score", 0.0))
+        det["clip_target_score"] = float(prob[tgt_idx])
+        det["clip_argmax_label"] = labels[amax]
+        det["clip_argmax_score"] = float(prob[amax])
+        det["class_id"] = labels[amax]
+        det["score"] = float(prob[tgt_idx])
+    detections.sort(key=lambda d: d["clip_target_score"], reverse=True)
+    best = detections[0]
+    second = detections[1]["clip_target_score"] if len(detections) > 1 else 0.0
+    ambiguous = bool(
+        best["clip_argmax_label"] != target_label
+        or best["clip_target_score"] < min_score
+        or (best["clip_target_score"] - second) < margin
+    )
+    return ambiguous
+
+
 def _normalize_detections(
     boxes,
     scores,
@@ -293,8 +377,27 @@ def run_detection(request: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:  # pragma: no cover - masks are best-effort
             logging.exception("MobileSAM segmentation failed; returning boxes only")
 
+    # CLIP re-rank: let CLIP decide which proposed box is actually the requested
+    # object, and flag ambiguity so the caller can decline rather than grasp wrong.
+    ambiguous = False
+    candidate_labels = request.get("candidate_labels")
+    if request.get("clip_rerank") and isinstance(candidate_labels, list) \
+            and candidate_labels and detections:
+        try:
+            ambiguous = _rerank_clip(
+                image,
+                detections,
+                candidate_labels=[str(c) for c in candidate_labels],
+                target_label=str(request.get("target_label", "")).strip(),
+                margin=_safe_float(request.get("clip_margin"), 0.10),
+                min_score=_safe_float(request.get("clip_min_score"), 0.30),
+            )
+        except Exception:  # pragma: no cover - re-rank is best-effort
+            logging.exception("CLIP re-rank failed; returning DINO order")
+
     return {
         "detections": detections,
+        "ambiguous": bool(ambiguous),
         "inference_ms": float(inference_ms),
         "prompt": prompt,
         "num_detections": len(detections),

@@ -32,5 +32,21 @@ detection:
   min_score: 0.35
   max_detections: 5
 
+  # CLIP re-rank / disambiguation (server-side). When enabled, Grounding DINO is
+  # prompted with the whole scene_vocabulary (proposes every object) and CLIP
+  # selects the box that actually matches the requested object. If the best match
+  # is below clip_min_score, or within clip_margin of the runner-up, the result is
+  # AMBIGUOUS and no detection is published -> the robot declines instead of
+  # grasping the wrong item. List every object expected on the table here.
+  clip_rerank: true
+  scene_vocabulary:
+    - "toy bread"
+    - "toy banana"
+    - "toy watermelon"
+    - "toy pineapple"
+    - "red apple"
+  clip_margin: 0.10
+  clip_min_score: 0.30
+
   # Logging/metrics
   metrics_log_interval_sec: 5.0
