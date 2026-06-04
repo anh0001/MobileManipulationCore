@@ -223,6 +223,7 @@ class RemoteDetectionClientNode(Node):
         # publishes no detection so the robot declines rather than grasping wrong.
         self.declare_parameter("clip_rerank", False)
         self.declare_parameter("scene_vocabulary", [""])
+        self.declare_parameter("clip_descriptions", [""])
         self.declare_parameter("clip_margin", 0.10)
         self.declare_parameter("clip_min_score", 0.30)
 
@@ -252,6 +253,9 @@ class RemoteDetectionClientNode(Node):
         self.clip_rerank = bool(self.get_parameter("clip_rerank").value)
         self.scene_vocabulary = [
             str(v).strip() for v in (self.get_parameter("scene_vocabulary").value or [])
+            if str(v).strip()]
+        self.clip_descriptions = [
+            str(v) for v in (self.get_parameter("clip_descriptions").value or [])
             if str(v).strip()]
         self.clip_margin = _safe_float(self.get_parameter("clip_margin").value, 0.10)
         self.clip_min_score = _safe_float(self.get_parameter("clip_min_score").value, 0.30)
@@ -404,10 +408,15 @@ class RemoteDetectionClientNode(Node):
                 clip_fields = {
                     "clip_rerank": True,
                     "target_label": prompt,
-                    "candidate_labels": vocab,
+                    # CLIP candidate labels stay aligned with the descriptions
+                    # (scene order); DINO gets the prepended prompt above.
+                    "candidate_labels": self.scene_vocabulary,
                     "clip_margin": self.clip_margin,
                     "clip_min_score": self.clip_min_score,
                 }
+                if self.clip_descriptions and \
+                        len(self.clip_descriptions) == len(self.scene_vocabulary):
+                    clip_fields["candidate_descriptions"] = self.clip_descriptions
 
             payload = {
                 "image": image_b64,

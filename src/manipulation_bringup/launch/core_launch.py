@@ -561,6 +561,9 @@ def generate_launch_description():
             'scene_vocabulary': [
                 str(v) for v in detection_cfg.get('scene_vocabulary', []) if str(v).strip()
             ] or [''],
+            'clip_descriptions': [
+                str(v) for v in detection_cfg.get('clip_descriptions', []) if str(v).strip()
+            ] or [''],
             'clip_margin': float(detection_cfg.get('clip_margin', 0.10)),
             'clip_min_score': float(detection_cfg.get('clip_min_score', 0.30)),
             'metrics_log_interval_sec': float(

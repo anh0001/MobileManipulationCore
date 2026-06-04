@@ -39,12 +39,23 @@ detection:
   # AMBIGUOUS and no detection is published -> the robot declines instead of
   # grasping the wrong item. List every object expected on the table here.
   clip_rerank: true
+  # DINO detection labels (also become the published class_id for per-object offset).
   scene_vocabulary:
     - "toy bread"
     - "toy banana"
     - "toy watermelon"
     - "toy pineapple"
     - "red apple"
+  # CLIP scoring text, ALIGNED 1:1 with scene_vocabulary. Decoupled from the DINO
+  # label so CLIP gets a discriminative description (DINO's "toy bread" reads weak
+  # to CLIP; "a brown loaf of bread" reads far stronger). Leave empty to fall back
+  # to "a photo of a <label>".
+  clip_descriptions:
+    - "a brown loaf of bread"
+    - "a yellow banana"
+    - "a slice of watermelon with green rind and red flesh"
+    - "a pineapple"
+    - "a red apple"
   clip_margin: 0.10
   clip_min_score: 0.30
 

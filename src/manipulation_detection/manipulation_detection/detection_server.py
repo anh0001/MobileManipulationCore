@@ -234,6 +234,7 @@ def _segment_detections(image, detections: List[Dict[str, Any]]) -> None:
                     box=box, multimask_output=False)
             det["mask_png"] = _encode_mask_png(masks[0])
             det["mask_score"] = float(scores[0])
+            det["_mask_arr"] = np.asarray(masks[0]).astype(bool)  # for CLIP masked crop
 
 
 def _load_clip():
@@ -259,7 +260,8 @@ def _load_clip():
         return _CLIP_MODEL, _CLIP_PROCESSOR, _CLIP_DEVICE
 
 
-def _rerank_clip(image, detections, candidate_labels, target_label, margin, min_score):
+def _rerank_clip(image, detections, candidate_labels, target_label, margin, min_score,
+                 candidate_descriptions=None):
     """Re-rank DINO boxes by CLIP P(label | crop).
 
     Grounding DINO proposes boxes; CLIP decides which physical object each box is,
@@ -273,17 +275,36 @@ def _rerank_clip(image, detections, candidate_labels, target_label, margin, min_
     if model is None or not detections or not candidate_labels:
         return False
     labels = list(candidate_labels)
+    desc_map = {}
+    if candidate_descriptions and len(candidate_descriptions) == len(candidate_labels):
+        desc_map = {lbl: str(d) for lbl, d in zip(candidate_labels, candidate_descriptions)
+                    if str(d).strip()}
     if target_label and target_label not in labels:
         labels = [target_label] + labels
     tgt_idx = labels.index(target_label) if target_label in labels else 0
-    texts = [f"a photo of a {lbl}" for lbl in labels]
+    # CLIP text: prefer the discriminative description, else a generic template.
+    texts = [desc_map.get(lbl, f"a photo of a {lbl}") for lbl in labels]
     crops = []
     for det in detections:
         x1 = max(0, int(det["cx"] - det["w"] * 0.5))
         y1 = max(0, int(det["cy"] - det["h"] * 0.5))
         x2 = max(x1 + 1, int(det["cx"] + det["w"] * 0.5))
         y2 = max(y1 + 1, int(det["cy"] + det["h"] * 0.5))
-        crops.append(image.crop((x1, y1, x2, y2)))
+        crop = image.crop((x1, y1, x2, y2))
+        # Prefer the SAM-masked crop: white out the background so CLIP scores the
+        # object itself, not neighbouring clutter (greatly improves discrimination
+        # between similar adjacent toys).
+        mask_arr = det.get("_mask_arr")
+        if mask_arr is not None and np is not None:
+            try:
+                sub = np.asarray(mask_arr[y1:y2, x1:x2], dtype=bool)
+                arr = np.asarray(crop).copy()
+                if sub.shape[:2] == arr.shape[:2] and sub.any():
+                    arr[~sub] = 255
+                    crop = Image.fromarray(arr)
+            except Exception:  # pragma: no cover - masking is best-effort
+                pass
+        crops.append(crop)
     with _CLIP_LOCK:
         inputs = processor(text=texts, images=crops, return_tensors="pt", padding=True)
         inputs = {name: value.to(device) for name, value in inputs.items()}
@@ -298,13 +319,24 @@ def _rerank_clip(image, detections, candidate_labels, target_label, margin, min_
         det["clip_argmax_score"] = float(prob[amax])
         det["class_id"] = labels[amax]
         det["score"] = float(prob[tgt_idx])
-    detections.sort(key=lambda d: d["clip_target_score"], reverse=True)
-    best = detections[0]
-    second = detections[1]["clip_target_score"] if len(detections) > 1 else 0.0
+    # Ambiguity is competition between DIFFERENT objects, not duplicate boxes on the
+    # same one. Compare the best box CLIP labels as the target against the best box
+    # of any OTHER object — so overlapping target duplicates (no NMS) don't trigger
+    # a false "ambiguous".
+    target_dets = [d for d in detections if d["clip_argmax_label"] == target_label]
+    other_best = max(
+        (d["clip_target_score"] for d in detections
+         if d["clip_argmax_label"] != target_label),
+        default=0.0)
+    if not target_dets:
+        detections.sort(key=lambda d: d["clip_target_score"], reverse=True)
+        return True  # no box is confidently the target
+    best = max(target_dets, key=lambda d: d["clip_target_score"])
+    # Put the chosen target box first (client grasps detections[0] + its mask).
+    detections.sort(key=lambda d: (d is not best, -d["clip_target_score"]))
     ambiguous = bool(
-        best["clip_argmax_label"] != target_label
-        or best["clip_target_score"] < min_score
-        or (best["clip_target_score"] - second) < margin
+        best["clip_target_score"] < min_score
+        or (best["clip_target_score"] - other_best) < margin
     )
     return ambiguous
 
@@ -384,6 +416,7 @@ def run_detection(request: Dict[str, Any]) -> Dict[str, Any]:
     if request.get("clip_rerank") and isinstance(candidate_labels, list) \
             and candidate_labels and detections:
         try:
+            descs = request.get("candidate_descriptions")
             ambiguous = _rerank_clip(
                 image,
                 detections,
@@ -391,9 +424,14 @@ def run_detection(request: Dict[str, Any]) -> Dict[str, Any]:
                 target_label=str(request.get("target_label", "")).strip(),
                 margin=_safe_float(request.get("clip_margin"), 0.10),
                 min_score=_safe_float(request.get("clip_min_score"), 0.30),
+                candidate_descriptions=[str(d) for d in descs]
+                if isinstance(descs, list) else None,
             )
         except Exception:  # pragma: no cover - re-rank is best-effort
             logging.exception("CLIP re-rank failed; returning DINO order")
+
+    for det in detections:  # drop the numpy mask (not JSON serializable)
+        det.pop("_mask_arr", None)
 
     return {
         "detections": detections,
