@@ -360,6 +360,8 @@ _COLOR_RGB = {
     "green": (50, 140, 55), "orange": (220, 130, 40), "white": (235, 235, 235),
     "black": (30, 30, 30), "purple": (120, 50, 140), "pink": (235, 150, 170),
     "blue": (45, 70, 180),
+    # Light bread/crust tones (measured from the plush bread: ~[232,184,155]).
+    "tan": (230, 185, 155), "beige": (225, 200, 170), "cream": (235, 215, 185),
 }
 
 

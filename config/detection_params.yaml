@@ -52,7 +52,7 @@ detection:
   # the "color" selector. Names: brown/red/yellow/green/orange/white/black/purple/
   # pink/blue.
   scene_colors:
-    - "brown"
+    - "tan"
     - "yellow"
     - "red"
   color_max_dist: 95.0     # max RGB distance from the target colour to accept

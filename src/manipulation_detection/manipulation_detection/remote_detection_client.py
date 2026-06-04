@@ -522,12 +522,13 @@ class RemoteDetectionClientNode(Node):
                 self.total_published_messages += 1
                 top = detections[0] if detections else {}
                 if "color_dist_target" in top:
+                    allc = "; ".join(
+                        f"rgb={d.get('color_mean_rgb')}->{d.get('color_closest_label')}"
+                        f"(d2t={d.get('color_dist_target', 0.0):.0f})"
+                        for d in detections if "color_mean_rgb" in d)
                     self.get_logger().warn(
-                        f"Ambiguous match for '{prompt}' among {len(detections)} "
-                        f"candidates [color]; declining. best: dist={top.get('color_dist_target', 0.0):.0f} "
-                        f"mean_rgb={top.get('color_mean_rgb')} "
-                        f"closest='{top.get('color_closest_label', '?')}' "
-                        f"(need dist<={self.color_max_dist:.0f}, margin>={self.color_margin:.0f})")
+                        f"Ambiguous '{prompt}' [color] among {len(detections)}; declining. "
+                        f"all: {allc} (need dist<={self.color_max_dist:.0f}, margin>={self.color_margin:.0f})")
                 else:
                     self.get_logger().warn(
                         f"Ambiguous match for '{prompt}' among {len(detections)} "
@@ -536,6 +537,17 @@ class RemoteDetectionClientNode(Node):
                         f"P(argmax)={top.get('clip_argmax_score', 0.0):.2f} "
                         f"(need P>={self.clip_min_score:.2f}, margin>={self.clip_margin:.2f})")
                 return
+
+            sel = detections[0] if detections else {}
+            if "color_mean_rgb" in sel:
+                allc = "; ".join(
+                    f"rgb={d.get('color_mean_rgb')}->{d.get('color_closest_label')}"
+                    f"(d2t={d.get('color_dist_target', 0.0):.0f})"
+                    for d in detections if "color_mean_rgb" in d)
+                self.get_logger().warn(
+                    f"SELECT '{prompt}' [color]: picked rgb={sel.get('color_mean_rgb')} "
+                    f"closest={sel.get('color_closest_label')} d2t={sel.get('color_dist_target', 0.0):.0f}"
+                    f" | all: {allc}")
 
             detections_msg = _build_detection_message(
                 header=image_msg.header,
