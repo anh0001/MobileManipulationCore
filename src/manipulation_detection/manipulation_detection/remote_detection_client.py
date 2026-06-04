@@ -549,6 +549,13 @@ class RemoteDetectionClientNode(Node):
                     f"closest={sel.get('color_closest_label')} d2t={sel.get('color_dist_target', 0.0):.0f}"
                     f" | all: {allc}")
 
+            # When a selector (color/clip) chose the target, publish ONLY that box.
+            # Otherwise the non-target boxes keep their high DINO scores and the
+            # visual-servo node — which grasps the highest-SCORE detection — would
+            # pick a competitor (e.g. the red apple) instead of the selected target.
+            if self.clip_rerank and detections:
+                detections = detections[:1]
+
             detections_msg = _build_detection_message(
                 header=image_msg.header,
                 detections=detections,
