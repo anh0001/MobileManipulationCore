@@ -17,7 +17,9 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <array>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -348,6 +350,10 @@ private:
   double grasp_offset_x_{0.0};
   double grasp_offset_y_{0.0};
   double grasp_offset_z_{0.0};
+  // Per-object grasp offset overrides (base frame), keyed by detection class_id.
+  // Selected by the detected object class (substring match); objects not listed
+  // fall back to grasp_offset_{x,y,z}_ above. Populated from config at startup.
+  std::map<std::string, std::array<double, 3>> per_object_grasp_offset_;
 
   std::string tracker_type_;
   int klt_max_features_;

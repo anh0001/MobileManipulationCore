@@ -50,6 +50,14 @@
       "options": { "cwd": "${workspaceFolder}" }
     },
     {
+      "label": "3. Arm: Set speed (%)",
+      "type": "shell",
+      "command": "source install/setup.bash && source ${env:HOME}/codes/ranger-garden-assistant/install/setup.bash && ros2 param set /piper_follow_joint_trajectory_bridge default_speed ${input:armSpeed}",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
       "label": "3. Arm: Move to capture pose (look-down)",
       "type": "shell",
       "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /piper_arm_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory '{trajectory: {joint_names: [piper_joint1, piper_joint2, piper_joint3, piper_joint4, piper_joint5, piper_joint6], points: [{positions: [0.0, 1.2, -0.2, 0.0, -0.35, 0.0], time_from_start: {sec: 6, nanosec: 0}}]}}'",
@@ -119,7 +127,13 @@
       "id": "graspPrompt",
       "type": "promptString",
       "description": "Open-vocab object to detect + grasp (Grounding DINO prompt)",
-      "default": "bottle"
+      "default": "bread"
+    },
+    {
+      "id": "armSpeed",
+      "type": "promptString",
+      "description": "PiPER arm speed percent (1-100); lower = slower/smoother",
+      "default": "20"
     }
   ]
 }

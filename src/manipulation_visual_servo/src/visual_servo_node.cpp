@@ -149,7 +149,13 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // camera mount. XY verified on hardware; z=-0.015 lands the jaw on the object top.
   this->declare_parameter("grasp_offset_x", -0.0289);
   this->declare_parameter("grasp_offset_y", -0.018);
-  this->declare_parameter("grasp_offset_z", -0.015);
+  this->declare_parameter("grasp_offset_z", -0.020);
+  // Per-object grasp offset table (parallel arrays, same length/order). The
+  // detected object class selects the row; unlisted objects use the globals above.
+  this->declare_parameter("grasp_offset_objects", std::vector<std::string>{});
+  this->declare_parameter("grasp_offset_object_x", std::vector<double>{});
+  this->declare_parameter("grasp_offset_object_y", std::vector<double>{});
+  this->declare_parameter("grasp_offset_object_z", std::vector<double>{});
 
   this->declare_parameter("tracker_type", "mil");
   this->declare_parameter("klt_max_features", 200);
@@ -256,6 +262,27 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_offset_x_ = this->get_parameter("grasp_offset_x").as_double();
   grasp_offset_y_ = this->get_parameter("grasp_offset_y").as_double();
   grasp_offset_z_ = this->get_parameter("grasp_offset_z").as_double();
+  {
+    const auto objs = this->get_parameter("grasp_offset_objects").as_string_array();
+    const auto ox = this->get_parameter("grasp_offset_object_x").as_double_array();
+    const auto oy = this->get_parameter("grasp_offset_object_y").as_double_array();
+    const auto oz = this->get_parameter("grasp_offset_object_z").as_double_array();
+    per_object_grasp_offset_.clear();
+    if (objs.size() == ox.size() && objs.size() == oy.size() && objs.size() == oz.size()) {
+      for (size_t i = 0; i < objs.size(); ++i) {
+        per_object_grasp_offset_[objs[i]] = {ox[i], oy[i], oz[i]};
+        RCLCPP_INFO(
+          this->get_logger(), "[INIT] grasp offset '%s' -> (%.4f, %.4f, %.4f)",
+          objs[i].c_str(), ox[i], oy[i], oz[i]);
+      }
+    } else {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[INIT] grasp_offset_objects/x/y/z length mismatch (%zu/%zu/%zu/%zu); "
+        "per-object offsets disabled, using global grasp_offset_{x,y,z}",
+        objs.size(), ox.size(), oy.size(), oz.size());
+    }
+  }
 
   if (gripper_joint_names_.empty() && !gripper_joint_name_.empty()) {
     gripper_joint_names_.push_back(gripper_joint_name_);
@@ -1667,10 +1694,35 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
   }
   CartesianVector grasp_ref = grasp_ref_opt.value();
 
-  // Apply the fixed hand-eye calibration offset (base frame).
-  grasp_ref.x += grasp_offset_x_;
-  grasp_ref.y += grasp_offset_y_;
-  grasp_ref.z += grasp_offset_z_;
+  // Apply the grasp offset (base frame). Prefer a per-object override keyed on the
+  // detected class (exact, then substring so "banana" matches "yellow banana");
+  // fall back to the global hand-eye residual offset.
+  double off_x = grasp_offset_x_, off_y = grasp_offset_y_, off_z = grasp_offset_z_;
+  if (!per_object_grasp_offset_.empty() && !latest_detection_class_.empty()) {
+    const std::array<double, 3> * sel = nullptr;
+    auto it = per_object_grasp_offset_.find(latest_detection_class_);
+    if (it != per_object_grasp_offset_.end()) {
+      sel = &it->second;
+    } else {
+      for (const auto & kv : per_object_grasp_offset_) {
+        if (latest_detection_class_.find(kv.first) != std::string::npos) {
+          sel = &kv.second;
+          break;
+        }
+      }
+    }
+    if (sel != nullptr) {
+      off_x = (*sel)[0];
+      off_y = (*sel)[1];
+      off_z = (*sel)[2];
+      RCLCPP_INFO(
+        this->get_logger(), "[ESTIMATE] per-object grasp offset for '%s': (%.4f, %.4f, %.4f)",
+        latest_detection_class_.c_str(), off_x, off_y, off_z);
+    }
+  }
+  grasp_ref.x += off_x;
+  grasp_ref.y += off_y;
+  grasp_ref.z += off_z;
 
   // Reach guard: refuse to command a target the arm cannot reach (horizontal
   // distance from the base origin), so we never strain into a singularity.

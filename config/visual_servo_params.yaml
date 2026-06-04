@@ -55,7 +55,20 @@ visual_servo:
   blind_push_offset_y: 0.0              # Vertical offset (m) in reference frame applied during blind push (positive = arm +Z direction)
   open_gripper_settle_sec: 3.0         # Wait after issuing the direct GripperCommand open action
   gripper_open_position_tolerance: 0.008  # Require near-full open before approaching (else OPEN->APPROACH cancels the open goal mid-travel and the gripper descends partly closed)
-  return_to_ready_after_pick: true     # Ask the adapter to send the arm back to its configured ready pose after DONE
+  return_to_ready_after_pick: true     # Ask the adapter to send the arm back to its configured ready pose after DONEtry 
+
+  # Per-object grasp offset overrides (base frame, meters). The detected object
+  # class (Grounding DINO prompt label) selects a row by substring match, so the
+  # key "banana" also matches the prompt "yellow banana". Objects not listed fall
+  # back to `default` below. To add an object, append one entry to ALL FOUR lists
+  # (same length and order).
+  grasp_offsets:
+    # Fallback offset for objects NOT in the list below (set to banana per request).
+    default: { x: -0.0289, y: -0.018, z: -0.012 }
+    objects: ["bread", "banana"]
+    x: [-0.0289, -0.0289]
+    y: [-0.018, -0.018]
+    z: [-0.020, -0.012]
 
   control:
     lambda_xy: 2.0                     # Higher gain to overcome arm dead-band at small errors

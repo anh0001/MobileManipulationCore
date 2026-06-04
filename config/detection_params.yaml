@@ -24,7 +24,9 @@ detection:
   max_image_long_side_px: 640
 
   # Prompt and filtering
-  default_prompt: "bottle"
+  # Objects here are TOY fruits — Grounding DINO matches them with a "toy <name>"
+  # prompt; bare food words (e.g. "watermelon") miss the toy versions.
+  default_prompt: "toy watermelon"
   box_threshold: 0.35
   text_threshold: 0.25
   min_score: 0.35

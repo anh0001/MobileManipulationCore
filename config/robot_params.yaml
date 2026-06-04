@@ -143,5 +143,5 @@ workspace:
   x_max: 0.9
   y_min: -0.6
   y_max: 0.6
-  z_min: -0.2
+  z_min: -0.25   # ~0.16 m above floor (arm base is 0.407 m up). Codex-verified safe max for top-down picks; below this risks reach/singularity/base-collision.
   z_max: 1.0

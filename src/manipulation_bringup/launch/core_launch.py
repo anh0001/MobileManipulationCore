@@ -260,6 +260,7 @@ def generate_launch_description():
     vs_cfg = vs_cfg_full.get('visual_servo', {})
     vs_control_cfg = vs_cfg.get('control', {})
     vs_debug_cfg = vs_cfg.get('debug', {})
+    vs_grasp_offsets_cfg = vs_cfg.get('grasp_offsets', {}) or {}
     detection_cfg_full = load_yaml(resolve_config_path('detection_params.yaml'))
     detection_cfg = detection_cfg_full.get('detection', {})
 
@@ -582,6 +583,20 @@ def generate_launch_description():
             'control_rate_hz': float(vs_cfg.get('control_rate_hz', 20.0)),
             'output_delta_horizon_sec': float(effective_servo_horizon_sec),
             'target_class': str(vs_cfg.get('target_class', '')),
+            'grasp_offset_x': float(
+                vs_grasp_offsets_cfg.get('default', {}).get('x', -0.0289)),
+            'grasp_offset_y': float(
+                vs_grasp_offsets_cfg.get('default', {}).get('y', -0.018)),
+            'grasp_offset_z': float(
+                vs_grasp_offsets_cfg.get('default', {}).get('z', -0.020)),
+            'grasp_offset_objects': [
+                str(o) for o in vs_grasp_offsets_cfg.get('objects', [])],
+            'grasp_offset_object_x': [
+                float(v) for v in vs_grasp_offsets_cfg.get('x', [])],
+            'grasp_offset_object_y': [
+                float(v) for v in vs_grasp_offsets_cfg.get('y', [])],
+            'grasp_offset_object_z': [
+                float(v) for v in vs_grasp_offsets_cfg.get('z', [])],
             'min_detection_confidence': float(
                 vs_cfg.get('min_detection_confidence', 0.4)),
             'min_tracking_confidence': float(
