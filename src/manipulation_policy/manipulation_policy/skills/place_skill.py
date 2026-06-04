@@ -110,7 +110,16 @@ class PlaceSkill(Skill):
             if saw_seq and ctx.vs_state == "DONE":
                 ctx.sleep(0.5)
                 width = round(float(ctx.gripper_width), 4)
-                return done(True, f"released object on '{target}'; width={width}")
+                # gate off first so the servo won't fight the return move, then
+                # bring the arm back to the ready (look-down) pose.
+                gate_off()
+                feedback("RETURN_READY", 0.9)
+                ctx.log("[PLACE] released; returning to ready pose")
+                ctx.move_arm_to(capture_pose, time_sec=5.0)
+                feedback("DONE", 1.0)
+                return SkillResult(
+                    True, f"released object on '{target}'; width={width}; returned to ready",
+                    {"gripper_width": width})
             if elapsed > timeout:
                 return done(False,
                             f"timeout after {timeout:.0f}s in state '{ctx.vs_state}'")

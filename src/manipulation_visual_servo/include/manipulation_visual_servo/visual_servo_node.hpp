@@ -221,6 +221,7 @@ private:
   cv::Mat latest_mask_frame_;
   rclcpp::Time last_mask_receive_time_;
   bool mask_available_{false};
+  double grasp_mask_max_age_sec_{1.0};  // reject SAM masks older than this
 
   std::mutex detection_mutex_;
   cv::Rect2d latest_detection_roi_;
@@ -324,7 +325,9 @@ private:
   bool grasp_enabled_{true};
   bool grasp_auto_loop_{false};  // DONE -> IDLE so the next enable re-grasps
   bool place_mode_{false};       // true: detect target, approach holding object,
-                                 // release at the standoff above it (no close/descend)
+                                 // raise above it, release, then finish (no close/descend)
+  bool place_released_{false};   // true once the held object has been released
+  double place_release_clearance_m_{0.03};  // raise this far above the standoff before releasing
   // When true, skip the servo ALIGN leg and execute the approach as MoveIt
   // move_group planned moves (publish the full EEF delta so the adapter, in
   // move_group + delta mode, plans current+delta and picks a non-singular IK).

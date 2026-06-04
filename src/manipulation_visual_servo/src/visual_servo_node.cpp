@@ -132,6 +132,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // object at the standoff above the detected target instead of descending and
   // closing. Skips the pre-grasp open so the gripper keeps holding on approach.
   this->declare_parameter("place_mode", false);
+  // How far above the approach standoff to raise the held object before opening
+  // the gripper, so it is released clear above the target (drops into the box).
+  this->declare_parameter("place_release_clearance_m", 0.03);
   this->declare_parameter("grasp_use_move_group", true);
   this->declare_parameter("grasp_plane_annulus_frac", 0.3);
   this->declare_parameter("grasp_plane_min_depth_m", 0.12);
@@ -142,6 +145,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("grasp_object_radius_m", 0.03);
   this->declare_parameter("neck_grasp_offset_m", 0.025);  // neck grasp: aim this far below the measured object top
   this->declare_parameter("grasp_band_width_margin_m", 0.012);  // jaw clearance for band width check
+  this->declare_parameter("grasp_mask_max_age_sec", 1.0);  // ignore SAM masks older than this
   this->declare_parameter("pregrasp_standoff_m", 0.12);
   this->declare_parameter("guarded_approach_speed_mps", 0.02);
   this->declare_parameter("guarded_reach_tolerance_m", 0.01);
@@ -246,6 +250,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_enabled_ = this->get_parameter("grasp_enabled").as_bool();
   grasp_auto_loop_ = this->get_parameter("grasp_auto_loop").as_bool();
   place_mode_ = this->get_parameter("place_mode").as_bool();
+  place_release_clearance_m_ = this->get_parameter("place_release_clearance_m").as_double();
   grasp_use_move_group_ = this->get_parameter("grasp_use_move_group").as_bool();
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
   grasp_plane_min_depth_m_ = this->get_parameter("grasp_plane_min_depth_m").as_double();
@@ -256,6 +261,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_object_radius_m_ = this->get_parameter("grasp_object_radius_m").as_double();
   neck_grasp_offset_m_ = this->get_parameter("neck_grasp_offset_m").as_double();
   grasp_band_width_margin_m_ = this->get_parameter("grasp_band_width_margin_m").as_double();
+  grasp_mask_max_age_sec_ = this->get_parameter("grasp_mask_max_age_sec").as_double();
   pregrasp_standoff_m_ = this->get_parameter("pregrasp_standoff_m").as_double();
   guarded_approach_speed_mps_ = this->get_parameter("guarded_approach_speed_mps").as_double();
   guarded_reach_tolerance_m_ = this->get_parameter("guarded_reach_tolerance_m").as_double();
@@ -774,6 +780,12 @@ void VisualServoNode::reset_pick_progress()
   grasp_target_ref_.reset();
   pregrasp_target_ref_.reset();
   guarded_at_pregrasp_ = false;
+  place_released_ = false;
+  // NOTE: do NOT clear the cached mask here. The SAM mask is produced once per
+  // remote detection (~1Hz), arriving with the detection that drives this
+  // ACQUIRE; clearing it starves ESTIMATE_GRASP (which waits only ~0.5s).
+  // Staleness from a prior attempt is handled by the freshness gate (timestamp)
+  // at the estimate site, not by clearing.
   estimate_attempts_ = 0;
 }
 
@@ -1345,6 +1357,7 @@ void VisualServoNode::handle_idle()
     return;
   }
   place_mode_ = this->get_parameter("place_mode").as_bool();
+  place_release_clearance_m_ = this->get_parameter("place_release_clearance_m").as_double();
   grasp_offset_x_ = this->get_parameter("grasp_offset_x").as_double();
   grasp_offset_y_ = this->get_parameter("grasp_offset_y").as_double();
   grasp_offset_z_ = this->get_parameter("grasp_offset_z").as_double();
@@ -1545,9 +1558,10 @@ void VisualServoNode::handle_open_gripper()
 
   if (gripper_fully_open || action_succeeded) {
     if (place_mode_) {
+      place_released_ = true;
       RCLCPP_INFO(this->get_logger(),
-        "[PLACE] released object above target; lifting clear");
-      transition_to(ServoState::LIFT, "place: released; lifting clear");
+        "[PLACE] released object above target");
+      transition_to(ServoState::DONE, "place: released");
       return;
     }
     if (gripper_fully_open) {
@@ -1590,9 +1604,10 @@ void VisualServoNode::handle_open_gripper()
         joint_states_topic_.c_str());
     }
     if (place_mode_) {
+      place_released_ = true;
       RCLCPP_INFO(this->get_logger(),
-        "[PLACE] release settle elapsed; lifting clear");
-      transition_to(ServoState::LIFT, "place: released (settled); lifting clear");
+        "[PLACE] release settle elapsed");
+      transition_to(ServoState::DONE, "place: released (settled)");
       return;
     }
     const bool table_ready = use_table_grasp_ && grasp_target_ref_.has_value();
@@ -1643,10 +1658,30 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
   cv::Mat object_mask;
   if (grasp_use_mask_) {
     std::lock_guard<std::mutex> lock(mask_mutex_);
-    if (mask_available_ && !latest_mask_frame_.empty() &&
-      latest_mask_frame_.rows == depth.rows && latest_mask_frame_.cols == depth.cols)
+    const double mask_age = mask_available_ ?
+      (this->now() - last_mask_receive_time_).seconds() : 1e9;
+    if (!mask_available_ || latest_mask_frame_.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[ESTIMATE] no mask available yet; using depth-only grasp estimate");
+    } else if (mask_age > grasp_mask_max_age_sec_) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[ESTIMATE] ignoring stale mask (age=%.2fs > %.2fs); waiting for a fresh one",
+        mask_age, grasp_mask_max_age_sec_);
+    } else if (latest_mask_frame_.rows == depth.rows &&
+      latest_mask_frame_.cols == depth.cols)
     {
       object_mask = latest_mask_frame_;  // CV_8UC1, nonzero = object
+    } else {
+      // Mask was published at the detector's source resolution, which differs
+      // from depth: resize to the depth grid instead of silently dropping it.
+      cv::resize(latest_mask_frame_, object_mask,
+        cv::Size(depth.cols, depth.rows), 0, 0, cv::INTER_NEAREST);
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "[ESTIMATE] mask %dx%d != depth %dx%d; resized mask to depth grid",
+        latest_mask_frame_.cols, latest_mask_frame_.rows, depth.cols, depth.rows);
     }
   }
   roi = tracked_roi_;
@@ -1678,6 +1713,17 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 1000,
       "[ESTIMATE] no object height (sparse object points); retrying for a cleaner frame");
+    return false;
+  }
+
+  // A masked estimate with zero object-surface points means the mask did not
+  // overlap the object (e.g. a stale/misaligned mask): the height then comes
+  // from the bbox-ray fallback and the grasp lands ~10cm high. Reject and retry
+  // for a frame whose mask actually covers the object.
+  if (grasp_top_down_ && est.mask_used && est.object_points == 0) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[ESTIMATE] mask covered no object points (stale/misaligned mask); retrying");
     return false;
   }
 
@@ -1895,10 +1941,12 @@ void VisualServoNode::handle_guarded_approach()
   if (dist <= guarded_reach_tolerance_m_) {
     if (!guarded_at_pregrasp_) {
       if (place_mode_) {
-        // Release above the target: do not descend onto it. Open here.
+        // Reached the standoff above the target. Do not descend; raise the held
+        // object further (place_release_clearance_m) before opening, so it is
+        // released clear above the box. The raise runs in LIFT, then OPEN_GRIPPER.
         publish_zero_motion(tracking_confidence_);
-        transition_to(ServoState::OPEN_GRIPPER,
-          "place: reached standoff above target; releasing");
+        transition_to(ServoState::LIFT,
+          "place: reached standoff; raising before release");
         return;
       }
       guarded_at_pregrasp_ = true;
@@ -2238,11 +2286,19 @@ void VisualServoNode::handle_lift()
   const double cycle_dt = 1.0 / std::max(1.0, control_rate_hz_);
   const double delta_horizon_sec = output_delta_horizon_sec_ > 0.0 ?
     output_delta_horizon_sec_ : cycle_dt;
-  const double remaining = std::max(0.0, lift_distance_m_ - accumulated_lift_distance_m_);
+  // In place mode this LIFT is the pre-release raise above the target (clearance);
+  // otherwise it is the normal post-grasp lift.
+  const bool place_pre_release = place_mode_ && !place_released_;
+  const double lift_target = place_pre_release ? place_release_clearance_m_ : lift_distance_m_;
+  const double remaining = std::max(0.0, lift_target - accumulated_lift_distance_m_);
 
   if (remaining <= 1e-6) {
     publish_zero_motion(tracking_confidence_);
-    transition_to(ServoState::DONE, "lift completed");
+    if (place_pre_release) {
+      transition_to(ServoState::OPEN_GRIPPER, "place: raised clear; releasing");
+    } else {
+      transition_to(ServoState::DONE, "lift completed");
+    }
     return;
   }
 
