@@ -716,12 +716,12 @@ def generate_launch_description():
         }]
     )
 
-    # Pick orchestrator - exposes the grasp pipeline as a single PickObject action
-    # (/pick_object) so AI clients can request "pick object X" with one call.
-    pick_orchestrator_node = Node(
+    # Skill server - one /execute_skill action that dispatches every registered
+    # robot skill (pick, home, ...) so AI clients can call any skill by name.
+    skill_server_node = Node(
         package='manipulation_policy',
-        executable='pick_orchestrator',
-        name='pick_orchestrator',
+        executable='skill_server',
+        name='skill_server',
         output='screen',
         condition=is_visual_servo_mode,
         parameters=[{
@@ -731,6 +731,10 @@ def generate_launch_description():
             'state_topic': str(vs_debug_cfg.get('state_topic', '/visual_servo/state')),
             'joint_states_topic': joint_states_topic,
             'gripper_joint': str(gripper_cfg.get('joint_name', 'piper_joint7')),
+            'gripper_action': robot_actions.get(
+                'gripper_command', '/piper_gripper_controller/gripper_cmd'),
+            'gripper_open_position': float(gripper_cfg.get('open_position', 0.07)),
+            'gripper_max_effort': float(gripper_cfg.get('max_effort', 5.0)),
             'capture_pose': [
                 float(v) for v in moveit_cfg.get(
                     'ready_pose_joint_positions', [0.0, 1.2, -0.2, 0.0, -0.35, 0.0])],
@@ -757,5 +761,5 @@ def generate_launch_description():
         # Visual servo mode nodes (conditional)
         remote_detection_client_node,
         visual_servo_node,
-        pick_orchestrator_node,
+        skill_server_node,
     ])

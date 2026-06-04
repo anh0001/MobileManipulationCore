@@ -1,0 +1,18 @@
+# Generic robot-skill action. One action type fronts every high-level skill
+# (pick, place, home, ...) so new skills add NO new message and NO rebuild of
+# manipulation_msgs. The skill is selected by name; its arguments travel as a
+# JSON object string. Each skill declares its own param schema in the skill
+# registry (manipulation_policy/skills); the skill_server validates against it.
+
+# --- Goal ---
+string skill             # registered skill name, e.g. "pick", "place", "home"
+string params_json       # JSON object of skill arguments, e.g. {"object":"bread"}
+---
+# --- Result ---
+bool success             # skill completed without abort
+string message           # human-readable outcome / failure reason
+string result_json       # JSON object of skill-specific outputs (may be "{}")
+---
+# --- Feedback ---
+string state             # current skill phase / state machine label
+float32 progress         # 0.0..1.0 best-effort progress (0 if unknown)

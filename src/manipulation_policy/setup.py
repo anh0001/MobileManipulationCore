@@ -7,7 +7,7 @@ package_name = 'manipulation_policy'
 setup(
     name=package_name,
     version='0.1.0',
-    packages=[package_name],
+    packages=[package_name, package_name + '.skills'],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -26,7 +26,7 @@ setup(
             'policy_node = manipulation_policy.policy_node:main',
             'policy_server = manipulation_policy.policy_server:main',
             'task_prompt_cli = manipulation_policy.task_prompt_cli:main',
-            'pick_orchestrator = manipulation_policy.pick_orchestrator:main',
+            'skill_server = manipulation_policy.skill_server:main',
         ],
     },
 )

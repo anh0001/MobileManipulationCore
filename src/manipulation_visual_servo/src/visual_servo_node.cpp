@@ -128,6 +128,10 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("grasp_top_down", true);
   this->declare_parameter("grasp_enabled", true);
   this->declare_parameter("grasp_auto_loop", false);
+  // Place mode: reuse the detect->align->approach pipeline but release the held
+  // object at the standoff above the detected target instead of descending and
+  // closing. Skips the pre-grasp open so the gripper keeps holding on approach.
+  this->declare_parameter("place_mode", false);
   this->declare_parameter("grasp_use_move_group", true);
   this->declare_parameter("grasp_plane_annulus_frac", 0.3);
   this->declare_parameter("grasp_plane_min_depth_m", 0.12);
@@ -241,6 +245,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_top_down_ = this->get_parameter("grasp_top_down").as_bool();
   grasp_enabled_ = this->get_parameter("grasp_enabled").as_bool();
   grasp_auto_loop_ = this->get_parameter("grasp_auto_loop").as_bool();
+  place_mode_ = this->get_parameter("place_mode").as_bool();
   grasp_use_move_group_ = this->get_parameter("grasp_use_move_group").as_bool();
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
   grasp_plane_min_depth_m_ = this->get_parameter("grasp_plane_min_depth_m").as_double();
@@ -1339,6 +1344,7 @@ void VisualServoNode::handle_idle()
   if (!grasp_enabled_) {
     return;
   }
+  place_mode_ = this->get_parameter("place_mode").as_bool();
   grasp_offset_x_ = this->get_parameter("grasp_offset_x").as_double();
   grasp_offset_y_ = this->get_parameter("grasp_offset_y").as_double();
   grasp_offset_z_ = this->get_parameter("grasp_offset_z").as_double();
@@ -1538,6 +1544,12 @@ void VisualServoNode::handle_open_gripper()
   publish_policy_output(geometry_msgs::msg::Twist(), tracking_confidence_, false, false, 0.0);
 
   if (gripper_fully_open || action_succeeded) {
+    if (place_mode_) {
+      RCLCPP_INFO(this->get_logger(),
+        "[PLACE] released object above target; lifting clear");
+      transition_to(ServoState::LIFT, "place: released; lifting clear");
+      return;
+    }
     if (gripper_fully_open) {
       RCLCPP_INFO(
         this->get_logger(),
@@ -1576,6 +1588,12 @@ void VisualServoNode::handle_open_gripper()
         "[GRIPPER][OPEN] settle elapsed without gripper feedback on %s; "
         "continuing to depth approach",
         joint_states_topic_.c_str());
+    }
+    if (place_mode_) {
+      RCLCPP_INFO(this->get_logger(),
+        "[PLACE] release settle elapsed; lifting clear");
+      transition_to(ServoState::LIFT, "place: released (settled); lifting clear");
+      return;
     }
     const bool table_ready = use_table_grasp_ && grasp_target_ref_.has_value();
     transition_to(
@@ -1820,7 +1838,12 @@ void VisualServoNode::handle_estimate_grasp()
 
   if (estimate_grasp_pose_in_reference()) {
     estimate_attempts_ = 0;
-    transition_to(ServoState::OPEN_GRIPPER, "grasp pose estimated");
+    // Place mode keeps holding the object, so skip the pre-grasp open and go
+    // straight to the guarded approach; the release happens at the standoff.
+    transition_to(
+      place_mode_ ? ServoState::GUARDED_APPROACH : ServoState::OPEN_GRIPPER,
+      place_mode_ ? "place: pose estimated; approaching to release"
+                  : "grasp pose estimated");
     return;
   }
 
@@ -1871,6 +1894,13 @@ void VisualServoNode::handle_guarded_approach()
 
   if (dist <= guarded_reach_tolerance_m_) {
     if (!guarded_at_pregrasp_) {
+      if (place_mode_) {
+        // Release above the target: do not descend onto it. Open here.
+        publish_zero_motion(tracking_confidence_);
+        transition_to(ServoState::OPEN_GRIPPER,
+          "place: reached standoff above target; releasing");
+        return;
+      }
       guarded_at_pregrasp_ = true;
       state_entry_time_ = this->now();  // reset timeout for the descent leg
       RCLCPP_INFO(this->get_logger(), "[GUARDED] reached pre-grasp; descending to grasp");
