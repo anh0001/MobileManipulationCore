@@ -112,6 +112,28 @@ class SkillContext(ABC):
         """Set a bool parameter on a remote node (default: the visual-servo node)."""
 
     @abstractmethod
+    def set_double_array_param(self, name: str, values: List[float],
+                               node: str | None = None, timeout: float = 4.0) -> bool:
+        """Set a double-array parameter on a remote node (default: visual-servo).
+
+        Used to inject a base-frame target (x, y, z) the node should approach.
+        """
+
+    @abstractmethod
+    def set_double_param(self, name: str, value: float,
+                         node: str | None = None, timeout: float = 4.0) -> bool:
+        """Set a scalar double parameter on a remote node (default: visual-servo)."""
+
+    @abstractmethod
+    def get_remote_params(self, names: List[str],
+                          node: str | None = None, timeout: float = 4.0) -> Dict[str, Any]:
+        """Read parameters from a remote node (default: the visual-servo node).
+
+        Returns {name: value} with each value decoded to its Python type; unset
+        params are omitted. Lets a skill read back a captured target pose.
+        """
+
+    @abstractmethod
     def move_arm_to(self, positions: List[float],
                     time_sec: float = 5.0, timeout: float = 12.0) -> bool:
         """Send a single-point joint trajectory and wait for it to finish."""

@@ -156,6 +156,20 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   // How far above the approach standoff to raise the held object before opening
   // the gripper, so it is released clear above the target (drops into the box).
   this->declare_parameter("place_release_clearance_m", 0.03);
+  // Pick-and-place hand-off (all in reference_frame_):
+  //  * last_grasp_target/last_pregrasp_target/last_target_valid are READBACK params
+  //    mirrored from the computed grasp estimate, so a skill can capture a
+  //    destination's absolute location while the wrist camera is unobstructed.
+  //  * use_external_target + external_grasp_target/external_pregrasp_target are
+  //    INPUTS: when use_external_target is true the node skips detection and drives
+  //    GUARDED_APPROACH straight to the injected target (blind place once the held
+  //    object occludes the camera).
+  this->declare_parameter("last_grasp_target", std::vector<double>{});
+  this->declare_parameter("last_pregrasp_target", std::vector<double>{});
+  this->declare_parameter("last_target_valid", false);
+  this->declare_parameter("use_external_target", false);
+  this->declare_parameter("external_grasp_target", std::vector<double>{});
+  this->declare_parameter("external_pregrasp_target", std::vector<double>{});
   this->declare_parameter("grasp_use_move_group", true);
   this->declare_parameter("grasp_plane_annulus_frac", 0.3);
   this->declare_parameter("grasp_plane_min_depth_m", 0.12);
@@ -284,6 +298,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_auto_loop_ = this->get_parameter("grasp_auto_loop").as_bool();
   place_mode_ = this->get_parameter("place_mode").as_bool();
   place_release_clearance_m_ = this->get_parameter("place_release_clearance_m").as_double();
+  use_external_target_ = this->get_parameter("use_external_target").as_bool();
   grasp_use_move_group_ = this->get_parameter("grasp_use_move_group").as_bool();
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
   grasp_plane_min_depth_m_ = this->get_parameter("grasp_plane_min_depth_m").as_double();
@@ -706,6 +721,25 @@ void VisualServoNode::detection_callback(
 
 void VisualServoNode::control_timer_callback()
 {
+  // Gating off mid-sequence is a hard stop: if a client clears grasp_enabled while
+  // the arm is mid-pick/place, abort to IDLE instead of completing the motion.
+  // (handle_idle only checks grasp_enabled at the start of a sequence.) This lets a
+  // pick-and-place skill halt the servo the instant it has captured a destination's
+  // pose, before the arm would continue and approach/grab it.
+  if (state_ != ServoState::IDLE && state_ != ServoState::DONE &&
+      state_ != ServoState::LOST)
+  {
+    grasp_enabled_ = this->get_parameter("grasp_enabled").as_bool();
+    if (!grasp_enabled_) {
+      publish_zero_motion(tracking_confidence_);
+      transition_to(ServoState::IDLE, "grasp gated off mid-sequence — aborting");
+      if (publish_state_flag_) {
+        publish_state();
+      }
+      return;
+    }
+  }
+
   switch (state_) {
     case ServoState::IDLE:
       handle_idle();
@@ -888,6 +922,9 @@ void VisualServoNode::reset_pick_progress()
   grasp_target_estimate_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   guarded_at_pregrasp_ = false;
   place_released_ = false;
+  // Invalidate the captured-target readback so a skill never reads a stale pose
+  // from a prior attempt; it is re-set true only when a fresh estimate succeeds.
+  this->set_parameter(rclcpp::Parameter("last_target_valid", false));
   // NOTE: do NOT clear the cached mask here. The SAM mask is produced once per
   // remote detection (~1Hz), arriving with the detection that drives this
   // ACQUIRE; clearing it starves ESTIMATE_GRASP (which waits only ~0.5s).
@@ -1490,6 +1527,33 @@ void VisualServoNode::handle_idle()
   grasp_plane_min_points_ =
     static_cast<int>(this->get_parameter("grasp_plane_min_points").as_int());
 
+  // Pick-and-place blind place: when a skill has injected an external target, skip
+  // detection entirely (the wrist camera is occluded by the held object) and drive
+  // the guarded approach straight to the remembered base-frame pose.
+  use_external_target_ = this->get_parameter("use_external_target").as_bool();
+  if (use_external_target_) {
+    const std::vector<double> g =
+      this->get_parameter("external_grasp_target").as_double_array();
+    const std::vector<double> p =
+      this->get_parameter("external_pregrasp_target").as_double_array();
+    if (g.size() == 3 && p.size() == 3) {
+      reset_pick_progress();
+      grasp_target_ref_ = CartesianVector{g[0], g[1], g[2]};
+      pregrasp_target_ref_ = CartesianVector{p[0], p[1], p[2]};
+      // Stamp fresh so the GUARDED_APPROACH staleness guard does not abort it.
+      grasp_target_estimate_time_ = this->now();
+      guarded_at_pregrasp_ = false;
+      place_released_ = false;
+      transition_to(ServoState::GUARDED_APPROACH, "external place target injected");
+    } else {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 2000,
+        "[IDLE] use_external_target set but external_grasp_target/external_pregrasp_target "
+        "are not both length-3; ignoring.");
+    }
+    return;
+  }
+
   std::lock_guard<std::mutex> lock(detection_mutex_);
   if (detection_available_) {
     transition_to(ServoState::ACQUIRE, "detection available");
@@ -1985,6 +2049,16 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
   pregrasp_target_ref_ = pregrasp_ref;
   grasp_target_estimate_time_ = this->now();
   guarded_at_pregrasp_ = false;
+
+  // Mirror the absolute base-frame target to readback params so a pick-and-place
+  // skill can capture this destination's location (camera clear, empty gripper)
+  // and reuse it later for a blind place.
+  this->set_parameter(rclcpp::Parameter(
+      "last_grasp_target", std::vector<double>{grasp_ref.x, grasp_ref.y, grasp_ref.z}));
+  this->set_parameter(rclcpp::Parameter(
+      "last_pregrasp_target",
+      std::vector<double>{pregrasp_ref.x, pregrasp_ref.y, pregrasp_ref.z}));
+  this->set_parameter(rclcpp::Parameter("last_target_valid", true));
 
   RCLCPP_INFO(
     this->get_logger(),

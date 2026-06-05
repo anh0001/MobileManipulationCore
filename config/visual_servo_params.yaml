@@ -66,6 +66,15 @@ visual_servo:
   grasp_mask_wait_sec: 12.0            # Wait several sparse detector cycles for a fresh mask before failing safe
   grasp_target_max_age_sec: 8.0        # Refuse to close if the estimated grasp target has aged out
 
+  # Pick-and-place hand-off (used by the `pick_and_place` skill). The node mirrors
+  # its computed grasp target to readback params (last_grasp_target /
+  # last_pregrasp_target / last_target_valid) so a destination can be localized
+  # while the camera is clear, then driven blind via the inputs below once the held
+  # object occludes the wrist camera. Defaults keep normal pick/place unchanged.
+  use_external_target: false           # true: skip detection, approach the injected target
+  external_grasp_target: []            # [x,y,z] base-frame contact point (set by the skill)
+  external_pregrasp_target: []         # [x,y,z] base-frame standoff above the target
+
   # Per-object grasp offset overrides (base frame, meters). The detected object
   # class (Grounding DINO prompt label) selects a row by substring match, so the
   # key "banana" also matches the prompt "yellow banana". Objects not listed fall

@@ -339,6 +339,11 @@ private:
                                  // raise above it, release, then finish (no close/descend)
   bool place_released_{false};   // true once the held object has been released
   double place_release_clearance_m_{0.03};  // raise this far above the standoff before releasing
+  // Pick-and-place hand-off: when true, skip detection and approach a target the
+  // skill injected via the external_grasp/pregrasp_target params (base frame). Lets
+  // a destination localized while the camera was clear be reused for a blind place
+  // once the held object occludes the wrist camera.
+  bool use_external_target_{false};
   // When true, skip the servo ALIGN leg and execute the approach as MoveIt
   // move_group planned moves (publish the full EEF delta so the adapter, in
   // move_group + delta mode, plans current+delta and picks a non-singular IK).

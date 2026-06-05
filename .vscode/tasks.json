@@ -90,6 +90,14 @@
       "options": { "cwd": "${workspaceFolder}" }
     },
     {
+      "label": "4. Grasp: Send pick&place (object → destination)",
+      "type": "shell",
+      "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /execute_skill manipulation_msgs/action/ExecuteSkill \"{skill: 'pick_and_place', params_json: '{\\\"object\\\": \\\"${input:pickObject}\\\", \\\"destination\\\": \\\"${input:placeDestination}\\\"}'}\" --feedback",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "grasp" },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
       "label": "4. Grasp: Run autotune (autonomous)",
       "type": "shell",
       "command": "source install/setup.bash && source ${env:HOME}/codes/ranger-garden-assistant/install/setup.bash && PYTHONNOUSERSITE=1 python3 ${workspaceFolder}/scripts/grasp_autotune.py",
@@ -150,6 +158,12 @@
       "type": "promptString",
       "description": "Object for the pick skill (/execute_skill). Use a label the detector matches, e.g. 'yellow banana', 'banana', 'bread'",
       "default": "yellow banana"
+    },
+    {
+      "id": "placeDestination",
+      "type": "promptString",
+      "description": "Destination for the pick_and_place skill (localized first, camera clear), e.g. 'white box', 'box', 'plate'",
+      "default": "white box"
     },
     {
       "id": "armSpeed",

@@ -17,6 +17,7 @@ from .registry import register_skill, get_skill, all_skills
 # Import every skill module so registration runs on `import ...skills`.
 from . import pick_skill  # noqa: F401
 from . import place_skill  # noqa: F401
+from . import pick_and_place_skill  # noqa: F401
 from . import home_skill  # noqa: F401
 
 __all__ = [

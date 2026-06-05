@@ -27,7 +27,7 @@ from std_msgs.msg import String
 from sensor_msgs.msg import JointState
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.srv import SetParameters, GetParameters
 from rcl_interfaces.msg import Parameter as ParamMsg, ParameterValue, ParameterType
 
 from manipulation_msgs.action import ExecuteSkill
@@ -55,8 +55,16 @@ class SkillServer(Node, SkillContext):
         self.declare_parameter("capture_pose", [0.0, 1.2, -0.2, 0.0, -0.35, 0.0])
         self.declare_parameter("default_timeout_sec", 60.0)
         self.declare_parameter("acquire_timeout_sec", 12.0)
-        self.declare_parameter("held_width_threshold", 0.012)
+        # Held-vs-empty gripper-width gate (no force sensor). Empty full-close lands
+        # at ~0.000–0.0022 m; a held thin object (e.g. a toy banana) sits at
+        # ~0.005 m+. 0.004 m sits in that gap so thin held objects aren't misread as
+        # empty. Thicker objects close on a wider gap, so they clear it easily.
+        self.declare_parameter("held_width_threshold", 0.004)
         self.declare_parameter("reset_arm_each_pick", True)
+        # pick_and_place: height (m) above the detected destination point at which
+        # the held object is released, so it clears the destination instead of
+        # bumping it. Approached from the elevated transit pose, then dropped.
+        self.declare_parameter("place_clearance_m", 0.15)
         # default drop pose over the box (6 arm joints). Empty -> place skill
         # requires an explicit pose so the arm never swings to a guessed spot.
         self.declare_parameter("place_pose", [0.0])
@@ -79,6 +87,8 @@ class SkillServer(Node, SkillContext):
             callback_group=self._cb)
         self.param_cli = self.create_client(
             SetParameters, self._vs_node + "/set_parameters", callback_group=self._cb)
+        self.get_param_cli = self.create_client(
+            GetParameters, self._vs_node + "/get_parameters", callback_group=self._cb)
         self.arm_cli = ActionClient(
             self, FollowJointTrajectory, self.get_parameter("arm_action").value,
             callback_group=self._cb)
@@ -140,6 +150,78 @@ class SkillServer(Node, SkillContext):
         while not fut.done() and time.time() < deadline:
             time.sleep(0.02)
         return fut.done() and fut.result() is not None
+
+    def set_double_array_param(self, name: str, values: List[float],
+                               node: str | None = None, timeout: float = 4.0) -> bool:
+        cli = self.param_cli
+        if node is not None and node != self._vs_node:
+            cli = self.create_client(SetParameters, node + "/set_parameters",
+                                     callback_group=self._cb)
+        if not cli.wait_for_service(timeout_sec=timeout):
+            return False
+        pv = ParameterValue(type=ParameterType.PARAMETER_DOUBLE_ARRAY,
+                            double_array_value=[float(v) for v in values])
+        req = SetParameters.Request(parameters=[ParamMsg(name=name, value=pv)])
+        fut = cli.call_async(req)
+        deadline = time.time() + timeout
+        while not fut.done() and time.time() < deadline:
+            time.sleep(0.02)
+        return fut.done() and fut.result() is not None
+
+    def set_double_param(self, name: str, value: float,
+                         node: str | None = None, timeout: float = 4.0) -> bool:
+        cli = self.param_cli
+        if node is not None and node != self._vs_node:
+            cli = self.create_client(SetParameters, node + "/set_parameters",
+                                     callback_group=self._cb)
+        if not cli.wait_for_service(timeout_sec=timeout):
+            return False
+        pv = ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
+                            double_value=float(value))
+        req = SetParameters.Request(parameters=[ParamMsg(name=name, value=pv)])
+        fut = cli.call_async(req)
+        deadline = time.time() + timeout
+        while not fut.done() and time.time() < deadline:
+            time.sleep(0.02)
+        return fut.done() and fut.result() is not None
+
+    def get_remote_params(self, names: List[str],
+                          node: str | None = None, timeout: float = 4.0) -> dict:
+        """Read parameters from a remote node (default: the visual-servo node).
+
+        Returns {name: value} for each requested param, decoding the typed
+        ParameterValue. Missing/unset params (PARAMETER_NOT_SET) are omitted.
+        Returns {} if the service is unreachable.
+        """
+        cli = self.get_param_cli
+        if node is not None and node != self._vs_node:
+            cli = self.create_client(GetParameters, node + "/get_parameters",
+                                     callback_group=self._cb)
+        if not cli.wait_for_service(timeout_sec=timeout):
+            return {}
+        fut = cli.call_async(GetParameters.Request(names=list(names)))
+        deadline = time.time() + timeout
+        while not fut.done() and time.time() < deadline:
+            time.sleep(0.02)
+        if not fut.done() or fut.result() is None:
+            return {}
+        out: dict = {}
+        for n, pv in zip(names, fut.result().values):
+            t = pv.type
+            if t == ParameterType.PARAMETER_BOOL:
+                out[n] = bool(pv.bool_value)
+            elif t == ParameterType.PARAMETER_INTEGER:
+                out[n] = int(pv.integer_value)
+            elif t == ParameterType.PARAMETER_DOUBLE:
+                out[n] = float(pv.double_value)
+            elif t == ParameterType.PARAMETER_STRING:
+                out[n] = str(pv.string_value)
+            elif t == ParameterType.PARAMETER_DOUBLE_ARRAY:
+                out[n] = [float(v) for v in pv.double_array_value]
+            elif t == ParameterType.PARAMETER_INTEGER_ARRAY:
+                out[n] = [int(v) for v in pv.integer_array_value]
+            # PARAMETER_NOT_SET and unhandled types are intentionally omitted.
+        return out
 
     def move_arm_to(self, positions: List[float],
                     time_sec: float = 5.0, timeout: float = 12.0) -> bool:
