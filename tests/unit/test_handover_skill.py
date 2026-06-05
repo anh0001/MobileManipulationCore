@@ -252,34 +252,88 @@ def test_handover_happy_path():
     assert ctx.gripper_cmds == [pytest.approx(0.07)]  # opened once to release
 
 
-def test_handover_standing_uses_standing_pose():
-    # Low threshold => the detected torso counts as standing => taller pose used.
+_LOW = [0.0, 1.0, -1.0, 0.0, 0.0, 0.0]
+_HIGH = [0.0, 2.0, -2.0, 0.0, 1.0, 0.0]
+# the default _patch_io scene yields head person_height ~0.36 m above the camera
+
+
+def test_handover_present_full_high_when_tall():
+    # Band entirely below the head height (0.36) => blend 1 => full HIGH pose.
     skill = HandoverSkill()
     _patch_io(skill, depth_value=1.5)
     ctx = _FakeCtx(gripper_width=0.02, overrides={
-        "handover_standing_height_threshold_m": 0.02,
-        "handover_present_pose_standing": [0.0, 0.5, -0.5, 0.0, 0.5, 0.0],
-        "handover_present_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
+        "handover_person_height_low_m": 0.0, "handover_person_height_high_m": 0.3,
+        "handover_present_pose": _LOW, "handover_present_pose_standing": _HIGH,
     })
     res = skill.execute(ctx, {"dwell_sec": 0.1}, lambda *_a: None, lambda: False)
     assert res.success is True, res.message
-    assert res.data["posture"] == "standing"
-    # arm_moves: [0]=staging, [1]=present. Present uses the standing pose joints 2-6.
-    assert ctx.arm_moves[1][0][1:] == pytest.approx([0.5, -0.5, 0.0, 0.5, 0.0])
+    assert res.data["present_blend"] == pytest.approx(1.0)
+    # arm_moves: [0]=staging, [1]=present (joints 2-6 = HIGH pose).
+    assert ctx.arm_moves[1][0][1:] == pytest.approx(_HIGH[1:])
 
 
-def test_handover_seated_uses_default_pose():
-    # Default threshold (0.35); the detected torso (~0.08 m above camera) is seated.
+def test_handover_present_full_low_when_short():
+    # Band entirely above the head height => blend 0 => full LOW pose.
     skill = HandoverSkill()
     _patch_io(skill, depth_value=1.5)
     ctx = _FakeCtx(gripper_width=0.02, overrides={
-        "handover_present_pose_standing": [9.0, 9.0, 9.0, 9.0, 9.0, 9.0],  # must NOT be used
-        "handover_present_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
+        "handover_person_height_low_m": 0.4, "handover_person_height_high_m": 0.6,
+        "handover_present_pose": _LOW, "handover_present_pose_standing": _HIGH,
     })
     res = skill.execute(ctx, {"dwell_sec": 0.1}, lambda *_a: None, lambda: False)
     assert res.success is True, res.message
+    assert res.data["present_blend"] == pytest.approx(0.0)
+    assert ctx.arm_moves[1][0][1:] == pytest.approx(_LOW[1:])
+
+
+def test_handover_present_interpolates_midpoint():
+    # head 0.36 in band [0.16, 0.56] => blend 0.5 => halfway between LOW and HIGH.
+    skill = HandoverSkill()
+    _patch_io(skill, depth_value=1.5)
+    ctx = _FakeCtx(gripper_width=0.02, overrides={
+        "handover_person_height_low_m": 0.16, "handover_person_height_high_m": 0.56,
+        "handover_present_pose": _LOW, "handover_present_pose_standing": _HIGH,
+    })
+    res = skill.execute(ctx, {"dwell_sec": 0.1}, lambda *_a: None, lambda: False)
+    assert res.success is True, res.message
+    assert res.data["present_blend"] == pytest.approx(0.5, abs=0.02)
+    mid = [(lo + hi) / 2 for lo, hi in zip(_LOW[1:], _HIGH[1:])]
+    assert ctx.arm_moves[1][0][1:] == pytest.approx(mid, abs=0.02)
+
+
+def test_handover_posture_override_forces_pose():
+    # Explicit posture overrides the auto height blend regardless of detected height.
+    ov = {
+        "handover_person_height_low_m": 0.0, "handover_person_height_high_m": 0.5,
+        "handover_present_pose": _LOW, "handover_present_pose_standing": _HIGH,
+    }
+    skill = HandoverSkill()
+    _patch_io(skill, depth_value=1.5)
+    ctx = _FakeCtx(gripper_width=0.02, overrides=ov)
+    res = skill.execute(ctx, {"posture": "seated", "dwell_sec": 0.1},
+                        lambda *_a: None, lambda: False)
     assert res.data["posture"] == "seated"
-    assert ctx.arm_moves[1][0][1:] == pytest.approx([1.2, -0.2, 0.0, -0.35, 0.0])
+    assert res.data["present_blend"] == pytest.approx(0.0)
+    assert ctx.arm_moves[1][0][1:] == pytest.approx(_LOW[1:])
+
+    skill2 = HandoverSkill()
+    _patch_io(skill2, depth_value=1.5)
+    ctx2 = _FakeCtx(gripper_width=0.02, overrides=ov)
+    res2 = skill2.execute(ctx2, {"posture": "standing", "dwell_sec": 0.1},
+                          lambda *_a: None, lambda: False)
+    assert res2.data["posture"] == "standing"
+    assert res2.data["present_blend"] == pytest.approx(1.0)
+    assert ctx2.arm_moves[1][0][1:] == pytest.approx(_HIGH[1:])
+
+
+def test_height_blend_and_lerp():
+    from manipulation_policy.skills.handover_skill import _height_blend, _lerp_pose
+    assert _height_blend(0.0, 0.0, 0.6) == pytest.approx(0.0)
+    assert _height_blend(0.6, 0.0, 0.6) == pytest.approx(1.0)
+    assert _height_blend(0.3, 0.0, 0.6) == pytest.approx(0.5)
+    assert _height_blend(1.0, 0.0, 0.6) == pytest.approx(1.0)   # clamped
+    assert _height_blend(0.1, 0.5, 0.5) == pytest.approx(0.0)   # degenerate band
+    assert _lerp_pose([0.0, 0.0], [2.0, 4.0], 0.5) == pytest.approx([1.0, 2.0])
 
 
 def test_handover_aborts_without_object():

@@ -80,12 +80,22 @@ skill_server:
     # is overwritten at runtime with the person azimuth, so it's stored as 0.
     handover_staging_pose: [0.0, 1.2, -0.2, 0.0, -0.35, 0.0]
     handover_present_pose: [0.0, 1.8319, -1.3933, 0.0859, -0.5327, 0.0053]
-    # Standing person -> present higher. Used when the detected torso is more than
-    # handover_standing_height_threshold_m above the camera. Hand-taught reach
-    # TCP ~0.49 m fwd, 0.57 m up (21 cm higher than seated); joint1 is overwritten
-    # with the person azimuth at runtime, so it's stored as 0.
+    # HIGH pose for tall/standing people. Hand-taught reach TCP ~0.49 m fwd,
+    # 0.57 m up (21 cm higher than the LOW/seated pose). The arm presents at a
+    # joint-space interpolation between the LOW (handover_present_pose) and this
+    # HIGH pose, blended by the person's torso height (see the band below). joint1
+    # is overwritten with the person azimuth at runtime, so it's stored as 0.
     handover_present_pose_standing: [0.0, 1.6787, -2.1982, 0.0161, 0.5614, 0.0]
-    handover_standing_height_threshold_m: 0.35   # torso this far above the camera => standing
+    # Stature is estimated at the HEAD (this fraction down from the person box top)
+    # using the torso depth -> a strong standing/tall vs seated signal. 0 = box top.
+    handover_height_sample_frac: 0.05
+    # Person (head) height (m above the camera) mapped to LOW and HIGH, for the
+    # "auto" posture. Calibrated from measured readings: seated ~0.287, standing
+    # ~0.364 (only ~8 cm apart — the camera can't see a standing head up close, so
+    # auto is approximate). For a reliable result pass posture:"standing"/"seated"
+    # to the handover instead. Re-measure with scripts/handover_dryrun.py to tune.
+    handover_person_height_low_m: 0.29
+    handover_person_height_high_m: 0.36
     handover_stage_time_sec: 2.5
     handover_present_time_sec: 3.0
     handover_dwell_sec: 2.5                  # let the person take the object before opening

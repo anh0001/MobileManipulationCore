@@ -156,9 +156,9 @@
     },
     {
       "label": "7. Handover: Send handover skill (give object to person)",
-      "_comment": "Run after the grasp pipeline (task '4. Grasp: Run pipeline') so /skill_server is up. Detects the person via D435i, presents the held object at a safe distance, opens the gripper. Requires a held object unless require-object is toggled off.",
+      "_comment": "Run after the grasp pipeline (task '4. Grasp: Run pipeline') so /skill_server is up. Detects the person via D435i, presents the held object at a safe distance, opens the gripper. Requires a held object unless require-object is toggled off. posture: auto (height from the camera), or standing/seated to force the present height.",
       "type": "shell",
-      "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /execute_skill manipulation_msgs/action/ExecuteSkill \"{skill: 'handover', params_json: '{\\\"dwell_sec\\\": ${input:handoverDwell}}'}\" --feedback",
+      "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /execute_skill manipulation_msgs/action/ExecuteSkill \"{skill: 'handover', params_json: '{\\\"dwell_sec\\\": ${input:handoverDwell}, \\\"posture\\\": \\\"${input:handoverPosture}\\\"}'}\" --feedback",
       "problemMatcher": [],
       "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "handover" },
       "options": { "cwd": "${workspaceFolder}" }
@@ -226,6 +226,13 @@
       "description": "Handover require-object gate: true = must be holding something, false = allow empty-gripper test",
       "options": ["true", "false"],
       "default": "true"
+    },
+    {
+      "id": "handoverPosture",
+      "type": "pickString",
+      "description": "Recipient posture -> present height: auto (from camera height), or force standing/seated",
+      "options": ["auto", "standing", "seated"],
+      "default": "auto"
     }
   ]
 }

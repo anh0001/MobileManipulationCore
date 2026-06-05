@@ -115,12 +115,21 @@ HANDOVER_PARAM_DEFAULTS: Dict[str, Any] = {
     "handover_require_object": True,            # require a held object before handing over
     # --- motion / release (TEACH the poses; defaults = safe ready pose) ---
     "handover_staging_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
-    "handover_present_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
-    # Taller present pose used when the person's torso is above
-    # handover_standing_height_threshold_m (metres above the camera). Defaults to
-    # the seated present pose, so teach it higher to actually present up.
-    "handover_present_pose_standing": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
-    "handover_standing_height_threshold_m": 0.35,
+    # present height is ADAPTIVE: the arm presents at a joint-space interpolation
+    # between the LOW (present_pose) and HIGH (present_pose_standing) taught poses,
+    # blended by the person's HEAD height between the two reference heights below.
+    # Short person/seated -> near LOW; tall person/standing -> near HIGH.
+    "handover_present_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],           # LOW pose
+    "handover_present_pose_standing": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],  # HIGH (teach higher)
+    # Stature is estimated at the HEAD (this fraction down from the box top), using
+    # the torso depth -> a far stronger standing/tall signal than a mid-torso point,
+    # and a cut-off head (close, tall person) reads tall. 0 = box top.
+    "handover_height_sample_frac": 0.05,
+    # Person (head) height (metres above the camera) mapped to the LOW and HIGH
+    # poses. Read the result's person_height_m for a seated and a standing person
+    # to set these; below low -> full LOW, above high -> full HIGH, linear between.
+    "handover_person_height_low_m": 0.0,
+    "handover_person_height_high_m": 0.5,
     "handover_stage_time_sec": 2.5,
     "handover_present_time_sec": 3.0,
     "handover_dwell_sec": 2.5,                  # let the person take the object before opening
@@ -143,6 +152,12 @@ class HandoverSkill(Skill):
         SkillParam("dwell_sec", "number", default=0.0,
                    description="seconds to hold the object out before opening the "
                                "gripper; <=0 uses the server handover_dwell_sec."),
+        SkillParam("posture", "string", default="auto",
+                   description='recipient posture, sets the present height: "auto" '
+                               '(default) picks it from the detected head height; '
+                               '"standing" forces the high pose, "seated" the low '
+                               'pose. Use standing/seated when you know it — the '
+                               'camera can be unsure up close.'),
         SkillParam("timeout_sec", "number", default=0.0,
                    description="reserved for future use; the handover is bounded by "
                                "its capture/detect/move timeouts."),
@@ -231,6 +246,7 @@ class HandoverSkill(Skill):
         roi_half = int(g("handover_depth_roi_half_px"))
         min_px = int(g("handover_min_depth_pixels"))
         min_depth = float(g("handover_min_valid_depth_m"))
+        height_frac = float(g("handover_height_sample_frac"))
         cam_x = float(g("handover_camera_x_m"))
         cam_y = float(g("handover_camera_y_m"))
         cam_yaw = float(g("handover_camera_yaw_rad"))
@@ -246,13 +262,16 @@ class HandoverSkill(Skill):
             forward_h = _horizontal_forward(z_opt, y_opt, cam_roll)  # level the up/down tilt
             px, py = _optical_to_base(forward=forward_h, left=-x_opt,
                                       cam_x=cam_x, cam_y=cam_y, cam_yaw=cam_yaw)
+            # Stature from the HEAD: deproject the box-top pixel at the torso depth.
+            head_py = (person["cy"] - person["h"] * 0.5) + height_frac * person["h"]
+            _, head_y_opt, _ = _deproject(person["cx"], head_py, z, intr)
             chosen = {
                 "person": person, "depth_m": z,
                 "base_xy": (px, py),
                 "azimuth_rad": math.atan2(py, px),
                 "distance_m": math.hypot(px, py),
-                # torso height above the camera (leveled) -> standing vs seated
-                "torso_height_m": _height_above_camera(z_opt, y_opt, cam_roll),
+                # head height above the camera (leveled) -> standing/tall vs seated
+                "person_height_m": _height_above_camera(z, head_y_opt, cam_roll),
             }
             break
         if chosen is None:
@@ -288,22 +307,34 @@ class HandoverSkill(Skill):
             return fail("canceled before presenting")
 
         # ---- 5. present: yaw toward the person, then extend ---------------
-        # Pick the present pose by the person's posture: a torso higher than the
-        # standing threshold (above the camera) gets the taller 'standing' pose so
-        # the object is presented up at a standing person, not down at a seated one.
+        # Present height is ADAPTIVE: interpolate joint-space between the LOW
+        # (present_pose) and HIGH (present_pose_standing) taught poses by the
+        # person's torso height, so a taller/standing person is presented higher
+        # and a shorter/seated one lower — continuously, not a binary flip.
         j1_lim = float(g("handover_joint1_limit_rad"))
         j1 = _clamp(az, -j1_lim, j1_lim)
-        torso_h = float(chosen["torso_height_m"])
-        standing = torso_h > float(g("handover_standing_height_threshold_m"))
-        present_pose = list(g("handover_present_pose_standing")) if standing \
-            else list(g("handover_present_pose"))
+        person_h = float(chosen["person_height_m"])
+        # present height = blend(LOW, HIGH). "auto" derives it from the head height;
+        # an explicit posture forces it (reliable when the camera can't see the head).
+        posture = str(params.get("posture", "auto")).strip().lower()
+        if posture == "standing":
+            blend = 1.0
+        elif posture == "seated":
+            blend = 0.0
+        else:
+            posture = "auto"
+            blend = _height_blend(person_h, float(g("handover_person_height_low_m")),
+                                  float(g("handover_person_height_high_m")))
+        present_pose = _lerp_pose(list(g("handover_present_pose")),
+                                  list(g("handover_present_pose_standing")), blend)
         staging = _with_joint1(list(g("handover_staging_pose")), j1)
         present = _with_joint1(present_pose, j1)
         result_data["joint1_rad"] = round(j1, 4)
-        result_data["torso_height_m"] = round(torso_h, 3)
-        result_data["posture"] = "standing" if standing else "seated"
-        ctx.log(f"[HANDOVER] torso height {torso_h:+.2f}m above camera -> "
-                f"{'STANDING (higher present)' if standing else 'seated (default present)'}")
+        result_data["person_height_m"] = round(person_h, 3)
+        result_data["posture"] = posture
+        result_data["present_blend"] = round(blend, 3)  # 0=low/seated .. 1=high/standing
+        ctx.log(f"[HANDOVER] head {person_h:+.2f}m above camera, posture={posture} "
+                f"-> present blend {blend:.2f} (0=low/seated .. 1=high/standing)")
 
         feedback("ORIENT", 0.55)
         if not ctx.move_arm_to(staging, time_sec=float(g("handover_stage_time_sec"))):
@@ -647,3 +678,27 @@ def _with_joint1(pose: List[float], joint1: float) -> List[float]:
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
+
+def _height_blend(torso_h: float, low_h: float, high_h: float) -> float:
+    """Blend factor 0..1 for the present height from the torso height.
+
+    torso_h <= low_h -> 0 (use the LOW pose); >= high_h -> 1 (HIGH pose); linear in
+    between. Degenerate band (high <= low) -> 0 (always LOW), so a mis-set band
+    can never extend higher than taught.
+    """
+    span = high_h - low_h
+    if span <= 1e-6:
+        return 0.0
+    return _clamp((torso_h - low_h) / span, 0.0, 1.0)
+
+
+def _lerp_pose(low: List[float], high: List[float], t: float) -> List[float]:
+    """Element-wise joint interpolation: low + t*(high-low). t is clamped 0..1.
+
+    Interpolating in joint space between two reachable taught poses stays in the
+    arm's workspace (no IK), and the endpoints are exactly the taught poses.
+    """
+    t = _clamp(t, 0.0, 1.0)
+    n = min(len(low), len(high))
+    return [float(low[i]) + (float(high[i]) - float(low[i])) * t for i in range(n)]

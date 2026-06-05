@@ -27,8 +27,8 @@ sys.path.insert(0, os.path.join(REPO, "src", "manipulation_policy"))
 
 from manipulation_policy.skills.handover_skill import (  # noqa: E402
     HANDOVER_PARAM_DEFAULTS, HandoverSkill, _ambiguous, _clamp, _deproject,
-    _depth_median_roi, _horizontal_forward, _optical_to_base, _select_people,
-    _torso_pixel)
+    _depth_median_roi, _height_above_camera, _height_blend, _horizontal_forward,
+    _lerp_pose, _optical_to_base, _select_people, _torso_pixel)
 
 
 def load_params():
@@ -89,6 +89,7 @@ def run_once(skill, p, out_path):
     roi_half = int(p["handover_depth_roi_half_px"])
     min_px = int(p["handover_min_depth_pixels"])
     min_depth = float(p["handover_min_valid_depth_m"])
+    height_frac = float(p["handover_height_sample_frac"])
 
     chosen = None
     for person in people:
@@ -100,7 +101,10 @@ def run_once(skill, p, out_path):
         fwd = _horizontal_forward(z_opt, y_opt, cam_roll)
         px, py = _optical_to_base(forward=fwd, left=-x_opt,
                                   cam_x=cam_x, cam_y=cam_y, cam_yaw=cam_yaw)
-        chosen = dict(person=person, tx=tx, ty=ty, depth=z,
+        head_py = (person["cy"] - person["h"] * 0.5) + height_frac * person["h"]
+        _, head_y_opt, _ = _deproject(person["cx"], head_py, z, intr)
+        person_h = _height_above_camera(z, head_y_opt, cam_roll)
+        chosen = dict(person=person, tx=tx, ty=ty, depth=z, person_h=person_h,
                       base_xy=(px, py), az=math.atan2(py, px), dist=math.hypot(px, py))
         break
 
@@ -131,11 +135,19 @@ def run_once(skill, p, out_path):
         reasons.append(f"too far to the side (>{max_az_deg:.0f}deg)")
     verdict = "WOULD PRESENT" if not reasons else "WOULD ABORT: " + ", ".join(reasons)
 
+    blend = _height_blend(chosen["person_h"], float(p["handover_person_height_low_m"]),
+                          float(p["handover_person_height_high_m"]))
+    present = _lerp_pose(list(p["handover_present_pose"]),
+                         list(p["handover_present_pose_standing"]), blend)
     print(f"[localize] torso_px=({chosen['tx']:.0f},{chosen['ty']:.0f}) "
-          f"depth={chosen['depth']:.3f}m")
+          f"depth={chosen['depth']:.3f}m person_height={chosen['person_h']:+.3f}m above camera")
     print(f"[result ] base_xy=({chosen['base_xy'][0]:.3f},{chosen['base_xy'][1]:.3f}) "
           f"distance={dist:.3f}m azimuth={math.degrees(az):.1f}deg joint1={j1:.3f}rad "
           f"score={chosen['person']['score']:.2f}")
+    band = f"[{p['handover_person_height_low_m']},{p['handover_person_height_high_m']}]"
+    print(f"[height ] person_height={chosen['person_h']:+.3f}m  band={band}  "
+          f"-> present_blend={blend:.2f} (0=low..1=high); "
+          f"present[2..6]={[round(v, 3) for v in present[1:]]}")
     print(f"[gate   ] {verdict}")
 
     tx, ty = int(chosen["tx"]), int(chosen["ty"])
