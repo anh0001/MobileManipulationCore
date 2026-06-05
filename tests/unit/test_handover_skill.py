@@ -23,6 +23,7 @@ from manipulation_policy.skills.handover_skill import (  # noqa: E402
     _clamp,
     _deproject,
     _depth_median_roi,
+    _horizontal_forward,
     _optical_to_base,
     _select_people,
     _torso_pixel,
@@ -50,6 +51,20 @@ def test_optical_to_base_translation():
     # Mount offset (behind-right) shifts the person point in the base frame.
     px, py = _optical_to_base(1.5, 0.0, -0.12, -0.18, 0.0)
     assert (px, py) == pytest.approx((1.38, -0.18))
+
+
+def test_horizontal_forward_no_tilt_is_identity():
+    assert _horizontal_forward(1.5, 0.3, 0.0) == pytest.approx(1.5)
+
+
+def test_horizontal_forward_levels_downward_tilt():
+    # Camera 5 deg down (roll=-0.0873) viewing a person at the same height, 1.5 m
+    # ahead: the level ray sits 5 deg ABOVE the optical axis, so y_opt is up (-)
+    # and z_opt is the slant range. Leveling must recover the true 1.5 m.
+    roll = -0.0873
+    z_opt = 1.5 * math.cos(roll)        # slant component along the optical axis
+    y_opt = 1.5 * math.sin(roll)        # vertical component (negative = up)
+    assert _horizontal_forward(z_opt, y_opt, roll) == pytest.approx(1.5, abs=1e-4)
 
 
 def test_deproject_center_is_on_axis():

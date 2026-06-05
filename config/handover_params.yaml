@@ -44,12 +44,14 @@ skill_server:
     handover_min_depth_pixels: 25
     handover_min_valid_depth_m: 0.20
 
-    # --- D435i horizontal extrinsic vs arm base (piper_base_link) — CALIBRATE ---
-    # Optical frame: x=right, y=down, z=forward. forward=z, left=-x; rotate by
-    # camera_yaw (CCW+ about base +Z) and translate by (camera_x, camera_y).
+    # --- D435i extrinsic vs arm base (piper_base_link) — CALIBRATE ---
+    # Optical frame: x=right, y=down, z=forward. The horizontal forward = z and y
+    # are first leveled by camera_roll (the up/down tilt), then forward + left(=-x)
+    # are rotated by camera_yaw (CCW+ about base +Z) and translated by (x, y).
     handover_camera_x_m: -0.435              # behind the arm base (-X)
     handover_camera_y_m: -0.10               # to the right of the arm base (-Y)
-    handover_camera_yaw_rad: 0.0             # camera forward vs base +X
+    handover_camera_yaw_rad: 0.0             # camera forward vs base +X (CCW +)
+    handover_camera_roll_rad: -0.0873        # up/down tilt: + look up, - look down (~5 deg down)
 
     # --- safety gates ---
     handover_min_distance_m: 0.75            # abort if the person is closer (keep a safe gap)

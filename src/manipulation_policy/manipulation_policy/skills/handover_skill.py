@@ -88,12 +88,14 @@ HANDOVER_PARAM_DEFAULTS: Dict[str, Any] = {
     "handover_depth_roi_half_px": 10,
     "handover_min_depth_pixels": 25,
     "handover_min_valid_depth_m": 0.20,
-    # --- D435i horizontal extrinsic vs arm base (piper_base_link) — CALIBRATE ---
-    # Optical frame: x=right, y=down, z=forward. forward=z, left=-x; rotate by
-    # camera_yaw (CCW+ about base +Z) and translate by (camera_x, camera_y).
+    # --- D435i extrinsic vs arm base (piper_base_link) — CALIBRATE ---
+    # Optical frame: x=right, y=down, z=forward. The horizontal forward = z and y
+    # are first leveled by camera_roll (the up/down tilt), then forward + left(=-x)
+    # are rotated by camera_yaw (CCW+ about base +Z) and translated by (x, y).
     "handover_camera_x_m": -0.12,               # behind the arm base (-X)
     "handover_camera_y_m": -0.18,               # to the right of the arm base (-Y)
     "handover_camera_yaw_rad": 0.0,             # camera forward vs base +X
+    "handover_camera_roll_rad": 0.0,            # camera up/down tilt: + look up, - look down
     # --- safety gates ---
     "handover_min_distance_m": 0.75,            # abort if the person is closer (keep a safe gap)
     "handover_max_distance_m": 2.0,             # abort if farther (out of handover range)
@@ -210,6 +212,7 @@ class HandoverSkill(Skill):
         cam_x = float(g("handover_camera_x_m"))
         cam_y = float(g("handover_camera_y_m"))
         cam_yaw = float(g("handover_camera_yaw_rad"))
+        cam_roll = float(g("handover_camera_roll_rad"))
 
         chosen = None
         for person in people:                       # largest (nearest) first; skip bad depth
@@ -217,8 +220,9 @@ class HandoverSkill(Skill):
             z = _depth_median_roi(depth_m, tx, ty, roi_half, min_px, min_depth)
             if z is None:
                 continue
-            x_opt, _y_opt, z_opt = _deproject(tx, ty, z, intr)  # optical: x=right, z=forward
-            px, py = _optical_to_base(forward=z_opt, left=-x_opt,
+            x_opt, y_opt, z_opt = _deproject(tx, ty, z, intr)   # optical: x=right,y=down,z=fwd
+            forward_h = _horizontal_forward(z_opt, y_opt, cam_roll)  # level the up/down tilt
+            px, py = _optical_to_base(forward=forward_h, left=-x_opt,
                                       cam_x=cam_x, cam_y=cam_y, cam_yaw=cam_yaw)
             chosen = {
                 "person": person, "depth_m": z,
@@ -498,6 +502,19 @@ def _deproject(px: float, py: float, z: float,
     x = (px - ppx) / fx * z
     y = (py - ppy) / fy * z
     return x, y, z
+
+
+def _horizontal_forward(z_opt: float, y_opt: float, roll: float) -> float:
+    """Forward distance in the gravity-horizontal plane, correcting camera tilt.
+
+    The D435i usually looks slightly up or down (tilt ``roll`` about its right/x
+    optical axis: roll > 0 = up, roll < 0 = down). Leveling that tilt mixes the
+    optical forward (z) and vertical (y) — without it, a downward-tilted camera
+    reports the slant range and over-estimates how far ahead the person is. The
+    lateral (x) is on the rotation axis, so it (and therefore ``left``) is
+    unaffected and is handled separately by _optical_to_base.
+    """
+    return z_opt * math.cos(roll) + y_opt * math.sin(roll)
 
 
 def _optical_to_base(forward: float, left: float, cam_x: float, cam_y: float,

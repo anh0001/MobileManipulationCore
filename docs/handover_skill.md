@@ -53,19 +53,24 @@ Two things must be set on the real robot (defaults are safe but not accurate):
 
 The D435i has no TF frame. v1 uses a **horizontal** extrinsic — enough to choose
 a safe handover **direction**, not a full 6-DOF reach target. Optical frame is
-`x=right, y=down, z=forward`; the skill uses `forward=z`, `left=-x`, rotates by
-`camera_yaw`, and translates by `(camera_x, camera_y)` into the base frame.
+`x=right, y=down, z=forward`. The skill first **levels the camera's up/down tilt**
+(`camera_roll`, which mixes optical `z` and `y`), then uses `forward`, `left=-x`,
+rotates by `camera_yaw`, and translates by `(camera_x, camera_y)` into the base
+frame. (Leveling matters: a downward-tilted camera otherwise reports the slant
+range and over-estimates how far ahead the person is.)
 
 Measure and set in `config/handover_params.yaml` (or live with `ros2 param set`):
 
 ```yaml
-handover_camera_x_m:   -0.12   # camera behind the arm base (-X)
-handover_camera_y_m:   -0.18   # camera right of the arm base (-Y)
-handover_camera_yaw_rad: 0.0   # camera forward vs base +X (CCW +)
+handover_camera_x_m:    -0.435   # camera behind the arm base (-X)
+handover_camera_y_m:    -0.10    # camera right of the arm base (-Y)
+handover_camera_yaw_rad:  0.0    # camera forward vs base +X (CCW +)
+handover_camera_roll_rad: -0.0873  # up/down tilt: + look up, - look down (~5 deg down)
 ```
 
-A quick check: stand a person straight ahead of the robot and confirm the
-reported `azimuth_rad` (in the result JSON) is ≈ 0.
+A quick check: stand a person straight ahead of the robot at a known distance and
+confirm the reported `azimuth_rad` ≈ 0 and `distance_m` ≈ the true distance (tune
+`camera_roll` until the distance matches; tune `camera_yaw` until azimuth is 0).
 
 ### 2. Taught staging / present poses
 
@@ -120,7 +125,7 @@ overridden by `config/handover_params.yaml`; settable live with `ros2 param set`
 | `handover_torso_frac` | `0.40` | depth sample point down the body |
 | `handover_dwell_sec` | `2.5` | hold time before opening the gripper |
 | `handover_require_object` | `true` | require a held object before handing over |
-| `handover_camera_x/y_m`, `_yaw_rad` | see above | **CALIBRATE** mount extrinsic |
+| `handover_camera_x/y_m`, `_yaw_rad`, `_roll_rad` | see above | **CALIBRATE** mount extrinsic (`roll` = up/down tilt) |
 | `handover_staging_pose` / `_present_pose` | ready pose | **TEACH** present motion |
 
 ## Safety notes
