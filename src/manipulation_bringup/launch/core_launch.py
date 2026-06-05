@@ -738,6 +738,8 @@ def generate_launch_description():
             'capture_pose': [
                 float(v) for v in moveit_cfg.get(
                     'ready_pose_joint_positions', [0.0, 1.2, -0.2, 0.0, -0.35, 0.0])],
+            'acquire_timeout_sec': float(
+                vs_cfg.get('skill_acquire_timeout_sec', 20.0)),
         }],
     )
 

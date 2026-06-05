@@ -25,6 +25,7 @@ visual_servo:
 
   lost_target_timeout_sec: 2.0       # Must exceed detection period (~1 Hz) to avoid spurious LOST transitions
   acquire_timeout_sec: 5.0
+  skill_acquire_timeout_sec: 20.0    # skill_server: max wait for visual servo to lock the target. Detection is ~0.3 Hz effective, so allow several detection cycles to accumulate before aborting (was 12s default)
   image_center_tolerance_px: 8.0       # Pixel error threshold to treat the target as centered
   camera_optical_frame: "piper_camera_optical_frame"  # Core launch may override from robot_params.yaml
   ee_frame: "piper_tcp"                # Tool center point mounted after piper_link6

@@ -2,6 +2,21 @@
 
 This document provides context for AI assistants working with the MobileManipulationCore codebase.
 
+## Robot Stack (Parallel Repo)
+
+This repo runs on top of the **`ranger-garden-assistant`** robot stack, which lives in the
+parallel folder next to this repo: [`../ranger-garden-assistant`](../ranger-garden-assistant)
+(absolute: `/home/robofi/codes/ranger-garden-assistant`).
+
+That stack is the complete ROS 2 Humble platform — AgileX Ranger Mini 3.0 base, Livox Mid-360
+LiDAR, Tier IV C2-176 fisheye camera, Intel RealSense D405 wrist camera, AgileX PiPER 6-DOF arm,
+Nav2, MoveIt 2, FAST-LIO2 odometry, and OctoMap. It provides the hardware bringup, drivers,
+controllers, and TF that MobileManipulationCore builds on.
+
+**You may read and modify files in `../ranger-garden-assistant` when a task requires changes to
+the underlying robot stack** (e.g. driver/bringup/controller/TF fixes). Treat it as a sibling
+workspace, not a read-only dependency.
+
 ## Project Overview
 
 MobileManipulationCore is a ROS 2-based intelligent control system for mobile manipulation robots. It integrates vision-language-action (VLA) models with hardware controllers to enable autonomous mobile manipulation tasks.
