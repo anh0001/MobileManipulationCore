@@ -219,10 +219,11 @@ private:
   // MobileSAM object mask (mono8, source/depth resolution) for the grasp estimate.
   std::mutex mask_mutex_;
   cv::Mat latest_mask_frame_;
+  rclcpp::Time latest_mask_stamp_;
   rclcpp::Time last_mask_receive_time_;
   bool mask_available_{false};
-  double grasp_mask_max_age_sec_{1.0};  // reject SAM masks older than this
-  double grasp_mask_wait_sec_{2.5};     // wait this long for a fresh mask before depth-only estimate
+  double grasp_mask_max_age_sec_{2.5};  // reject SAM masks older than this
+  double grasp_mask_wait_sec_{12.0};    // wait this long for a fresh mask before aborting
 
   std::mutex detection_mutex_;
   cv::Rect2d latest_detection_roi_;
@@ -230,6 +231,10 @@ private:
   float latest_detection_confidence_{0.0F};
   bool detection_available_{false};
   rclcpp::Time latest_detection_stamp_;
+  rclcpp::Time latest_detection_receive_time_;
+  int acquire_detection_count_{0};
+  rclcpp::Time acquire_detection_window_start_;
+  std::string acquire_detection_class_;
 
   cv::Ptr<cv::Tracker> cv_tracker_;
   cv::Rect2d tracked_roi_;
@@ -258,8 +263,10 @@ private:
   // Look-then-move grasp state (all targets in the reference/base frame).
   std::optional<CartesianVector> grasp_target_ref_;
   std::optional<CartesianVector> pregrasp_target_ref_;
+  rclcpp::Time grasp_target_estimate_time_;
   CartesianVector grasp_approach_dir_ref_;   // unit horizontal approach direction
-  bool guarded_at_pregrasp_{false};          // false: heading to pregrasp; true: descending to grasp
+  // false: heading to pregrasp; true: descending to grasp
+  bool guarded_at_pregrasp_{false};
   int estimate_attempts_{0};
 
   std::string rgb_topic_;
@@ -289,6 +296,9 @@ private:
   double output_delta_horizon_sec_;
   double min_detection_confidence_;
   double min_tracking_confidence_;
+  double detection_max_age_sec_;
+  int acquire_min_detections_;
+  double acquire_detection_window_sec_;
   double lost_target_timeout_sec_;
   double acquire_timeout_sec_;
   double image_center_tolerance_px_;
@@ -345,6 +355,7 @@ private:
   // a bottle), since the gripper max opening is barely wider than the body.
   double neck_grasp_offset_m_{0.025};
   double grasp_band_width_margin_m_{0.012};  // jaw clearance for the band width check
+  double grasp_target_max_age_sec_{8.0};
   double pregrasp_standoff_m_{0.12};
   double guarded_approach_speed_mps_{0.02};
   double guarded_reach_tolerance_m_{0.01};

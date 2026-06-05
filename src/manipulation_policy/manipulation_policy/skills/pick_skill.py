@@ -15,7 +15,8 @@ Sequence per goal (mirrors scripts/grasp_autotune.py run_attempt/classify):
 
 Held detection is heuristic (no force sensor): a jaw blocked by an object stops
 short of full close, so width > held_width_threshold => held. Thin/soft objects
-can still close fully while holding, so the raw final width is also returned.
+can still close fully while holding, so the raw final width is also returned, but
+full-close outcomes are reported as likely-empty failures for hardware safety.
 """
 from __future__ import annotations
 
@@ -37,8 +38,8 @@ class PickSkill(Skill):
     description = (
         "Pick a single object by open-vocabulary name with the robot arm. "
         "Runs the full visual-servo grasp: detect -> align -> grasp -> lift. "
-        "Returns success (reached grasp+lift), object_held (jaw blocked on "
-        "something — heuristic, no force sensor), and gripper_width (m)."
+        "Returns success only when the post-lift gripper width indicates the "
+        "object is held; full-close outcomes are flagged as likely_empty_grasp."
     )
     params = [
         SkillParam("object", "string", required=True,
@@ -67,10 +68,13 @@ class PickSkill(Skill):
             ctx.set_bool_param("grasp_enabled", False)
             ctx.set_bool_param("grasp_auto_loop", False)
 
-        def done(success, held, message):
+        def done(success, held, message, *, visual_servo_done=False,
+                 likely_empty_grasp=False):
             gate_off()
             return SkillResult(success, message, {
                 "object_held": bool(held),
+                "likely_empty_grasp": bool(likely_empty_grasp),
+                "visual_servo_done": bool(visual_servo_done),
                 "gripper_width": round(float(ctx.gripper_width), 4),
             })
 
@@ -129,9 +133,14 @@ class PickSkill(Skill):
                 ctx.set_bool_param("grasp_auto_loop", False)  # belt-and-suspenders
                 ctx.sleep(1.0)  # let the lift/width settle
                 held = ctx.gripper_width > held_threshold
-                msg = (f"picked '{obj}'; width={ctx.gripper_width:.4f} "
-                       f"({'held (jaw blocked)' if held else 'full close — held only if thin/soft'})")
-                return done(True, held, msg)
+                if held:
+                    msg = (f"picked '{obj}'; width={ctx.gripper_width:.4f} "
+                           "(held: jaw blocked)")
+                    return done(True, held, msg, visual_servo_done=True)
+                msg = (f"likely empty grasp for '{obj}'; width={ctx.gripper_width:.4f} "
+                       f"<= held threshold {held_threshold:.4f} (full close)")
+                return done(False, held, msg, visual_servo_done=True,
+                            likely_empty_grasp=True)
             if elapsed > timeout:
                 return done(False, False,
                             f"timeout after {timeout:.0f}s in state '{st}' "

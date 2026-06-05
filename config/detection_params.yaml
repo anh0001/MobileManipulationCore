@@ -26,7 +26,11 @@ detection:
   # Prompt and filtering
   # Objects here are TOY fruits — Grounding DINO matches them with a "toy <name>"
   # prompt; bare food words (e.g. "watermelon") miss the toy versions.
-  default_prompt: "toy watermelon"
+  # Keep EMPTY so the detector stays dormant until a pick command publishes the
+  # target prompt (skill_server). A non-empty default makes the detector query
+  # continuously on startup, which auto-engages the visual servo and makes the
+  # arm hunt/oscillate around the ready pose before any action is sent.
+  default_prompt: ""
   box_threshold: 0.35
   text_threshold: 0.25
   min_score: 0.35

@@ -15,6 +15,9 @@ visual_servo:
   target_class: ""
   min_detection_confidence: 0.4
   min_tracking_confidence: 0.5
+  detection_max_age_sec: 2.5          # Reject detector source frames older than this, even if the result just arrived
+  acquire_min_detections: 2           # Require two detector hits within the window before locking a target
+  acquire_detection_window_sec: 12.0  # Long enough for ~0.3 Hz effective detections plus missed frames
 
   tracker_type: "mil"                  # Current build supports OpenCV MIL tracker
   klt_max_features: 200
@@ -23,7 +26,7 @@ visual_servo:
   klt_window_size: 10
   klt_pyramid_levels: 3
 
-  lost_target_timeout_sec: 2.0       # Must exceed detection period (~1 Hz) to avoid spurious LOST transitions
+  lost_target_timeout_sec: 2.0       # Tracker/RGB-stall timeout; sparse detector hits are handled by acquire_min_detections/window
   acquire_timeout_sec: 5.0
   skill_acquire_timeout_sec: 20.0    # skill_server: max wait for visual servo to lock the target. Detection is ~0.3 Hz effective, so allow several detection cycles to accumulate before aborting (was 12s default)
   image_center_tolerance_px: 8.0       # Pixel error threshold to treat the target as centered
@@ -57,6 +60,11 @@ visual_servo:
   open_gripper_settle_sec: 3.0         # Wait after issuing the direct GripperCommand open action
   gripper_open_position_tolerance: 0.008  # Require near-full open before approaching (else OPEN->APPROACH cancels the open goal mid-travel and the gripper descends partly closed)
   return_to_ready_after_pick: true     # Ask the adapter to send the arm back to its configured ready pose after DONEtry 
+  mask_topic: "/manipulation/target_mask"
+  grasp_use_mask: true                 # With true, abort instead of estimating a grasp from depth-only fallback
+  grasp_mask_max_age_sec: 2.5          # Source-image age; rejects masks older than one sparse detector cycle
+  grasp_mask_wait_sec: 12.0            # Wait several sparse detector cycles for a fresh mask before failing safe
+  grasp_target_max_age_sec: 8.0        # Refuse to close if the estimated grasp target has aged out
 
   # Per-object grasp offset overrides (base frame, meters). The detected object
   # class (Grounding DINO prompt label) selects a row by substring match, so the

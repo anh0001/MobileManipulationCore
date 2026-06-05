@@ -107,6 +107,8 @@ def generate_launch_description():
                 'rgb_topic': LaunchConfiguration('rgb_topic'),
                 'camera_info_topic': LaunchConfiguration('camera_info_topic'),
                 'depth_topic': LaunchConfiguration('depth_topic'),
+                'mask_topic': str(vs_cfg.get('mask_topic', '/manipulation/target_mask')),
+                'grasp_use_mask': bool(vs_cfg.get('grasp_use_mask', True)),
                 'detection_topic': LaunchConfiguration('detection_topic'),
                 'output_topic': LaunchConfiguration('output_topic'),
                 'joint_states_topic': str(vs_cfg.get('joint_states_topic', '/joint_states')),
@@ -122,6 +124,12 @@ def generate_launch_description():
                     vs_cfg.get('min_detection_confidence', 0.4)),
                 'min_tracking_confidence': float(
                     vs_cfg.get('min_tracking_confidence', 0.5)),
+                'detection_max_age_sec': float(
+                    vs_cfg.get('detection_max_age_sec', 2.5)),
+                'acquire_min_detections': int(
+                    vs_cfg.get('acquire_min_detections', 2)),
+                'acquire_detection_window_sec': float(
+                    vs_cfg.get('acquire_detection_window_sec', 12.0)),
                 'lost_target_timeout_sec': float(
                     vs_cfg.get('lost_target_timeout_sec', 0.3)),
                 'acquire_timeout_sec': float(
@@ -177,6 +185,12 @@ def generate_launch_description():
                 'gripper_open_positions': vs_cfg.get('gripper_open_positions', []),
                 'gripper_open_position_tolerance': float(
                     vs_cfg.get('gripper_open_position_tolerance', 0.02)),
+                'grasp_mask_max_age_sec': float(
+                    vs_cfg.get('grasp_mask_max_age_sec', 2.5)),
+                'grasp_mask_wait_sec': float(
+                    vs_cfg.get('grasp_mask_wait_sec', 12.0)),
+                'grasp_target_max_age_sec': float(
+                    vs_cfg.get('grasp_target_max_age_sec', 8.0)),
                 'tracker_type': str(vs_cfg.get('tracker_type', 'mil')),
                 'klt_max_features': int(vs_cfg.get('klt_max_features', 200)),
                 'klt_quality_level': float(vs_cfg.get('klt_quality_level', 0.01)),

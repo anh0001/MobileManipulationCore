@@ -20,6 +20,9 @@ visual_servo:
   target_class: ""                    # Empty = use first/highest-confidence detection
   min_detection_confidence: 0.4
   min_tracking_confidence: 0.5
+  detection_max_age_sec: 2.5          # Reject detector source frames older than this
+  acquire_min_detections: 2           # Require two detector hits before locking
+  acquire_detection_window_sec: 12.0  # Long enough for ~0.3 Hz effective detections
 
   # Tracker parameters
   tracker_type: "mil"                 # Current build supports OpenCV MIL tracker
@@ -30,7 +33,7 @@ visual_servo:
   klt_pyramid_levels: 3
 
   # State machine timeouts
-  lost_target_timeout_sec: 2.0       # Must exceed detection period (~1 Hz) to avoid spurious LOST transitions
+  lost_target_timeout_sec: 2.0       # Tracker/RGB-stall timeout; sparse detector hits are handled by acquire_min_detections/window
   acquire_timeout_sec: 5.0
 
   # Image-space convergence
@@ -65,6 +68,11 @@ visual_servo:
   open_gripper_settle_sec: 3.0         # Wait after issuing the direct GripperCommand open action
   gripper_open_position_tolerance: 0.020  # Joint-state tolerance used only to report when the open target is reached
   return_to_ready_after_pick: true     # Adapter returns to its configured ready pose after visual-servo DONE
+  mask_topic: "/manipulation/target_mask"
+  grasp_use_mask: true                 # Abort instead of estimating a grasp from depth-only fallback
+  grasp_mask_max_age_sec: 2.5          # Source-image age bound for SAM masks
+  grasp_mask_wait_sec: 12.0            # Wait several sparse detector cycles before failing safe
+  grasp_target_max_age_sec: 8.0        # Refuse to close from an old grasp estimate
 
   # Reference frame for output PolicyOutput
   reference_frame: "piper_base_link"

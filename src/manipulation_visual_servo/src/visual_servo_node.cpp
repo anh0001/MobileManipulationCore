@@ -41,6 +41,24 @@ T clamp_value(T value, T lower, T upper)
   return std::max(lower, std::min(upper, value));
 }
 
+double message_age_sec(
+  const rclcpp::Time & now,
+  const rclcpp::Time & source_stamp,
+  const rclcpp::Time & receive_time)
+{
+  const double receive_age =
+    receive_time.nanoseconds() > 0 ? std::max(0.0, (now - receive_time).seconds()) : 1e9;
+  if (source_stamp.nanoseconds() <= 0) {
+    return receive_age;
+  }
+
+  const double source_age = (now - source_stamp).seconds();
+  if (!std::isfinite(source_age) || source_age < 0.0 || source_age > 3600.0) {
+    return receive_age;
+  }
+  return std::max(receive_age, source_age);
+}
+
 }  // namespace
 
 std::string state_to_string(ServoState state)
@@ -81,6 +99,9 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("target_class", "");
   this->declare_parameter("min_detection_confidence", 0.4);
   this->declare_parameter("min_tracking_confidence", 0.5);
+  this->declare_parameter("detection_max_age_sec", 2.5);
+  this->declare_parameter("acquire_min_detections", 2);
+  this->declare_parameter("acquire_detection_window_sec", 12.0);
   this->declare_parameter("lost_target_timeout_sec", 0.3);
   this->declare_parameter("acquire_timeout_sec", 5.0);
   this->declare_parameter("image_center_tolerance_px", 8.0);
@@ -143,10 +164,16 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   this->declare_parameter("grasp_plane_max_rms_m", 0.03);
   this->declare_parameter("grasp_height_above_table_m", 0.055);
   this->declare_parameter("grasp_object_radius_m", 0.03);
-  this->declare_parameter("neck_grasp_offset_m", 0.025);  // neck grasp: aim this far below the measured object top
-  this->declare_parameter("grasp_band_width_margin_m", 0.012);  // jaw clearance for band width check
-  this->declare_parameter("grasp_mask_max_age_sec", 1.0);  // ignore SAM masks older than this
-  this->declare_parameter("grasp_mask_wait_sec", 2.5);  // wait this long for a fresh mask before estimating depth-only
+  // Neck grasp: aim this far below the measured object top.
+  this->declare_parameter("neck_grasp_offset_m", 0.025);
+  // Jaw clearance for band width check.
+  this->declare_parameter("grasp_band_width_margin_m", 0.012);
+  // Ignore SAM masks older than this.
+  this->declare_parameter("grasp_mask_max_age_sec", 2.5);
+  // Wait this long for a fresh mask before aborting.
+  this->declare_parameter("grasp_mask_wait_sec", 12.0);
+  // Refuse to close on older grasp estimates.
+  this->declare_parameter("grasp_target_max_age_sec", 8.0);
   this->declare_parameter("pregrasp_standoff_m", 0.12);
   this->declare_parameter("guarded_approach_speed_mps", 0.02);
   this->declare_parameter("guarded_reach_tolerance_m", 0.01);
@@ -199,6 +226,11 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   target_class_ = this->get_parameter("target_class").as_string();
   min_detection_confidence_ = this->get_parameter("min_detection_confidence").as_double();
   min_tracking_confidence_ = this->get_parameter("min_tracking_confidence").as_double();
+  detection_max_age_sec_ = this->get_parameter("detection_max_age_sec").as_double();
+  acquire_min_detections_ =
+    static_cast<int>(this->get_parameter("acquire_min_detections").as_int());
+  acquire_detection_window_sec_ =
+    this->get_parameter("acquire_detection_window_sec").as_double();
   lost_target_timeout_sec_ = this->get_parameter("lost_target_timeout_sec").as_double();
   acquire_timeout_sec_ = this->get_parameter("acquire_timeout_sec").as_double();
   image_center_tolerance_px_ = this->get_parameter("image_center_tolerance_px").as_double();
@@ -256,7 +288,8 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
   grasp_plane_min_depth_m_ = this->get_parameter("grasp_plane_min_depth_m").as_double();
   grasp_plane_max_depth_m_ = this->get_parameter("grasp_plane_max_depth_m").as_double();
-  grasp_plane_min_points_ = static_cast<int>(this->get_parameter("grasp_plane_min_points").as_int());
+  grasp_plane_min_points_ =
+    static_cast<int>(this->get_parameter("grasp_plane_min_points").as_int());
   grasp_plane_max_rms_m_ = this->get_parameter("grasp_plane_max_rms_m").as_double();
   grasp_height_above_table_m_ = this->get_parameter("grasp_height_above_table_m").as_double();
   grasp_object_radius_m_ = this->get_parameter("grasp_object_radius_m").as_double();
@@ -264,6 +297,7 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   grasp_band_width_margin_m_ = this->get_parameter("grasp_band_width_margin_m").as_double();
   grasp_mask_max_age_sec_ = this->get_parameter("grasp_mask_max_age_sec").as_double();
   grasp_mask_wait_sec_ = this->get_parameter("grasp_mask_wait_sec").as_double();
+  grasp_target_max_age_sec_ = this->get_parameter("grasp_target_max_age_sec").as_double();
   pregrasp_standoff_m_ = this->get_parameter("pregrasp_standoff_m").as_double();
   guarded_approach_speed_mps_ = this->get_parameter("guarded_approach_speed_mps").as_double();
   guarded_reach_tolerance_m_ = this->get_parameter("guarded_reach_tolerance_m").as_double();
@@ -414,6 +448,11 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
   last_processed_frame_stamp_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   last_rgb_receive_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   last_depth_receive_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  latest_mask_stamp_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  last_mask_receive_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  latest_detection_receive_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  acquire_detection_window_start_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  grasp_target_estimate_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   latest_frame_generation_ = 0;
   last_processed_frame_generation_ = 0;
 
@@ -447,6 +486,16 @@ VisualServoNode::VisualServoNode(const rclcpp::NodeOptions & options)
     depth_sample_anchor_x_, depth_sample_anchor_y_, depth_roi_half_size_px_,
     min_valid_depth_pixels_, depth_sample_max_iqr_m_, close_depth_stable_frames_,
     approach_stall_window_sec_, approach_min_progress_m_);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[INIT] Detection | max_age=%.2fs lock=%d hits/%.1fs lost_timeout=%.2fs",
+    detection_max_age_sec_, std::max(1, acquire_min_detections_),
+    acquire_detection_window_sec_, lost_target_timeout_sec_);
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[INIT] Mask | use=%s max_age=%.2fs wait=%.1fs target_max_age=%.1fs",
+    grasp_use_mask_ ? "true" : "false", grasp_mask_max_age_sec_,
+    grasp_mask_wait_sec_, grasp_target_max_age_sec_);
   RCLCPP_INFO(
     this->get_logger(),
     "[INIT] Gripper action | action=%s open=%.3f close=%.3f open_tol=%.3f "
@@ -510,11 +559,21 @@ void VisualServoNode::mask_callback(const sensor_msgs::msg::Image::ConstSharedPt
       msg->width, msg->height);
     return;
   }
+  const std::size_t expected_step = static_cast<std::size_t>(msg->width);
+  const std::size_t expected_bytes = static_cast<std::size_t>(msg->step) * msg->height;
+  if (msg->step < expected_step || msg->data.size() < expected_bytes) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "[MASK] frame rejected: payload shorter than expected (step=%u width=%u data=%zu)",
+      msg->step, msg->width, msg->data.size());
+    return;
+  }
   const cv::Mat view(
     static_cast<int>(msg->height), static_cast<int>(msg->width), CV_8UC1,
     const_cast<uint8_t *>(msg->data.data()), msg->step);
   std::lock_guard<std::mutex> lock(mask_mutex_);
   latest_mask_frame_ = view.clone();
+  latest_mask_stamp_ = msg->header.stamp;
   last_mask_receive_time_ = this->now();
   mask_available_ = true;
 }
@@ -559,7 +618,22 @@ void VisualServoNode::joint_states_callback(
 void VisualServoNode::detection_callback(
   const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg)
 {
+  const auto receive_time = this->now();
+  const double detection_age_sec =
+    message_age_sec(receive_time, rclcpp::Time(msg->header.stamp), receive_time);
+  if (detection_max_age_sec_ > 0.0 && detection_age_sec > detection_max_age_sec_) {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    detection_available_ = false;
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[DETECTION] rejecting stale detector result (age=%.2fs > %.2fs)",
+      detection_age_sec, detection_max_age_sec_);
+    return;
+  }
+
   if (msg->detections.empty()) {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    detection_available_ = false;
     return;
   }
 
@@ -587,6 +661,8 @@ void VisualServoNode::detection_callback(
   }
 
   if (!best) {
+    std::lock_guard<std::mutex> lock(detection_mutex_);
+    detection_available_ = false;
     return;
   }
 
@@ -594,13 +670,38 @@ void VisualServoNode::detection_callback(
   const double cy = best->bbox.center.position.y;
   const double w = best->bbox.size_x;
   const double h = best->bbox.size_y;
+  const std::string best_class =
+    best->results.empty() ? "" : best->results[0].hypothesis.class_id;
 
   std::lock_guard<std::mutex> lock(detection_mutex_);
+  const int required_hits = std::max(1, acquire_min_detections_);
+  const double lock_window = std::max(0.1, acquire_detection_window_sec_);
+  const bool can_accumulate =
+    acquire_detection_count_ > 0 &&
+    acquire_detection_class_ == best_class &&
+    acquire_detection_window_start_.nanoseconds() > 0 &&
+    (receive_time - acquire_detection_window_start_).seconds() <= lock_window;
+  if (!can_accumulate) {
+    acquire_detection_count_ = 1;
+    acquire_detection_window_start_ = receive_time;
+    acquire_detection_class_ = best_class;
+  } else {
+    acquire_detection_count_ = std::min(required_hits, acquire_detection_count_ + 1);
+  }
+
   latest_detection_roi_ = cv::Rect2d(cx - w / 2.0, cy - h / 2.0, w, h);
   latest_detection_confidence_ = best_score;
-  latest_detection_class_ = best->results.empty() ? "" : best->results[0].hypothesis.class_id;
-  detection_available_ = true;
+  latest_detection_class_ = best_class;
+  detection_available_ = acquire_detection_count_ >= required_hits;
   latest_detection_stamp_ = msg->header.stamp;
+  latest_detection_receive_time_ = receive_time;
+  if (!detection_available_) {
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 1000,
+      "[DETECTION] waiting for lock confirmation %d/%d for '%s'",
+      acquire_detection_count_, required_hits,
+      latest_detection_class_.empty() ? "<unknown>" : latest_detection_class_.c_str());
+  }
 }
 
 void VisualServoNode::control_timer_callback()
@@ -741,6 +842,9 @@ bool VisualServoNode::fallback_to_detection_tracking(const char * context, bool 
       tracked_roi_ = latest_detection_roi_;
       tracking_confidence_ = latest_detection_confidence_;
       detection_available_ = false;
+      acquire_detection_count_ = 0;
+      acquire_detection_class_.clear();
+      acquire_detection_window_start_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
       last_track_time_ = this->now();
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
@@ -781,6 +885,7 @@ void VisualServoNode::reset_pick_progress()
   depth_progress_history_.clear();
   grasp_target_ref_.reset();
   pregrasp_target_ref_.reset();
+  grasp_target_estimate_time_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   guarded_at_pregrasp_ = false;
   place_released_ = false;
   // NOTE: do NOT clear the cached mask here. The SAM mask is produced once per
@@ -1268,6 +1373,9 @@ bool VisualServoNode::acquire_from_detection(const cv::Mat & frame)
     }
     det_roi = latest_detection_roi_;
     detection_available_ = false;
+    acquire_detection_count_ = 0;
+    acquire_detection_class_.clear();
+    acquire_detection_window_start_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
   }
 
   det_roi.x = std::max(0.0, det_roi.x);
@@ -1300,6 +1408,9 @@ bool VisualServoNode::update_tracking(const cv::Mat & frame)
     if (detection_available_) {
       cv::Rect2d det_roi = latest_detection_roi_;
       detection_available_ = false;
+      acquire_detection_count_ = 0;
+      acquire_detection_class_.clear();
+      acquire_detection_window_start_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
 
       det_roi.x = std::max(0.0, det_roi.x);
       det_roi.y = std::max(0.0, det_roi.y);
@@ -1365,10 +1476,19 @@ void VisualServoNode::handle_idle()
   grasp_offset_z_ = this->get_parameter("grasp_offset_z").as_double();
   grasp_height_above_table_m_ = this->get_parameter("grasp_height_above_table_m").as_double();
   neck_grasp_offset_m_ = this->get_parameter("neck_grasp_offset_m").as_double();
+  detection_max_age_sec_ = this->get_parameter("detection_max_age_sec").as_double();
+  acquire_min_detections_ =
+    static_cast<int>(this->get_parameter("acquire_min_detections").as_int());
+  acquire_detection_window_sec_ =
+    this->get_parameter("acquire_detection_window_sec").as_double();
+  grasp_mask_max_age_sec_ = this->get_parameter("grasp_mask_max_age_sec").as_double();
+  grasp_mask_wait_sec_ = this->get_parameter("grasp_mask_wait_sec").as_double();
+  grasp_target_max_age_sec_ = this->get_parameter("grasp_target_max_age_sec").as_double();
   // Plane-fit tunables — live so the threshold can be tightened without relaunch.
   grasp_plane_max_rms_m_ = this->get_parameter("grasp_plane_max_rms_m").as_double();
   grasp_plane_annulus_frac_ = this->get_parameter("grasp_plane_annulus_frac").as_double();
-  grasp_plane_min_points_ = static_cast<int>(this->get_parameter("grasp_plane_min_points").as_int());
+  grasp_plane_min_points_ =
+    static_cast<int>(this->get_parameter("grasp_plane_min_points").as_int());
 
   std::lock_guard<std::mutex> lock(detection_mutex_);
   if (detection_available_) {
@@ -1561,7 +1681,8 @@ void VisualServoNode::handle_open_gripper()
   if (gripper_fully_open || action_succeeded) {
     if (place_mode_) {
       place_released_ = true;
-      RCLCPP_INFO(this->get_logger(),
+      RCLCPP_INFO(
+        this->get_logger(),
         "[PLACE] released object above target");
       transition_to(ServoState::DONE, "place: released");
       return;
@@ -1607,7 +1728,8 @@ void VisualServoNode::handle_open_gripper()
     }
     if (place_mode_) {
       place_released_ = true;
-      RCLCPP_INFO(this->get_logger(),
+      RCLCPP_INFO(
+        this->get_logger(),
         "[PLACE] release settle elapsed");
       transition_to(ServoState::DONE, "place: released (settled)");
       return;
@@ -1655,30 +1777,39 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
     if (!depth_available_ || latest_depth_frame_.empty()) {
       return false;
     }
+    const double depth_age_sec = std::abs((this->now() - last_depth_receive_time_).seconds());
+    if (depth_age_sec > depth_stale_timeout_sec_) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "[ESTIMATE] depth frame is stale (age=%.2fs > %.2fs); waiting",
+        depth_age_sec, depth_stale_timeout_sec_);
+      return false;
+    }
     depth = latest_depth_frame_;
   }
   cv::Mat object_mask;
   if (grasp_use_mask_) {
     std::lock_guard<std::mutex> lock(mask_mutex_);
     const double mask_age = mask_available_ ?
-      (this->now() - last_mask_receive_time_).seconds() : 1e9;
+      message_age_sec(this->now(), latest_mask_stamp_, last_mask_receive_time_) : 1e9;
     if (!mask_available_ || latest_mask_frame_.empty()) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
-        "[ESTIMATE] no mask available yet; using depth-only grasp estimate");
+        "[ESTIMATE] no mask available yet; waiting");
+      return false;
     } else if (mask_age > grasp_mask_max_age_sec_) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
-        "[ESTIMATE] ignoring stale mask (age=%.2fs > %.2fs); waiting for a fresh one",
+        "[ESTIMATE] refusing stale mask (age=%.2fs > %.2fs); waiting for a fresh one",
         mask_age, grasp_mask_max_age_sec_);
-    } else if (latest_mask_frame_.rows == depth.rows &&
-      latest_mask_frame_.cols == depth.cols)
-    {
+      return false;
+    } else if (latest_mask_frame_.rows == depth.rows && latest_mask_frame_.cols == depth.cols) {
       object_mask = latest_mask_frame_;  // CV_8UC1, nonzero = object
     } else {
       // Mask was published at the detector's source resolution, which differs
       // from depth: resize to the depth grid instead of silently dropping it.
-      cv::resize(latest_mask_frame_, object_mask,
+      cv::resize(
+        latest_mask_frame_, object_mask,
         cv::Size(depth.cols, depth.rows), 0, 0, cv::INTER_NEAREST);
       RCLCPP_INFO_THROTTLE(
         this->get_logger(), *this->get_clock(), 2000,
@@ -1753,7 +1884,8 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
       return false;
     }
   } else if (grasp_top_down_ && est.object_height_m > 0.0) {
-    grasp_h = std::max(grasp_height_above_table_m_,
+    grasp_h = std::max(
+      grasp_height_above_table_m_,
       est.object_height_m - neck_grasp_offset_m_);
   }
   RCLCPP_INFO(
@@ -1851,6 +1983,7 @@ bool VisualServoNode::estimate_grasp_pose_in_reference()
 
   grasp_target_ref_ = grasp_ref;
   pregrasp_target_ref_ = pregrasp_ref;
+  grasp_target_estimate_time_ = this->now();
   guarded_at_pregrasp_ = false;
 
   RCLCPP_INFO(
@@ -1885,30 +2018,35 @@ void VisualServoNode::handle_estimate_grasp()
   }
 
   // Wait for a fresh SAM mask before estimating. A mask-less estimate uses the
-  // unstable bbox-height fallback (object_pts tiny, band=no) and lands the grasp
-  // high -> empty close. The mask arrives with each ~1Hz detection, so hold here
-  // up to grasp_mask_wait_sec past settle; only then fall back to depth-only.
+  // unstable bbox-height fallback (object_pts tiny, band=no) and can land the
+  // grasp high -> empty close. With grasp_use_mask=true, fail safe instead of
+  // committing to a depth-only grasp.
   if (grasp_use_mask_) {
     bool fresh_mask;
+    double mask_age = 1e9;
     {
       std::lock_guard<std::mutex> lock(mask_mutex_);
       const double age = mask_available_ ?
-        (this->now() - last_mask_receive_time_).seconds() : 1e9;
+        message_age_sec(this->now(), latest_mask_stamp_, last_mask_receive_time_) : 1e9;
       fresh_mask = mask_available_ && !latest_mask_frame_.empty() &&
         age <= grasp_mask_max_age_sec_;
+      mask_age = age;
     }
     const double waited = elapsed - settle_sec;
     if (!fresh_mask && waited < grasp_mask_wait_sec_) {
       RCLCPP_INFO_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
-        "[ESTIMATE] waiting for a fresh mask (%.1f/%.1fs)", waited, grasp_mask_wait_sec_);
+        "[ESTIMATE] waiting for a fresh mask (waited=%.1f/%.1fs age=%.2fs max=%.2fs)",
+        waited, grasp_mask_wait_sec_, mask_age, grasp_mask_max_age_sec_);
       return;
     }
     if (!fresh_mask) {
       RCLCPP_WARN(
         this->get_logger(),
-        "[ESTIMATE] no fresh mask after %.1fs; proceeding depth-only (grasp may be high)",
-        grasp_mask_wait_sec_);
+        "[ESTIMATE] no fresh mask after %.1fs (age=%.2fs max=%.2fs); aborting pick",
+        grasp_mask_wait_sec_, mask_age, grasp_mask_max_age_sec_);
+      transition_to(ServoState::LOST, "fresh mask unavailable");
+      return;
     }
   }
 
@@ -1918,8 +2056,8 @@ void VisualServoNode::handle_estimate_grasp()
     // straight to the guarded approach; the release happens at the standoff.
     transition_to(
       place_mode_ ? ServoState::GUARDED_APPROACH : ServoState::OPEN_GRIPPER,
-      place_mode_ ? "place: pose estimated; approaching to release"
-                  : "grasp pose estimated");
+      place_mode_ ? "place: pose estimated; approaching to release" :
+      "grasp pose estimated");
     return;
   }
 
@@ -1938,6 +2076,21 @@ void VisualServoNode::handle_guarded_approach()
   if (!grasp_target_ref_.has_value() || !pregrasp_target_ref_.has_value()) {
     transition_to(ServoState::LOST, "guarded approach without target");
     return;
+  }
+
+  if (grasp_target_max_age_sec_ > 0.0) {
+    const double target_age =
+      grasp_target_estimate_time_.nanoseconds() > 0 ?
+      (this->now() - grasp_target_estimate_time_).seconds() : 1e9;
+    if (target_age > grasp_target_max_age_sec_) {
+      publish_zero_motion(tracking_confidence_);
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GUARDED] aborting pick: grasp target age %.2fs exceeded limit %.2fs",
+        target_age, grasp_target_max_age_sec_);
+      transition_to(ServoState::LOST, "grasp target stale");
+      return;
+    }
   }
 
   // Safety timeout: never push indefinitely.
@@ -1975,7 +2128,8 @@ void VisualServoNode::handle_guarded_approach()
         // object further (place_release_clearance_m) before opening, so it is
         // released clear above the box. The raise runs in LIFT, then OPEN_GRIPPER.
         publish_zero_motion(tracking_confidence_);
-        transition_to(ServoState::LIFT,
+        transition_to(
+          ServoState::LIFT,
           "place: reached standoff; raising before release");
         return;
       }
@@ -2257,6 +2411,21 @@ void VisualServoNode::handle_approach_depth()
 
 void VisualServoNode::handle_close_gripper()
 {
+  if (grasp_target_max_age_sec_ > 0.0) {
+    const double target_age =
+      grasp_target_estimate_time_.nanoseconds() > 0 ?
+      (this->now() - grasp_target_estimate_time_).seconds() : 1e9;
+    if (target_age > grasp_target_max_age_sec_) {
+      publish_zero_motion(tracking_confidence_);
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[GRIPPER][CLOSE] refusing close: grasp target age %.2fs exceeded limit %.2fs",
+        target_age, grasp_target_max_age_sec_);
+      transition_to(ServoState::LOST, "grasp target stale before close");
+      return;
+    }
+  }
+
   ensure_gripper_goal_started(ServoState::CLOSE_GRIPPER);
 
   bool action_completed = false;
