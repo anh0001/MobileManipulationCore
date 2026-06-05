@@ -46,6 +46,17 @@ class _FakePickContext(SkillContext):
         self.params_set.append((name, value, node, timeout))
         return True
 
+    def set_double_array_param(self, name, values, node=None, timeout: float = 4.0) -> bool:
+        self.params_set.append((name, list(values), node, timeout))
+        return True
+
+    def set_double_param(self, name, value, node=None, timeout: float = 4.0) -> bool:
+        self.params_set.append((name, value, node, timeout))
+        return True
+
+    def get_remote_params(self, names, node=None, timeout: float = 4.0):
+        return {}
+
     def move_arm_to(self, positions, time_sec: float = 5.0, timeout: float = 12.0) -> bool:
         return True
 

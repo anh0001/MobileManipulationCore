@@ -732,29 +732,37 @@ def generate_launch_description():
 
     # Skill server - one /execute_skill action that dispatches every registered
     # robot skill (pick, home, ...) so AI clients can call any skill by name.
+    # skill_server params: the shared plumbing dict, then (if present) the
+    # handover skill's tunables/calibration file which overrides the in-code
+    # defaults declared via Skill.server_params (see config/handover_params.yaml).
+    skill_server_params = [{
+        'visual_servo_node': '/visual_servo_node',
+        'prompt_topic': str(
+            detection_cfg.get('prompt_topic', '/visual_servo/target_prompt')),
+        'state_topic': str(vs_debug_cfg.get('state_topic', '/visual_servo/state')),
+        'joint_states_topic': joint_states_topic,
+        'gripper_joint': str(gripper_cfg.get('joint_name', 'piper_joint7')),
+        'gripper_action': robot_actions.get(
+            'gripper_command', '/piper_gripper_controller/gripper_cmd'),
+        'gripper_open_position': float(gripper_cfg.get('open_position', 0.07)),
+        'gripper_max_effort': float(gripper_cfg.get('max_effort', 5.0)),
+        'capture_pose': [
+            float(v) for v in moveit_cfg.get(
+                'ready_pose_joint_positions', [0.0, 1.2, -0.2, 0.0, -0.35, 0.0])],
+        'acquire_timeout_sec': float(
+            vs_cfg.get('skill_acquire_timeout_sec', 20.0)),
+    }]
+    handover_params_file = resolve_config_path('handover_params.yaml')
+    if os.path.isfile(handover_params_file):
+        skill_server_params.append(handover_params_file)
+
     skill_server_node = Node(
         package='manipulation_policy',
         executable='skill_server',
         name='skill_server',
         output='screen',
         condition=is_visual_servo_mode,
-        parameters=[{
-            'visual_servo_node': '/visual_servo_node',
-            'prompt_topic': str(
-                detection_cfg.get('prompt_topic', '/visual_servo/target_prompt')),
-            'state_topic': str(vs_debug_cfg.get('state_topic', '/visual_servo/state')),
-            'joint_states_topic': joint_states_topic,
-            'gripper_joint': str(gripper_cfg.get('joint_name', 'piper_joint7')),
-            'gripper_action': robot_actions.get(
-                'gripper_command', '/piper_gripper_controller/gripper_cmd'),
-            'gripper_open_position': float(gripper_cfg.get('open_position', 0.07)),
-            'gripper_max_effort': float(gripper_cfg.get('max_effort', 5.0)),
-            'capture_pose': [
-                float(v) for v in moveit_cfg.get(
-                    'ready_pose_joint_positions', [0.0, 1.2, -0.2, 0.0, -0.35, 0.0])],
-            'acquire_timeout_sec': float(
-                vs_cfg.get('skill_acquire_timeout_sec', 20.0)),
-        }],
+        parameters=skill_server_params,
     )
 
     return LaunchDescription([

@@ -172,6 +172,14 @@ class Skill(ABC):
     description: str = ""
     params: List[SkillParam] = []
 
+    # Optional ROS parameters the skill_server should declare on the node so this
+    # skill can read them via ``ctx.get_param`` (calibration values, taught poses,
+    # tunable thresholds). Map of ``param_name -> default``. The default's Python
+    # type fixes the ROS parameter type, so write floats as ``1.0`` (not ``1``)
+    # and keep config-file overrides type-consistent. Declared generically by the
+    # skill_server, so adding a skill with its own tunables needs NO server edit.
+    server_params: Dict[str, Any] = {}
+
     def validate(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         """Check required params are present and coerce all to declared types.
 

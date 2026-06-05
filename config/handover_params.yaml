@@ -1,0 +1,67 @@
+# Parameters for the `handover` skill (manipulation_policy/skills/handover_skill.py).
+#
+# The skill grabs ONE frame from the base-mounted RealSense D435i on demand (no
+# continuous ROS stream), detects a person with the existing Grounding DINO HTTP
+# service, and presents the held object to them at a safe distance.
+#
+# Loaded by core_launch.py and applied to the /skill_server node, so values here
+# OVERRIDE the in-code defaults (handover_skill.HANDOVER_PARAM_DEFAULTS). You can
+# also change any of these live:  ros2 param set /skill_server <name> <value>
+#
+# ============================ CALIBRATE FIRST ===============================
+# 1. camera_*  — where the D435i is mounted relative to the arm base
+#    (piper_base_link). It is BEHIND-AND-RIGHT of the arm, looking forward. The
+#    values below are a rough guess; measure/tune them or the handover direction
+#    will be biased.
+# 2. staging_pose / present_pose — HAND-TEACH these 6-joint poses on the real arm
+#    at joint1 = 0 (facing straight forward); joint1 is overwritten at runtime
+#    with the person's azimuth. They DEFAULT to the safe look-down ready pose, so
+#    an untaught run only yaws and holds — it will NOT fling the arm. Teach a real
+#    forward-reach present_pose to actually extend the object toward the person.
+# ============================================================================
+
+skill_server:
+  ros__parameters:
+    # --- D435i capture (pyrealsense2, on demand) ---
+    handover_camera_serial: "243722070013"   # "" -> first connected RealSense
+    handover_color_width: 640
+    handover_color_height: 480
+    handover_fps: 30
+    handover_warmup_frames: 12               # drop these so auto-exposure settles
+    handover_capture_timeout_sec: 5.0
+
+    # --- person detection (reuses the Grounding DINO HTTP service) ---
+    handover_detect_url: "http://localhost:30543/detect"
+    handover_detect_prompt: "person"
+    handover_detect_timeout_sec: 8.0
+    handover_score_min: 0.35
+    handover_min_box_height_frac: 0.20       # reject boxes shorter than this frac of image height
+    handover_ambiguous_area_ratio: 0.75      # 2nd box ~as big AND far apart -> abort (ambiguous)
+
+    # --- depth sampling (upper-torso point) ---
+    handover_torso_frac: 0.40                # depth at box_top + torso_frac*box_height
+    handover_depth_roi_half_px: 10
+    handover_min_depth_pixels: 25
+    handover_min_valid_depth_m: 0.20
+
+    # --- D435i horizontal extrinsic vs arm base (piper_base_link) — CALIBRATE ---
+    # Optical frame: x=right, y=down, z=forward. forward=z, left=-x; rotate by
+    # camera_yaw (CCW+ about base +Z) and translate by (camera_x, camera_y).
+    handover_camera_x_m: -0.435              # behind the arm base (-X)
+    handover_camera_y_m: -0.10               # to the right of the arm base (-Y)
+    handover_camera_yaw_rad: 0.0             # camera forward vs base +X
+
+    # --- safety gates ---
+    handover_min_distance_m: 0.75            # abort if the person is closer (keep a safe gap)
+    handover_max_distance_m: 2.0             # abort if farther (out of handover range)
+    handover_max_azimuth_rad: 1.0            # abort if too far to the side (~57 deg)
+    handover_joint1_limit_rad: 2.5           # clamp joint1 (arm limit is 2.618)
+    handover_require_object: true            # require a held object before handing over
+
+    # --- motion / release (TEACH the poses; defaults = safe ready pose) ---
+    handover_staging_pose: [0.0, 1.2, -0.2, 0.0, -0.35, 0.0]   # compact/raised
+    handover_present_pose: [0.0, 1.2, -0.2, 0.0, -0.35, 0.0]   # reach forward+up (TEACH)
+    handover_stage_time_sec: 2.5
+    handover_present_time_sec: 3.0
+    handover_dwell_sec: 2.5                  # let the person take the object before opening
+    handover_retract_time_sec: 3.0

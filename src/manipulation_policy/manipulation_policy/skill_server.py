@@ -69,6 +69,15 @@ class SkillServer(Node, SkillContext):
         # requires an explicit pose so the arm never swings to a guessed spot.
         self.declare_parameter("place_pose", [0.0])
 
+        # Per-skill tunables: every registered skill may declare a `server_params`
+        # map (name -> default). Declare them all here so skills read them via
+        # get_param and they stay runtime-settable / config-overridable. A new
+        # skill with its own tunables needs no edit to this file.
+        for skill in all_skills():
+            for pname, pdefault in getattr(skill, "server_params", {}).items():
+                if not self.has_parameter(pname):
+                    self.declare_parameter(pname, pdefault)
+
         self._vs_node = self.get_parameter("visual_servo_node").value
         self._gripper_joint = self.get_parameter("gripper_joint").value
         self._arm_joints = list(self.get_parameter("arm_joints").value)
