@@ -69,6 +69,12 @@ from .registry import register_skill
 # type-consistent.
 HANDOVER_PARAM_DEFAULTS: Dict[str, Any] = {
     # --- D435i capture (pyrealsense2, on demand) ---
+    # Extra site-packages to expose pyrealsense2/cv2 to the skill_server process.
+    # On Jetson the ROS env runs PYTHONNOUSERSITE=1 (numpy pinned to the ROS build)
+    # so the user-site pyrealsense2/cv2 aren't importable; this path is appended at
+    # runtime AFTER numpy is loaded (so the loaded numpy is unchanged). "" = import
+    # normally (correct when the deps are already on the ROS path).
+    "handover_extra_site_packages": "",
     # "" -> first connected RealSense (use only when the D435i is the sole device)
     "handover_camera_serial": "243722070013",
     "handover_color_width": 640,
@@ -76,6 +82,11 @@ HANDOVER_PARAM_DEFAULTS: Dict[str, Any] = {
     "handover_fps": 30,
     "handover_warmup_frames": 12,               # drop these so auto-exposure settles
     "handover_capture_timeout_sec": 5.0,
+    # The D435i can drop into a no-frames state under rapid open/close cycling.
+    # On a capture error: re-open once cheaply, then hardware-reset + retry.
+    "handover_capture_retries": 2,
+    "handover_capture_reset_on_fail": True,
+    "handover_capture_reset_wait_sec": 7.0,
     # --- person detection (reuses the Grounding DINO HTTP service) ---
     "handover_detect_url": "http://localhost:30543/detect",
     "handover_detect_prompt": "person",
@@ -105,6 +116,11 @@ HANDOVER_PARAM_DEFAULTS: Dict[str, Any] = {
     # --- motion / release (TEACH the poses; defaults = safe ready pose) ---
     "handover_staging_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
     "handover_present_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
+    # Taller present pose used when the person's torso is above
+    # handover_standing_height_threshold_m (metres above the camera). Defaults to
+    # the seated present pose, so teach it higher to actually present up.
+    "handover_present_pose_standing": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
+    "handover_standing_height_threshold_m": 0.35,
     "handover_stage_time_sec": 2.5,
     "handover_present_time_sec": 3.0,
     "handover_dwell_sec": 2.5,                  # let the person take the object before opening
@@ -164,6 +180,7 @@ class HandoverSkill(Skill):
 
         # ---- 1. capture one D435i frame -----------------------------------
         feedback("CAPTURE", 0.1)
+        extra_site = str(g("handover_extra_site_packages"))
         try:
             captured = self._capture_frame(
                 serial=str(g("handover_camera_serial")),
@@ -171,7 +188,11 @@ class HandoverSkill(Skill):
                 height=int(g("handover_color_height")),
                 fps=int(g("handover_fps")),
                 warmup=int(g("handover_warmup_frames")),
-                timeout_sec=float(g("handover_capture_timeout_sec")))
+                timeout_sec=float(g("handover_capture_timeout_sec")),
+                extra_site=extra_site,
+                retries=int(g("handover_capture_retries")),
+                reset_on_fail=bool(g("handover_capture_reset_on_fail")),
+                reset_wait_sec=float(g("handover_capture_reset_wait_sec")))
         except Exception as e:  # pyrealsense errors, device busy, no device
             return fail(f"D435i capture failed: {e}")
         if captured is None:
@@ -187,7 +208,8 @@ class HandoverSkill(Skill):
                 color_bgr,
                 url=str(g("handover_detect_url")),
                 prompt=str(g("handover_detect_prompt")),
-                timeout=float(g("handover_detect_timeout_sec")))
+                timeout=float(g("handover_detect_timeout_sec")),
+                extra_site=extra_site)
         except Exception as e:
             return fail(f"person detection failed: {e}")
         img_w = int(img_w or color_bgr.shape[1])
@@ -229,6 +251,8 @@ class HandoverSkill(Skill):
                 "base_xy": (px, py),
                 "azimuth_rad": math.atan2(py, px),
                 "distance_m": math.hypot(px, py),
+                # torso height above the camera (leveled) -> standing vs seated
+                "torso_height_m": _height_above_camera(z_opt, y_opt, cam_roll),
             }
             break
         if chosen is None:
@@ -264,11 +288,22 @@ class HandoverSkill(Skill):
             return fail("canceled before presenting")
 
         # ---- 5. present: yaw toward the person, then extend ---------------
+        # Pick the present pose by the person's posture: a torso higher than the
+        # standing threshold (above the camera) gets the taller 'standing' pose so
+        # the object is presented up at a standing person, not down at a seated one.
         j1_lim = float(g("handover_joint1_limit_rad"))
         j1 = _clamp(az, -j1_lim, j1_lim)
+        torso_h = float(chosen["torso_height_m"])
+        standing = torso_h > float(g("handover_standing_height_threshold_m"))
+        present_pose = list(g("handover_present_pose_standing")) if standing \
+            else list(g("handover_present_pose"))
         staging = _with_joint1(list(g("handover_staging_pose")), j1)
-        present = _with_joint1(list(g("handover_present_pose")), j1)
+        present = _with_joint1(present_pose, j1)
         result_data["joint1_rad"] = round(j1, 4)
+        result_data["torso_height_m"] = round(torso_h, 3)
+        result_data["posture"] = "standing" if standing else "seated"
+        ctx.log(f"[HANDOVER] torso height {torso_h:+.2f}m above camera -> "
+                f"{'STANDING (higher present)' if standing else 'seated (default present)'}")
 
         feedback("ORIENT", 0.55)
         if not ctx.move_arm_to(staging, time_sec=float(g("handover_stage_time_sec"))):
@@ -343,15 +378,38 @@ class HandoverSkill(Skill):
 
     # --- hardware I/O (kept thin + isolated so unit tests monkeypatch them) --
     def _capture_frame(self, serial: str, width: int, height: int, fps: int,
-                       warmup: int, timeout_sec: float):
+                       warmup: int, timeout_sec: float, extra_site: str = "",
+                       retries: int = 2, reset_on_fail: bool = True,
+                       reset_wait_sec: float = 7.0):
         """Grab one aligned (color, depth_m, intrinsics) from the D435i, on demand.
 
         Returns (color_bgr[H,W,3] uint8, depth_m[H,W] float32 meters, intr) or
-        None. ``intr`` = (fx, fy, ppx, ppy, w, h). Opens by serial, warms up for
-        auto-exposure, then ALWAYS stops the pipeline.
+        None. ``intr`` = (fx, fy, ppx, ppy, w, h). The D435i can drop into a
+        no-frames state under rapid open/close cycling, so a failed grab is retried:
+        a cheap re-open first, then a hardware reset (RealSense USB quirk).
         """
-        import pyrealsense2 as rs  # lazy: hardware-only dep, keeps CI/import light
+        import time
 
+        rs = _lazy_import("pyrealsense2", extra_site)  # hardware-only dep; lazy
+        last_err = None
+        for attempt in range(int(retries) + 1):
+            try:
+                return self._grab_once(rs, serial, width, height, fps, warmup,
+                                       timeout_sec)
+            except RuntimeError as e:  # e.g. "Frame didn't arrive within 5000"
+                last_err = e
+                if attempt >= int(retries):
+                    break
+                # Escalate: cheap re-open on the first retry, hardware reset after.
+                if reset_on_fail and serial and attempt >= 1:
+                    self._reset_device(rs, serial)
+                    time.sleep(float(reset_wait_sec))  # wait for USB re-enumeration
+                else:
+                    time.sleep(1.5)
+        raise last_err if last_err else RuntimeError("D435i capture failed")
+
+    def _grab_once(self, rs, serial, width, height, fps, warmup, timeout_sec):
+        """One open -> warmup -> aligned grab -> stop. Raises on a frame timeout."""
         pipeline = rs.pipeline()
         config = rs.config()
         if serial:
@@ -381,14 +439,25 @@ class HandoverSkill(Skill):
         finally:
             pipeline.stop()
 
+    def _reset_device(self, rs, serial):
+        """Hardware-reset the D435i to recover the no-frames USB state (best effort)."""
+        try:
+            for d in rs.context().query_devices():
+                if d.get_info(rs.camera_info.serial_number) == str(serial):
+                    d.hardware_reset()
+                    return
+        except Exception:  # reset is a recovery attempt; never mask the real error
+            pass
+
     def _detect_person(self, color_bgr, url: str, prompt: str,
-                       timeout: float) -> Tuple[List[Dict[str, Any]], int, int]:
+                       timeout: float, extra_site: str = "") \
+            -> Tuple[List[Dict[str, Any]], int, int]:
         """POST the frame to the Grounding DINO HTTP service; return detections.
 
         Returns (detections, image_width, image_height). Each detection has
         cx, cy, w, h (pixels), score, class_id. Raises on transport/HTTP error.
         """
-        import cv2  # lazy: heavy import, only needed on the robot
+        cv2 = _lazy_import("cv2", extra_site)  # heavy dep; only needed on the robot
 
         ok, buf = cv2.imencode(".jpg", color_bgr)
         if not ok:
@@ -407,6 +476,28 @@ class HandoverSkill(Skill):
             raise RuntimeError("detector returned a non-object response")
         return (list(data.get("detections", [])),
                 data.get("image_width"), data.get("image_height"))
+
+
+# --- helpers ---------------------------------------------------------------
+
+def _lazy_import(name: str, extra_site: str = ""):
+    """Import a runtime-only dep, falling back to an extra site-packages path.
+
+    On Jetson the ROS env runs with PYTHONNOUSERSITE=1 (numpy pinned to the ROS
+    build), so the user-site pyrealsense2 / cv2 are not importable. numpy is
+    already loaded by the time this runs, so appending the user site at runtime
+    exposes those modules WITHOUT swapping the loaded numpy. A no-op normal import
+    when ``extra_site`` is empty or the module is already on the path.
+    """
+    try:
+        return __import__(name)
+    except ImportError:
+        if not extra_site:
+            raise
+        import sys
+        if extra_site not in sys.path:
+            sys.path.append(extra_site)
+        return __import__(name)
 
 
 # --- pure helpers (no ROS / no hardware -> unit-testable) -------------------
@@ -515,6 +606,19 @@ def _horizontal_forward(z_opt: float, y_opt: float, roll: float) -> float:
     unaffected and is handled separately by _optical_to_base.
     """
     return z_opt * math.cos(roll) + y_opt * math.sin(roll)
+
+
+def _height_above_camera(z_opt: float, y_opt: float, roll: float) -> float:
+    """Torso height above the camera optical centre, in metres (gravity-leveled).
+
+    Same tilt-leveling as _horizontal_forward but the vertical component: optical y
+    is down, so after removing the camera's up/down tilt (roll about x) the height
+    above the camera is z·sin(roll) − y·cos(roll). Positive = above the camera (a
+    standing person's torso); near zero = at camera height; negative = below. Used
+    to pick the standing vs seated present pose. (Threshold is relative to the
+    camera, so it needs no separate camera-height calibration.)
+    """
+    return z_opt * math.sin(roll) - y_opt * math.cos(roll)
 
 
 def _optical_to_base(forward: float, left: float, cam_x: float, cam_y: float,

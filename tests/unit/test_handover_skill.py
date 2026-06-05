@@ -23,6 +23,7 @@ from manipulation_policy.skills.handover_skill import (  # noqa: E402
     _clamp,
     _deproject,
     _depth_median_roi,
+    _height_above_camera,
     _horizontal_forward,
     _optical_to_base,
     _select_people,
@@ -65,6 +66,18 @@ def test_horizontal_forward_levels_downward_tilt():
     z_opt = 1.5 * math.cos(roll)        # slant component along the optical axis
     y_opt = 1.5 * math.sin(roll)        # vertical component (negative = up)
     assert _horizontal_forward(z_opt, y_opt, roll) == pytest.approx(1.5, abs=1e-4)
+
+
+def test_height_above_camera():
+    # No tilt: a torso above the optical centre (y_opt negative = up) reads as
+    # positive height above the camera; at centre height reads ~0.
+    assert _height_above_camera(1.5, -0.40, 0.0) == pytest.approx(0.40)
+    assert _height_above_camera(1.5, 0.0, 0.0) == pytest.approx(0.0)
+    # A person at camera height, 1.5 m ahead, camera tilted 5 deg down -> ~0.
+    roll = -0.0873
+    z_opt = 1.5 * math.cos(roll)
+    y_opt = 1.5 * math.sin(roll)
+    assert _height_above_camera(z_opt, y_opt, roll) == pytest.approx(0.0, abs=1e-3)
 
 
 def test_deproject_center_is_on_axis():
@@ -139,13 +152,14 @@ def test_torso_pixel_upper_body():
 # --------------------------------------------------------------------------- #
 
 class _FakeCtx(SkillContext):
-    def __init__(self, gripper_width=0.02):
+    def __init__(self, gripper_width=0.02, overrides=None):
         self._width = gripper_width
         self._now = 0.0
         self.arm_moves = []
         self.gripper_cmds = []
         self.prompts = []
         self.bool_params = []
+        self.overrides = overrides or {}
 
     @property
     def vs_state(self):
@@ -156,6 +170,8 @@ class _FakeCtx(SkillContext):
         return self._width
 
     def get_param(self, name, default=None):
+        if name in self.overrides:
+            return self.overrides[name]
         extra = {
             "capture_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
             "held_width_threshold": 0.004,
@@ -214,10 +230,9 @@ def _patch_io(skill, depth_value=1.5, dets=None, img=(640, 480)):
     intr = (600.0, 600.0, w / 2.0, h / 2.0, w, h)
     depth = np.full((h, w), float(depth_value), dtype="float32")
     color = np.zeros((h, w, 3), dtype="uint8")
-    skill._capture_frame = lambda serial, width, height, fps, warmup, timeout_sec: (
-        color, depth, intr)
+    skill._capture_frame = lambda *a, **k: (color, depth, intr)
     detections = _person_det() if dets is None else dets
-    skill._detect_person = lambda color_bgr, url, prompt, timeout: (detections, w, h)
+    skill._detect_person = lambda *a, **k: (detections, w, h)
 
 
 def test_handover_happy_path():
@@ -235,6 +250,36 @@ def test_handover_happy_path():
     assert ctx.arm_moves[0][0][0] == pytest.approx(j1, abs=1e-3)  # joint1 yawed toward person
     assert ctx.arm_moves[1][0][0] == pytest.approx(j1, abs=1e-3)
     assert ctx.gripper_cmds == [pytest.approx(0.07)]  # opened once to release
+
+
+def test_handover_standing_uses_standing_pose():
+    # Low threshold => the detected torso counts as standing => taller pose used.
+    skill = HandoverSkill()
+    _patch_io(skill, depth_value=1.5)
+    ctx = _FakeCtx(gripper_width=0.02, overrides={
+        "handover_standing_height_threshold_m": 0.02,
+        "handover_present_pose_standing": [0.0, 0.5, -0.5, 0.0, 0.5, 0.0],
+        "handover_present_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
+    })
+    res = skill.execute(ctx, {"dwell_sec": 0.1}, lambda *_a: None, lambda: False)
+    assert res.success is True, res.message
+    assert res.data["posture"] == "standing"
+    # arm_moves: [0]=staging, [1]=present. Present uses the standing pose joints 2-6.
+    assert ctx.arm_moves[1][0][1:] == pytest.approx([0.5, -0.5, 0.0, 0.5, 0.0])
+
+
+def test_handover_seated_uses_default_pose():
+    # Default threshold (0.35); the detected torso (~0.08 m above camera) is seated.
+    skill = HandoverSkill()
+    _patch_io(skill, depth_value=1.5)
+    ctx = _FakeCtx(gripper_width=0.02, overrides={
+        "handover_present_pose_standing": [9.0, 9.0, 9.0, 9.0, 9.0, 9.0],  # must NOT be used
+        "handover_present_pose": [0.0, 1.2, -0.2, 0.0, -0.35, 0.0],
+    })
+    res = skill.execute(ctx, {"dwell_sec": 0.1}, lambda *_a: None, lambda: False)
+    assert res.success is True, res.message
+    assert res.data["posture"] == "seated"
+    assert ctx.arm_moves[1][0][1:] == pytest.approx([1.2, -0.2, 0.0, -0.35, 0.0])
 
 
 def test_handover_aborts_without_object():

@@ -22,13 +22,27 @@
 
 skill_server:
   ros__parameters:
+    # Held-vs-empty gripper-width gate (NODE-WIDE: also used by pick/place). No
+    # force sensor, so "held" = gripper opening > this. Lowered from 0.004 to 0.003
+    # for a thin handover object whose grip closes to ~0.0038 m; empty full-close
+    # (~0.0022 m) is still rejected.
+    held_width_threshold: 0.003
+
     # --- D435i capture (pyrealsense2, on demand) ---
+    # Jetson: the ROS env runs PYTHONNOUSERSITE=1 (numpy pinned to the ROS build),
+    # so pyrealsense2/cv2 live in the user site and aren't importable by default.
+    # The skill appends this path at runtime (after numpy is loaded) to reach them.
+    # Set "" if pyrealsense2/cv2 are already on the skill_server PYTHONPATH.
+    handover_extra_site_packages: "/home/robofi/.local/lib/python3.10/site-packages"
     handover_camera_serial: "243722070013"   # "" -> first connected RealSense
     handover_color_width: 640
     handover_color_height: 480
     handover_fps: 30
     handover_warmup_frames: 12               # drop these so auto-exposure settles
     handover_capture_timeout_sec: 5.0
+    handover_capture_retries: 2              # D435i USB recovery: re-open, then reset
+    handover_capture_reset_on_fail: true
+    handover_capture_reset_wait_sec: 7.0
 
     # --- person detection (reuses the Grounding DINO HTTP service) ---
     handover_detect_url: "http://localhost:30543/detect"
@@ -60,9 +74,18 @@ skill_server:
     handover_joint1_limit_rad: 2.5           # clamp joint1 (arm limit is 2.618)
     handover_require_object: true            # require a held object before handing over
 
-    # --- motion / release (TEACH the poses; defaults = safe ready pose) ---
-    handover_staging_pose: [0.0, 1.2, -0.2, 0.0, -0.35, 0.0]   # compact/raised
-    handover_present_pose: [0.0, 1.2, -0.2, 0.0, -0.35, 0.0]   # reach forward+up (TEACH)
+    # --- motion / release ---
+    # staging = compact look-down (yaw joint1 toward the person while tucked).
+    # present = hand-taught forward+up reach (TCP ~0.58 m fwd, 0.36 m up); joint1
+    # is overwritten at runtime with the person azimuth, so it's stored as 0.
+    handover_staging_pose: [0.0, 1.2, -0.2, 0.0, -0.35, 0.0]
+    handover_present_pose: [0.0, 1.8319, -1.3933, 0.0859, -0.5327, 0.0053]
+    # Standing person -> present higher. Used when the detected torso is more than
+    # handover_standing_height_threshold_m above the camera. Hand-taught reach
+    # TCP ~0.49 m fwd, 0.57 m up (21 cm higher than seated); joint1 is overwritten
+    # with the person azimuth at runtime, so it's stored as 0.
+    handover_present_pose_standing: [0.0, 1.6787, -2.1982, 0.0161, 0.5614, 0.0]
+    handover_standing_height_threshold_m: 0.35   # torso this far above the camera => standing
     handover_stage_time_sec: 2.5
     handover_present_time_sec: 3.0
     handover_dwell_sec: 2.5                  # let the person take the object before opening

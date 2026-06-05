@@ -1,6 +1,6 @@
 {
   "version": "2.0.0",
-  "_comment": "Task groups, in run order: 1 Build -> 2 Perception server (DINO+MobileSAM) -> 3 Arm -> 4 Grasp -> 5 Calibrate -> 6 Debug. Real-robot runs need the ranger-garden-assistant bringup running (see README).",
+  "_comment": "Task groups, in run order: 1 Build -> 2 Perception server (DINO+MobileSAM) -> 3 Arm -> 4 Grasp -> 5 Calibrate -> 6 Debug -> 7 Handover (D435i -> person). Real-robot runs need the ranger-garden-assistant bringup running (see README).",
   "tasks": [
     {
       "label": "1. Build: Workspace",
@@ -144,6 +144,42 @@
       "problemMatcher": [],
       "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "debug" },
       "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "7. Handover: Dry-run sensing (no arm motion, calibrate)",
+      "_comment": "Grabs ONE D435i frame, detects a person, prints azimuth/distance/joint1 + gate verdict, saves an annotated image. No ROS/arm needed. Tune handover_camera_yaw_rad (azimuth->0) and handover_camera_roll_rad (distance->tape) in config/handover_params.yaml.",
+      "type": "shell",
+      "command": "env -u PYTHONNOUSERSITE python3 ${workspaceFolder}/scripts/handover_dryrun.py --out /tmp/handover_dryrun.jpg",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "handover" },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "7. Handover: Send handover skill (give object to person)",
+      "_comment": "Run after the grasp pipeline (task '4. Grasp: Run pipeline') so /skill_server is up. Detects the person via D435i, presents the held object at a safe distance, opens the gripper. Requires a held object unless require-object is toggled off.",
+      "type": "shell",
+      "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /execute_skill manipulation_msgs/action/ExecuteSkill \"{skill: 'handover', params_json: '{\\\"dwell_sec\\\": ${input:handoverDwell}}'}\" --feedback",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "handover" },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "7. Handover: Toggle require-object (test without an object)",
+      "_comment": "Set false to hand over with an empty gripper (testing). Resets to the config default (true) when skill_server restarts.",
+      "type": "shell",
+      "command": "source install/setup.bash && ros2 param set /skill_server handover_require_object ${input:requireObject}",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "group": "handover" },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "7. Handover: Echo arm joints (teach present_pose)",
+      "_comment": "Hand-guide the arm to a good forward-reach presenting posture (at joint1=0), read piper_joint1..6 here, and paste into handover_present_pose in config/handover_params.yaml.",
+      "type": "shell",
+      "command": "source install/setup.bash && ros2 topic echo --once /joint_states",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "handover" },
+      "options": { "cwd": "${workspaceFolder}" }
     }
   ],
   "inputs": [
@@ -177,6 +213,19 @@
       "description": "CLIP re-rank disambiguation: true = CLIP picks the object, false = DINO-only (highest score)",
       "options": ["true", "false"],
       "default": "false"
+    },
+    {
+      "id": "handoverDwell",
+      "type": "promptString",
+      "description": "Handover dwell seconds: how long to hold the object out before opening the gripper",
+      "default": "2.5"
+    },
+    {
+      "id": "requireObject",
+      "type": "pickString",
+      "description": "Handover require-object gate: true = must be holding something, false = allow empty-gripper test",
+      "options": ["true", "false"],
+      "default": "true"
     }
   ]
 }

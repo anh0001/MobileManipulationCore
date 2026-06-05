@@ -72,6 +72,27 @@ A quick check: stand a person straight ahead of the robot at a known distance an
 confirm the reported `azimuth_rad` ≈ 0 and `distance_m` ≈ the true distance (tune
 `camera_roll` until the distance matches; tune `camera_yaw` until azimuth is 0).
 
+### Dry-run / calibration helper (no arm motion)
+
+`scripts/handover_dryrun.py` runs the **perception half only** (capture → detect →
+localize) using `config/handover_params.yaml`, prints the computed
+azimuth/distance/joint1 and whether the gates would pass, and saves an annotated
+image. Use it to tune the extrinsic safely before any hardware moves:
+
+```bash
+python3 scripts/handover_dryrun.py            # one shot -> /tmp/handover_dryrun.jpg
+python3 scripts/handover_dryrun.py --loop     # keep sampling
+```
+
+### Jetson note: pyrealsense2 / cv2 in the ROS env
+
+On the Jetson the ROS env runs `PYTHONNOUSERSITE=1` (numpy pinned to the ROS
+build), so the user-site `pyrealsense2`/`cv2` aren't importable by `skill_server`.
+The skill appends `handover_extra_site_packages` to `sys.path` **at runtime, after
+numpy is loaded**, so those modules import without swapping numpy. Set it to the
+user site-packages dir (default in `handover_params.yaml`); use `""` if the deps
+are already on the `skill_server` PYTHONPATH.
+
 ### 2. Taught staging / present poses
 
 Hand-teach these 6-joint poses **at `joint1 = 0`** (facing straight forward);
@@ -138,4 +159,7 @@ overridden by `config/handover_params.yaml`; settable live with `ros2 param set`
   and gripper-width "tug" detection is not reliable enough to be the default.
 - Capture/detect lazily import `pyrealsense2`/`cv2`, so unit tests and CI run
   without a camera (see `tests/unit/test_handover_skill.py`).
+- The D435i can drop into a no-frames state under rapid open/close cycling; the
+  capture retries (cheap re-open, then a `hardware_reset`) before failing —
+  tunable via `handover_capture_retries` / `_reset_on_fail` / `_reset_wait_sec`.
 ```
