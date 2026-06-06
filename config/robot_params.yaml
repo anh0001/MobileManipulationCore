@@ -135,6 +135,15 @@ moveit:
   ready_pose_start_delay_sec: 1.0
   ready_pose_retry_period_sec: 1.0
   ready_pose_max_attempts: 3
+  # Startup LiDAR/body clearance: the arm can boot in any pose, so going straight
+  # to the ready pose can graze the body/Mid-360. When the EEF is close to the
+  # arm base (horizontal distance < ready_lift_near_radius_m), first lift the
+  # wrist up (NEGATIVE joint5 = up on this arm) via ready_lift_pose, then move to
+  # ready. A far-forward boot pose skips the lift. Set false (or ready_lift_pose
+  # equal to ready_pose_joint_positions) to disable.
+  lift_before_ready_on_startup: true
+  ready_lift_pose: [0.0, 1.2, -0.2, 0.0, -1.2, 0.0]
+  ready_lift_near_radius_m: 0.35
 
 # Workspace limits for end-effector reachability check
 workspace:

@@ -14,21 +14,25 @@ Run inside a sourced ROS 2 workspace; launched automatically by core_launch.py
 in visual-servo mode.
 """
 import json
+import math
 import time
-from typing import Any, List
+from typing import Any, List, Optional, Tuple
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse, ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 from std_msgs.msg import String
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, Image, CameraInfo
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from rcl_interfaces.srv import SetParameters, GetParameters
 from rcl_interfaces.msg import Parameter as ParamMsg, ParameterValue, ParameterType
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformListener
 
 from manipulation_msgs.action import ExecuteSkill
 from manipulation_policy.skills import all_skills, get_skill
@@ -49,6 +53,10 @@ class SkillServer(Node, SkillContext):
         self.declare_parameter("arm_action", "/piper_arm_controller/follow_joint_trajectory")
         self.declare_parameter("gripper_action", "/piper_gripper_controller/gripper_cmd")
         self.declare_parameter("arm_joints", [f"piper_joint{i}" for i in range(1, 7)])
+        # TF frames for the live EEF pose (used to decide post-grasp lift). The
+        # visual-servo node resolves the same pair (arm_base_frame -> ee_frame).
+        self.declare_parameter("arm_base_frame", "piper_base_link")
+        self.declare_parameter("ee_frame", "piper_tcp")
         self.declare_parameter("gripper_open_position", 0.07)
         self.declare_parameter("gripper_max_effort", 5.0)
         # skill-tunable params (read by skills through get_param)
@@ -81,10 +89,23 @@ class SkillServer(Node, SkillContext):
         self._vs_node = self.get_parameter("visual_servo_node").value
         self._gripper_joint = self.get_parameter("gripper_joint").value
         self._arm_joints = list(self.get_parameter("arm_joints").value)
+        self._arm_base_frame = self.get_parameter("arm_base_frame").value
+        self._ee_frame = self.get_parameter("ee_frame").value
+        # TF listener for live EEF pose lookups (spun by the node's executor).
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self._cb = ReentrantCallbackGroup()
         self._state = ""
         self._width = 0.0
+
+        # Lazily-created ROS camera subscriptions for object localization. Only
+        # the wrist D405 streams over ROS; we subscribe on first request (see
+        # latest_camera_frame) so there is no image traffic until a skill — e.g.
+        # localize_object — actually asks for a frame. Each entry holds the latest
+        # (color, depth, camera_info) messages, kept fresh by their callbacks.
+        self._cam_subs: dict = {}
+        self._cam_msgs: dict = {}
 
         self.prompt_pub = self.create_publisher(
             String, self.get_parameter("prompt_topic").value, 10)
@@ -134,6 +155,99 @@ class SkillServer(Node, SkillContext):
     @property
     def gripper_width(self) -> float:
         return self._width
+
+    def eef_position(self):
+        """Live EEF position (x, y, z) in the arm base frame via TF, or None.
+
+        Best-effort: any TF failure (buffer not yet populated, frames missing)
+        returns None so callers fall back to their safe default.
+        """
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self._arm_base_frame, self._ee_frame, Time())
+        except Exception as ex:   # noqa: BLE001 - TF raises several unrelated types
+            self.get_logger().warn(
+                f"eef_position: TF {self._arm_base_frame}->{self._ee_frame} "
+                f"unavailable ({ex})", throttle_duration_sec=5.0)
+            return None
+        t = tf.transform.translation
+        return (float(t.x), float(t.y), float(t.z))
+
+    def transform_point(self, target_frame: str, source_frame: str,
+                        point: Tuple[float, float, float]) -> Optional[Tuple[float, float, float]]:
+        """Transform a 3D point source_frame -> target_frame via the tf2 buffer.
+
+        Best-effort: returns None on any TF failure (frames missing, buffer not
+        yet populated) so callers fall back to "unknown". Uses the latest
+        available transform (Time()), consistent with eef_position; for the wrist
+        camera that captures the live arm pose so the deprojected point lands in
+        base_footprint correctly as the arm moves.
+        """
+        try:
+            tf = self.tf_buffer.lookup_transform(target_frame, source_frame, Time())
+        except Exception as ex:  # noqa: BLE001 - TF raises several unrelated types
+            self.get_logger().warn(
+                f"transform_point: TF {source_frame}->{target_frame} "
+                f"unavailable ({ex})", throttle_duration_sec=5.0)
+            return None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        # Rotate the point by the transform's quaternion, then translate. Done by
+        # hand to avoid a tf2_geometry_msgs import (not always on the skill path).
+        x, y, z = float(point[0]), float(point[1]), float(point[2])
+        # q * v * q^-1 for a pure-vector quaternion v, expanded:
+        tx = 2.0 * (q.y * z - q.z * y)
+        ty = 2.0 * (q.z * x - q.x * z)
+        tz = 2.0 * (q.x * y - q.y * x)
+        rx = x + q.w * tx + (q.y * tz - q.z * ty)
+        ry = y + q.w * ty + (q.z * tx - q.x * tz)
+        rz = z + q.w * tz + (q.x * ty - q.y * tx)
+        return (rx + float(t.x), ry + float(t.y), rz + float(t.z))
+
+    def latest_camera_frame(self, camera: str = "wrist"):
+        """Latest (color_msg, depth_msg, camera_info_msg) for a ROS camera, or None.
+
+        Lazily subscribes on first call (only the wrist D405 streams over ROS),
+        so a robot that never localizes pays no image-traffic cost. Topic names
+        come from the localize_object skill's server_params (declared on this
+        node), so they stay config-overridable. Returns None until all three
+        messages have arrived, or for any camera other than 'wrist'.
+        """
+        cam = (camera or "wrist").strip().lower()
+        if cam != "wrist":
+            return None
+        if cam not in self._cam_subs:
+            rgb_topic = str(self.get_param(
+                "localize_wrist_rgb_topic",
+                "/piper/wrist_camera/piper_d405/color/image_raw"))
+            depth_topic = str(self.get_param(
+                "localize_wrist_depth_topic",
+                "/piper/wrist_camera/piper_d405/depth/image_rect_raw"))
+            info_topic = str(self.get_param(
+                "localize_wrist_info_topic",
+                "/piper/wrist_camera/piper_d405/color/camera_info"))
+            self._cam_msgs[cam] = {"color": None, "depth": None, "info": None}
+
+            def _mk(slot):
+                def _cb(msg, _slot=slot):
+                    self._cam_msgs[cam][_slot] = msg
+                return _cb
+
+            self._cam_subs[cam] = [
+                self.create_subscription(Image, rgb_topic, _mk("color"),
+                                         qos_profile_sensor_data, callback_group=self._cb),
+                self.create_subscription(Image, depth_topic, _mk("depth"),
+                                         qos_profile_sensor_data, callback_group=self._cb),
+                self.create_subscription(CameraInfo, info_topic, _mk("info"),
+                                         qos_profile_sensor_data, callback_group=self._cb),
+            ]
+            self.get_logger().info(
+                f"localize: subscribed wrist camera (color={rgb_topic}, "
+                f"depth={depth_topic}, info={info_topic})")
+        m = self._cam_msgs.get(cam, {})
+        if m.get("color") is None or m.get("depth") is None or m.get("info") is None:
+            return None
+        return (m["color"], m["depth"], m["info"])
 
     def get_param(self, name: str, default: Any = None) -> Any:
         if not self.has_parameter(name):

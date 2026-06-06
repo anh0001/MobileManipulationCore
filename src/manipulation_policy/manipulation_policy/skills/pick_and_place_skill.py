@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .base import Skill, SkillParam, SkillResult, SkillContext
 from .registry import register_skill
+from ._motion import lift_to_ready, PICK_LIFT_PARAMS
 
 # Grasp-sequence states that confirm a fresh PICK attempt is actually running.
 PICK_ACTIVE_STATES = {
@@ -62,6 +63,9 @@ class PickAndPlaceSkill(Skill):
                    description="max seconds for EACH phase; <=0 uses the server "
                                "default_timeout_sec."),
     ]
+    # Post-grasp return tunables (wrist-up lift then ready pose); see
+    # skills/_motion.lift_to_ready.
+    server_params = dict(PICK_LIFT_PARAMS)
 
     def execute(self, ctx: SkillContext, params: Dict[str, Any],
                 feedback: Callable[[str, float], None],
@@ -140,13 +144,14 @@ class PickAndPlaceSkill(Skill):
                         {"phase": "pick"})
 
         # ---- Lift to a safe transit height before crossing to the destination --
-        # The post-pick LIFT only raises a few cm; cross over at the elevated
-        # look-down pose so the held object clears the destination (and anything
-        # between) on the way. Gate off first so the abort halts the servo (object
-        # stays held) and the joint move does not fight a servo command.
+        # The post-pick LIFT only raises a few cm; lift the wrist up first so the
+        # held object tilts clear, then cross over at the elevated look-down pose
+        # so it clears the destination (and anything between) on the way. Gate off
+        # first so the abort halts the servo (object stays held) and the joint
+        # move does not fight a servo command.
         feedback("LIFT_TRANSIT", 0.55)
         ctx.set_bool_param("grasp_enabled", False)
-        ctx.move_arm_to(capture_pose, time_sec=5.0)
+        lift_to_ready(ctx, feedback, label="LIFT_TRANSIT", progress=0.55)
 
         # ---- Phase 2: blind place at the remembered destination ----------------
         feedback("PLACE", 0.6)

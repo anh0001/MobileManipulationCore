@@ -457,6 +457,18 @@ def generate_launch_description():
             'ready_pose_max_attempts': int(
                 moveit_cfg.get('ready_pose_max_attempts', 3)
             ),
+            # Wrist-up lift before the startup ready move when the EEF is close to
+            # the robot (avoids grazing the body/LiDAR from an arbitrary boot pose).
+            'lift_before_ready_on_startup': bool(
+                moveit_cfg.get('lift_before_ready_on_startup', True)
+            ),
+            'ready_lift_pose': moveit_cfg.get(
+                'ready_lift_pose',
+                [0.0, 1.2, -0.2, 0.0, -1.2, 0.0],
+            ),
+            'ready_lift_near_radius_m': float(
+                moveit_cfg.get('ready_lift_near_radius_m', 0.35)
+            ),
             'arm_joint_names': arm_cfg.get('joint_names', []),
             'arm_command_duration_sec': float(arm_cfg.get('command_duration_sec', 1.5)),
             'gripper_joint_name': gripper_cfg.get('joint_name', 'piper_joint7'),
@@ -755,6 +767,11 @@ def generate_launch_description():
     handover_params_file = resolve_config_path('handover_params.yaml')
     if os.path.isfile(handover_params_file):
         skill_server_params.append(handover_params_file)
+    # localize_object skill tunables / rear-camera extrinsic calibration; same
+    # override mechanism (see config/localize_object_params.yaml).
+    localize_params_file = resolve_config_path('localize_object_params.yaml')
+    if os.path.isfile(localize_params_file):
+        skill_server_params.append(localize_params_file)
 
     skill_server_node = Node(
         package='manipulation_policy',

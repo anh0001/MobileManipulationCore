@@ -1,6 +1,6 @@
 {
   "version": "2.0.0",
-  "_comment": "Task groups, in run order: 1 Build -> 2 Perception server (DINO+MobileSAM) -> 3 Arm -> 4 Grasp -> 5 Calibrate -> 6 Debug -> 7 Handover (D435i -> person). Real-robot runs need the ranger-garden-assistant bringup running (see README).",
+  "_comment": "Task groups, in run order: 1 Build -> 2 Perception server (DINO+MobileSAM) -> 3 Arm -> 4 Grasp -> 5 Calibrate -> 6 Debug -> 7 Handover (D435i -> person) -> 8 Localize (object 3D position). Real-robot runs need the ranger-garden-assistant bringup running (see README).",
   "tasks": [
     {
       "label": "1. Build: Workspace",
@@ -198,6 +198,24 @@
       "problemMatcher": [],
       "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "handover" },
       "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "8. Localize: Object 3D position (skill)",
+      "_comment": "Calls the 'localize_object' skill over /execute_skill -> reports each named object's (x,y,z) in base_footprint. OBJECT localization, not robot self-localization. Needs /skill_server up (task '4. Grasp: Run pipeline') and the DINO server (task '2. Server: Start...'). camera=wrist uses the D405 + live TF (arm must look down -> run '3. Arm: Ready pose' first); camera=rear grabs the D435i on demand and uses the manual extrinsic in config/localize_object_params.yaml (CALIBRATE it, then set localize_rear_calibrated: true). Pass several objects comma-separated.",
+      "type": "shell",
+      "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /execute_skill manipulation_msgs/action/ExecuteSkill \"{skill: 'localize_object', params_json: '{\\\"objects\\\": \\\"${input:localizeObjects}\\\", \\\"camera\\\": \\\"${input:localizeCamera}\\\"}'}\" --feedback",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false, "group": "localize" },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "8. Localize: Toggle rear VLM fallback (Claude)",
+      "_comment": "Set true to let the localize_object skill ask Claude for an object's pixel when Grounding DINO finds nothing (needs the 'anthropic' package + ANTHROPIC_API_KEY). Resets to the config default (false) when skill_server restarts.",
+      "type": "shell",
+      "command": "source install/setup.bash && ros2 param set /skill_server localize_vlm_fallback ${input:localizeVlmFallback}",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "group": "localize" },
+      "options": { "cwd": "${workspaceFolder}" }
     }
   ],
   "inputs": [
@@ -251,6 +269,26 @@
       "description": "Recipient posture -> present height: auto (from camera height), or force standing/seated",
       "options": ["auto", "standing", "seated"],
       "default": "auto"
+    },
+    {
+      "id": "localizeObjects",
+      "type": "promptString",
+      "description": "Object(s) to locate in 3D, comma-separated (open-vocab), e.g. 'banana' or 'banana, red cup, bottle'",
+      "default": "banana"
+    },
+    {
+      "id": "localizeCamera",
+      "type": "pickString",
+      "description": "Depth camera: wrist (D405 on arm; live TF, accurate; arm must look down) or rear (D435i behind arm; calibrated extrinsic)",
+      "options": ["wrist", "rear"],
+      "default": "wrist"
+    },
+    {
+      "id": "localizeVlmFallback",
+      "type": "pickString",
+      "description": "localize_object Claude vision fallback when the detector finds nothing (needs anthropic + ANTHROPIC_API_KEY)",
+      "options": ["true", "false"],
+      "default": "false"
     }
   ]
 }

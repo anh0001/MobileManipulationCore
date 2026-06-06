@@ -1,0 +1,77 @@
+# Parameters for the `localize_object` skill
+# (manipulation_policy/skills/localize_object_skill.py).
+#
+# The skill reports the 3D position of NAMED OBJECTS (not the robot itself —
+# this is object localization, not self/navigation localization). It detects each
+# object with the existing Grounding DINO HTTP service, samples depth, and returns
+# (x, y, z) in base_footprint, through either depth camera:
+#   * wrist (D405)  — ROS topics + LIVE TF (accurate; needs no calibration here)
+#   * rear  (D435i) — grabbed on demand by serial + a MANUAL extrinsic (CALIBRATE)
+#
+# Loaded by core_launch.py and applied to the /skill_server node, so values here
+# OVERRIDE the in-code defaults (localize_object_skill.LOCALIZE_PARAM_DEFAULTS).
+# Change any live:  ros2 param set /skill_server <name> <value>
+#
+# ============================ CALIBRATE THE REAR CAMERA ======================
+# The rear D435i has no TF frame, so its 3D answers come from the extrinsic below:
+# the camera's optical-frame pose in base_footprint. MEASURE these, then set
+# localize_rear_calibrated: true so results stop flagging the pose as approximate.
+#   localize_rear_camera_{x,y,z}_m  — camera position in base_footprint (metres).
+#   localize_rear_camera_yaw_rad    — forward axis yaw about base +Z (CCW+).
+#   localize_rear_camera_pitch_rad  — tilt: + looks down, - looks up.
+# The wrist camera needs no calibration here (it uses the URDF/TF chain).
+# ============================================================================
+
+skill_server:
+  ros__parameters:
+    # --- output frame for the returned positions ---
+    localize_output_frame: "base_footprint"
+
+    # --- detection (reuses the deployed Grounding DINO HTTP service) ---
+    localize_detect_url: "http://localhost:30543/detect"
+    localize_detect_timeout_sec: 8.0
+    localize_score_min: 0.30
+    localize_max_detections: 5
+
+    # --- robust depth sampling at the detected box centre ---
+    localize_depth_roi_half_px: 8
+    localize_min_depth_pixels: 20
+    localize_min_valid_depth_m: 0.12
+    localize_max_valid_depth_m: 3.0
+
+    # --- wrist D405 (ROS topics + live TF — most accurate) ---
+    # color is image_raw (what the realsense node publishes + what visual_servo
+    # uses); image_rect_raw is NOT published on this robot.
+    localize_wrist_rgb_topic: "/piper/wrist_camera/piper_d405/color/image_raw"
+    localize_wrist_depth_topic: "/piper/wrist_camera/piper_d405/depth/image_rect_raw"
+    localize_wrist_info_topic: "/piper/wrist_camera/piper_d405/color/camera_info"
+    localize_wrist_optical_frame: "piper_camera_optical_frame"
+    localize_wrist_frame_wait_sec: 5.0
+
+    # --- rear D435i capture (pyrealsense2, on demand — mirrors the handover cam) ---
+    # Extra site-packages so pyrealsense2/cv2 (and anthropic, if used) import under
+    # the ROS env on Jetson (PYTHONNOUSERSITE=1). "" = import normally.
+    localize_extra_site_packages: ""
+    localize_rear_camera_serial: "243722070013"
+    localize_rear_color_width: 640
+    localize_rear_color_height: 480
+    localize_rear_fps: 30
+    localize_rear_warmup_frames: 12
+    localize_rear_capture_timeout_sec: 5.0
+    localize_rear_capture_retries: 2
+    localize_rear_capture_reset_on_fail: true
+    localize_rear_capture_reset_wait_sec: 7.0
+
+    # --- rear D435i extrinsic: optical-frame pose in base_footprint — CALIBRATE ---
+    localize_rear_camera_x_m: -0.12      # behind the base (-X)
+    localize_rear_camera_y_m: -0.18      # to the right of the base (-Y)
+    localize_rear_camera_z_m: 0.30       # height above base_footprint
+    localize_rear_camera_yaw_rad: 0.0    # forward axis vs base +X
+    localize_rear_camera_pitch_rad: 0.0  # + look down, - look up
+    localize_rear_calibrated: false      # set true once the values above are measured
+
+    # --- optional Claude vision fallback when the detector finds nothing ---
+    # Needs the `anthropic` package and ANTHROPIC_API_KEY. Off by default.
+    localize_vlm_fallback: false
+    localize_vlm_model: "claude-sonnet-4-6"
+    localize_vlm_timeout_sec: 20.0

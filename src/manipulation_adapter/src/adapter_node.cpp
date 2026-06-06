@@ -117,6 +117,17 @@ public:
     this->declare_parameter<double>("ready_pose_start_delay_sec", 1.0);
     this->declare_parameter<double>("ready_pose_retry_period_sec", 1.0);
     this->declare_parameter<int>("ready_pose_max_attempts", 3);
+    // LiDAR/body clearance for the STARTUP ready move: the arm can boot in any
+    // pose, so going straight to ready can graze the robot. When the EEF is close
+    // to the base (horizontal distance < ready_lift_near_radius_m), first move to
+    // ready_lift_pose (wrist pitched up; NEGATIVE joint5 = up on this arm) and
+    // only then to the ready pose. Set lift_before_ready_on_startup=false, or
+    // ready_lift_pose equal to the ready pose, to disable the lift.
+    this->declare_parameter<bool>("lift_before_ready_on_startup", true);
+    this->declare_parameter<std::vector<double>>(
+      "ready_lift_pose",
+      std::vector<double>{0.0, 1.2, -0.2, 0.0, -1.2, 0.0});
+    this->declare_parameter<double>("ready_lift_near_radius_m", 0.35);
     this->declare_parameter<std::vector<std::string>>(
       "arm_joint_names",
       std::vector<std::string>{});
@@ -188,6 +199,10 @@ public:
     ready_pose_start_delay_sec_ = this->get_parameter("ready_pose_start_delay_sec").as_double();
     ready_pose_retry_period_sec_ = this->get_parameter("ready_pose_retry_period_sec").as_double();
     ready_pose_max_attempts_ = this->get_parameter("ready_pose_max_attempts").as_int();
+    lift_before_ready_on_startup_ =
+      this->get_parameter("lift_before_ready_on_startup").as_bool();
+    ready_lift_pose_ = this->get_parameter("ready_lift_pose").as_double_array();
+    ready_lift_near_radius_m_ = this->get_parameter("ready_lift_near_radius_m").as_double();
     arm_joint_names_ = this->get_parameter("arm_joint_names").as_string_array();
     arm_command_duration_sec_ = this->get_parameter("arm_command_duration_sec").as_double();
     gripper_joint_name_ = this->get_parameter("gripper_joint_name").as_string();
@@ -1238,6 +1253,20 @@ private:
       return;
     }
 
+    // If the lift phase exhausted its attempts (e.g. goals kept being rejected,
+    // so the result callback never fired), stop lifting and fall back to the
+    // direct ready move rather than retrying the lift forever.
+    if (!startup_lift_phase_done_.load() &&
+      startup_lift_attempts_ >= ready_pose_max_attempts_)
+    {
+      startup_lift_phase_done_.store(true);
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[READY] startup lift exhausted %d attempts; "
+        "falling back to direct ready move.",
+        ready_pose_max_attempts_);
+    }
+
     (void)moveToReadyPose();
   }
 
@@ -1284,6 +1313,38 @@ private:
     (void)moveToPostVisualServoReadyPose();
   }
 
+  // Whether the configured ready_lift_pose is a usable, distinct waypoint.
+  bool readyLiftPoseValid() const
+  {
+    return ready_lift_pose_.size() == ready_pose_joint_names_.size() &&
+      ready_lift_pose_ != ready_pose_joint_positions_;
+  }
+
+  // True if the live EEF is close to the arm base (horizontal distance below
+  // ready_lift_near_radius_m). A failed TF lookup returns true (lift is the safe
+  // default when the pose is unknown).
+  bool eefNearBase()
+  {
+    geometry_msgs::msg::TransformStamped ee_tf;
+    try {
+      ee_tf = tf_buffer_->lookupTransform(arm_base_frame_, ee_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[READY] EEF TF '%s'->'%s' unavailable (%s); assuming near -> lift",
+        arm_base_frame_.c_str(), ee_frame_.c_str(), ex.what());
+      return true;
+    }
+    const double horiz =
+      std::hypot(ee_tf.transform.translation.x, ee_tf.transform.translation.y);
+    const bool near = horiz < ready_lift_near_radius_m_;
+    RCLCPP_INFO(
+      this->get_logger(),
+      "[READY] EEF horiz dist %.3f m %s %.3f m -> %s",
+      horiz, near ? "<" : ">=", ready_lift_near_radius_m_, near ? "lift" : "no lift");
+    return near;
+  }
+
   bool moveToReadyPose()
   {
     if (!move_to_ready_on_startup_ || startup_ready_pose_completed_.load()) {
@@ -1301,8 +1362,26 @@ private:
       return false;
     }
 
-    const int attempt_number = startup_ready_pose_attempts_ + 1;
-    startup_ready_pose_attempts_ = attempt_number;
+    // Decide whether to insert a wrist-up lift before the ready move. Only when
+    // the EEF is close to the robot; far-forward starts return straight to ready.
+    bool doing_lift = false;
+    if (!startup_lift_phase_done_.load()) {
+      if (lift_before_ready_on_startup_ && readyLiftPoseValid()) {
+        if (eefNearBase()) {
+          doing_lift = true;
+        } else {
+          startup_lift_phase_done_.store(true);
+        }
+      } else {
+        startup_lift_phase_done_.store(true);
+      }
+    }
+
+    const std::vector<double> & target =
+      doing_lift ? ready_lift_pose_ : ready_pose_joint_positions_;
+    const char * phase = doing_lift ? "startup_ready_lift" : "startup_ready_pose";
+    const int attempt_number =
+      doing_lift ? ++startup_lift_attempts_ : ++startup_ready_pose_attempts_;
 
     moveit_msgs::action::MoveGroup::Goal goal;
     goal.request.group_name = move_group_name_;
@@ -1311,8 +1390,7 @@ private:
     goal.request.max_velocity_scaling_factor = moveit_velocity_scaling_;
     goal.request.max_acceleration_scaling_factor = moveit_accel_scaling_;
     goal.request.goal_constraints.push_back(
-      buildJointGoalConstraints(
-        ready_pose_joint_names_, ready_pose_joint_positions_, "startup_ready_pose"));
+      buildJointGoalConstraints(ready_pose_joint_names_, target, phase));
     goal.request.start_state.is_diff = true;
 
     goal.planning_options.plan_only = false;
@@ -1325,13 +1403,13 @@ private:
       rclcpp_action::Client<moveit_msgs::action::MoveGroup>::SendGoalOptions();
 
     send_goal_options.goal_response_callback =
-      [this, attempt_number](
+      [this, attempt_number, doing_lift](
       rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr goal_handle) {
         if (!goal_handle) {
           RCLCPP_WARN(
             this->get_logger(),
-            "[READY] goal rejected on attempt %d/%d",
-            attempt_number, ready_pose_max_attempts_);
+            "[READY] %s goal rejected on attempt %d/%d",
+            doing_lift ? "lift" : "ready", attempt_number, ready_pose_max_attempts_);
           moveit_goal_active_.store(false);
           startup_ready_pose_goal_active_.store(false);
           std::lock_guard<std::mutex> lock(goal_mutex_);
@@ -1347,7 +1425,7 @@ private:
       };
 
     send_goal_options.result_callback =
-      [this, attempt_number](const auto & result) {
+      [this, attempt_number, doing_lift](const auto & result) {
         moveit_goal_active_.store(false);
         startup_ready_pose_goal_active_.store(false);
         {
@@ -1355,34 +1433,54 @@ private:
           moveit_goal_handle_.reset();
         }
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
-          startup_ready_pose_completed_.store(true);
-          if (ready_pose_timer_) {
-            ready_pose_timer_->cancel();
+          if (doing_lift) {
+            // Lift done; leave the timer running so the next tick sends ready.
+            startup_lift_phase_done_.store(true);
+            RCLCPP_INFO(
+              this->get_logger(),
+              "[READY] startup lift reached; proceeding to ready pose");
+          } else {
+            startup_ready_pose_completed_.store(true);
+            if (ready_pose_timer_) {
+              ready_pose_timer_->cancel();
+            }
+            RCLCPP_INFO(this->get_logger(), "[READY] startup ready pose reached");
           }
-          RCLCPP_INFO(this->get_logger(), "[READY] startup ready pose reached");
           return;
         }
 
         RCLCPP_WARN(
           this->get_logger(),
-          "[READY] failed with code %d on attempt %d/%d",
-          static_cast<int>(result.code), attempt_number, ready_pose_max_attempts_);
+          "[READY] %s failed with code %d on attempt %d/%d",
+          doing_lift ? "lift" : "ready", static_cast<int>(result.code),
+          attempt_number, ready_pose_max_attempts_);
         if (attempt_number >= ready_pose_max_attempts_) {
-          startup_ready_pose_completed_.store(true);
-          if (ready_pose_timer_) {
-            ready_pose_timer_->cancel();
+          if (doing_lift) {
+            // Could not lift; fall back to the direct ready move (best effort).
+            startup_lift_phase_done_.store(true);
+            RCLCPP_WARN(
+              this->get_logger(),
+              "[READY] startup lift failed after %d attempts; "
+              "falling back to direct ready move.",
+              ready_pose_max_attempts_);
+          } else {
+            startup_ready_pose_completed_.store(true);
+            if (ready_pose_timer_) {
+              ready_pose_timer_->cancel();
+            }
+            RCLCPP_ERROR(
+              this->get_logger(),
+              "[READY] failed after %d attempts. "
+              "Continuing without startup ready move.",
+              ready_pose_max_attempts_);
           }
-          RCLCPP_ERROR(
-            this->get_logger(),
-            "[READY] failed after %d attempts. "
-            "Continuing without startup ready move.",
-            ready_pose_max_attempts_);
         }
       };
 
     RCLCPP_INFO(
       this->get_logger(),
-      "[READY] sending startup ready pose via MoveIt (%d/%d)",
+      "[READY] sending %s via MoveIt (%d/%d)",
+      doing_lift ? "startup lift" : "startup ready pose",
       attempt_number, ready_pose_max_attempts_);
     moveit_goal_active_.store(true);
     startup_ready_pose_goal_active_.store(true);
@@ -1952,6 +2050,9 @@ private:
   double ready_pose_start_delay_sec_;
   double ready_pose_retry_period_sec_;
   int ready_pose_max_attempts_;
+  bool lift_before_ready_on_startup_;
+  std::vector<double> ready_lift_pose_;
+  double ready_lift_near_radius_m_;
   std::vector<std::string> arm_joint_names_;
   double arm_command_duration_sec_;
   std::string gripper_joint_name_;
@@ -2016,6 +2117,11 @@ private:
   std::atomic<bool> startup_ready_pose_completed_{true};
   std::atomic<bool> startup_ready_pose_goal_active_{false};
   int startup_ready_pose_attempts_{0};
+  // Startup wrist-up lift phase that runs before the ready move when the EEF is
+  // close to the robot (see moveToReadyPose). Tracked separately so lift retries
+  // do not consume the ready-pose attempt budget.
+  std::atomic<bool> startup_lift_phase_done_{false};
+  int startup_lift_attempts_{0};
   std::mutex goal_mutex_;
   std::mutex servo_mutex_;
   rclcpp_action::ClientGoalHandle<moveit_msgs::action::MoveGroup>::SharedPtr moveit_goal_handle_;

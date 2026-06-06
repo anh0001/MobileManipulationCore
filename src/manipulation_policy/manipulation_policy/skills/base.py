@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # JSON-Schema-ish type tags a skill param can declare. Mapped to Python types
 # for MCP signature generation and to validators for server-side checking.
@@ -96,6 +96,40 @@ class SkillContext(ABC):
     @abstractmethod
     def gripper_width(self) -> float:
         """Latest gripper opening in metres."""
+
+    def eef_position(self) -> Optional[Tuple[float, float, float]]:
+        """Live end-effector position (x, y, z) in the arm base frame, or None.
+
+        Default returns None ("pose unavailable"); the skill_server overrides it
+        with a TF lookup (arm_base_frame -> ee_frame). Callers must treat None as
+        "unknown" and fall back to the safe behaviour (e.g. lift anyway).
+        """
+        return None
+
+    def transform_point(self, target_frame: str, source_frame: str,
+                        point: Tuple[float, float, float]) -> Optional[Tuple[float, float, float]]:
+        """Transform a 3D point from ``source_frame`` to ``target_frame`` via TF.
+
+        ``point`` is (x, y, z) metres in ``source_frame``; returns it in
+        ``target_frame`` (latest available transform), or None if TF is
+        unavailable. Lets a skill lift a camera-frame detection (e.g. an object
+        deprojected in ``piper_camera_optical_frame``) into a robot frame such as
+        ``base_footprint``. Default returns None; the skill_server overrides it
+        with a tf2 buffer lookup. Callers must handle None as "unknown frame".
+        """
+        return None
+
+    def latest_camera_frame(self, camera: str = "wrist") -> Optional[Tuple[Any, Any, Any]]:
+        """Latest (color_msg, depth_msg, camera_info_msg) for a ROS camera, or None.
+
+        Only the wrist D405 streams over ROS, so ``camera="wrist"`` is the one
+        source the skill_server wires (lazily — it subscribes on first request so
+        there is no image traffic until a skill asks). Returns the three latest
+        sensor_msgs (Image, Image, CameraInfo) once all have arrived, else None
+        (frames not yet available, or an unknown/un-streamed camera like the rear
+        D435i, which is grabbed on demand by serial instead). Default: None.
+        """
+        return None
 
     # --- shared actuators / IO ---
     @abstractmethod

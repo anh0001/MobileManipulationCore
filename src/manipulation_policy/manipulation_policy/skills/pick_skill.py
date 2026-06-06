@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict
 
 from .base import Skill, SkillParam, SkillResult, SkillContext
 from .registry import register_skill
+from ._motion import lift_to_ready, PICK_LIFT_PARAMS
 
 # Active grasp-sequence states (object actually being picked); used to confirm a
 # fresh attempt started and to detect a stale prior "DONE".
@@ -50,6 +51,9 @@ class PickSkill(Skill):
                    description="max seconds for the whole attempt; <=0 uses the "
                                "server default_timeout_sec."),
     ]
+    # Post-grasp return tunables (wrist-up lift then ready pose); see
+    # skills/_motion.lift_to_ready.
+    server_params = dict(PICK_LIFT_PARAMS)
 
     def execute(self, ctx: SkillContext, params: Dict[str, Any],
                 feedback: Callable[[str, float], None],
@@ -134,9 +138,18 @@ class PickSkill(Skill):
                 ctx.sleep(1.0)  # let the lift/width settle
                 held = ctx.gripper_width > held_threshold
                 if held:
+                    # Hold confirmed: gate the servo off so it stops commanding
+                    # the arm, then lift the object up and park at the ready pose
+                    # (a straight down-pointing return would graze the LiDAR).
+                    ctx.set_bool_param("grasp_enabled", False)
+                    returned = lift_to_ready(ctx, feedback)
                     msg = (f"picked '{obj}'; width={ctx.gripper_width:.4f} "
-                           "(held: jaw blocked)")
-                    return done(True, held, msg, visual_servo_done=True)
+                           "(held: jaw blocked); "
+                           + ("returned to ready" if returned
+                              else "WARNING: return-to-ready move did not complete"))
+                    res = done(True, held, msg, visual_servo_done=True)
+                    res.data["returned_to_ready"] = bool(returned)
+                    return res
                 msg = (f"likely empty grasp for '{obj}'; width={ctx.gripper_width:.4f} "
                        f"<= held threshold {held_threshold:.4f} (full close)")
                 return done(False, held, msg, visual_servo_done=True,
