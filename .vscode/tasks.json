@@ -66,6 +66,24 @@
       "options": { "cwd": "${workspaceFolder}" }
     },
     {
+      "label": "3. Arm: Home pose / zeros (skill)",
+      "_comment": "Calls the 'arm_home_pose' skill over /execute_skill -> first lifts the wrist up so the EEF clears the Mid-360 LiDAR, then folds to the zero pose (all joints 0). Needs /skill_server up (start the grasp pipeline, task '4. Grasp: Run pipeline'). Tune the lift waypoint live: ros2 param set /skill_server home_lift_pose '[0.0,0.0,0.0,0.0,-0.8,0.0]' (NEGATIVE joint5 = wrist up on this arm; all zeros disables the lift). Override the fold duration with params_json '{\"time_sec\": 8}'.",
+      "type": "shell",
+      "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /execute_skill manipulation_msgs/action/ExecuteSkill \"{skill: 'arm_home_pose', params_json: '{}'}\" --feedback",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "3. Arm: Ready pose / look-down (skill)",
+      "_comment": "Calls the 'arm_ready_pose' skill over /execute_skill -> raises the arm to the look-down capture pose (reads capture_pose, kept in sync with pick). Needs /skill_server up (start the grasp pipeline, task '4. Grasp: Run pipeline').",
+      "type": "shell",
+      "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 action send_goal /execute_skill manipulation_msgs/action/ExecuteSkill \"{skill: 'arm_ready_pose', params_json: '{}'}\" --feedback",
+      "problemMatcher": [],
+      "presentation": { "echo": true, "reveal": "always", "focus": false, "panel": "new", "showReuseMessage": false },
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
       "label": "4. Grasp: Run pipeline (visual servo + move_group)",
       "type": "shell",
       "command": "source install/setup.bash && PYTHONNOUSERSITE=1 ros2 launch manipulation_bringup core_launch.py control_mode:=visual_servo arm_execution_mode:=move_group",

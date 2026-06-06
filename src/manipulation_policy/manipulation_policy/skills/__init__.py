@@ -19,6 +19,7 @@ from . import pick_skill  # noqa: F401
 from . import place_skill  # noqa: F401
 from . import pick_and_place_skill  # noqa: F401
 from . import home_skill  # noqa: F401
+from . import ready_skill  # noqa: F401
 from . import handover_skill  # noqa: F401
 
 __all__ = [

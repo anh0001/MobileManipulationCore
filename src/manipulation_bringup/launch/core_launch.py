@@ -731,7 +731,7 @@ def generate_launch_description():
     )
 
     # Skill server - one /execute_skill action that dispatches every registered
-    # robot skill (pick, home, ...) so AI clients can call any skill by name.
+    # robot skill (pick, arm_home_pose, ...) so AI clients can call any skill by name.
     # skill_server params: the shared plumbing dict, then (if present) the
     # handover skill's tunables/calibration file which overrides the in-code
     # defaults declared via Skill.server_params (see config/handover_params.yaml).

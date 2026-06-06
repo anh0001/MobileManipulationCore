@@ -1,6 +1,6 @@
 # Robot skills API (AI-callable manipulation)
 
-Exposes every high-level robot skill (pick, home, ...) through **one generic
+Exposes every high-level robot skill (pick, arm_home_pose, ...) through **one generic
 `ExecuteSkill` ROS 2 action** (`/execute_skill`) plus an **MCP server** that turns
 each registered skill into its own typed LLM tool. AI agents call a skill by name
 with one call; adding a skill needs no new message, node, launch edit, or MCP edit.
