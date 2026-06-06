@@ -22,6 +22,7 @@ from . import home_skill  # noqa: F401
 from . import ready_skill  # noqa: F401
 from . import handover_skill  # noqa: F401
 from . import localize_object_skill  # noqa: F401
+from . import at_pose_skills  # noqa: F401
 
 __all__ = [
     "Skill", "SkillParam", "SkillResult", "SkillContext",

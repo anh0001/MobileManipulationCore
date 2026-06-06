@@ -726,13 +726,19 @@ void VisualServoNode::control_timer_callback()
   // (handle_idle only checks grasp_enabled at the start of a sequence.) This lets a
   // pick-and-place skill halt the servo the instant it has captured a destination's
   // pose, before the arm would continue and approach/grab it.
+  //
+  // LOST is normally excluded (it self-recovers via a fresh detection in
+  // handle_lost). But in external-target (blind) mode detection is dormant, so a
+  // LOST there can never return to IDLE on its own and would wedge every following
+  // at-pose skill. So in external mode, also let clearing grasp_enabled reset
+  // LOST -> IDLE, so the next at-pose call can re-arm.
   if (state_ != ServoState::IDLE && state_ != ServoState::DONE &&
-      state_ != ServoState::LOST)
+      (state_ != ServoState::LOST || use_external_target_))
   {
     grasp_enabled_ = this->get_parameter("grasp_enabled").as_bool();
     if (!grasp_enabled_) {
       publish_zero_motion(tracking_confidence_);
-      transition_to(ServoState::IDLE, "grasp gated off mid-sequence — aborting");
+      transition_to(ServoState::IDLE, "grasp gated off — aborting/recovering");
       if (publish_state_flag_) {
         publish_state();
       }
@@ -1686,8 +1692,14 @@ void VisualServoNode::handle_align_xy()
 
 void VisualServoNode::handle_open_gripper()
 {
+  // In external-target (blind pick/place) mode the arm is driven to an injected
+  // pose and detection is dormant, so there is NO visual tracker. Skip the
+  // tracking update here: with no detection, last_track_time_ is ancient, so
+  // update_tracking() would trip the stale-tracker watchdog and abort the release
+  // to LOST ("tracker timed out") — cancelling the gripper goal mid-open. The
+  // gripper open is driven purely by the action below, which needs no frame.
   cv::Mat frame;
-  if (fetch_latest_frame(frame)) {
+  if (!use_external_target_ && fetch_latest_frame(frame)) {
     if (!update_tracking(frame)) {
       return;
     }
