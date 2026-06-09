@@ -19,6 +19,9 @@
   <depend>trajectory_msgs</depend>
   <depend>rcl_interfaces</depend>
   <depend>tf2_ros</depend>
+  <!-- Optional at import time (compute_ik degrades gracefully without it), but
+       required for the look_at skill's MoveIt /compute_ik call. -->
+  <exec_depend>moveit_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

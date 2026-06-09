@@ -27,12 +27,27 @@ from rclpy.qos import qos_profile_sensor_data
 
 from std_msgs.msg import String
 from sensor_msgs.msg import JointState, Image, CameraInfo
+from geometry_msgs.msg import PoseStamped
 from control_msgs.action import FollowJointTrajectory, GripperCommand
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from rcl_interfaces.srv import SetParameters, GetParameters
 from rcl_interfaces.msg import Parameter as ParamMsg, ParameterValue, ParameterType
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
+
+# MoveIt is optional at import time: the IK helper (compute_ik) degrades to a
+# logged "unavailable" when moveit_msgs isn't sourced, so the skill server still
+# starts (and every non-IK skill keeps working) without the MoveIt overlay.
+try:
+    from moveit_msgs.srv import GetPositionIK
+    _MOVEIT_OK = True
+except ImportError:  # pragma: no cover - depends on the sourced overlay
+    GetPositionIK = None
+    _MOVEIT_OK = False
+
+# moveit_msgs/MoveItErrorCodes.SUCCESS — hard-coded to avoid importing the msg
+# (the value is part of the stable ROS interface).
+_MOVEIT_ERROR_SUCCESS = 1
 
 from manipulation_msgs.action import ExecuteSkill
 from manipulation_policy.skills import all_skills, get_skill
@@ -57,6 +72,10 @@ class SkillServer(Node, SkillContext):
         # visual-servo node resolves the same pair (arm_base_frame -> ee_frame).
         self.declare_parameter("arm_base_frame", "piper_base_link")
         self.declare_parameter("ee_frame", "piper_tcp")
+        # MoveIt inverse-kinematics service (used by skills that need a Cartesian
+        # EEF pose, e.g. look_at). Provided by move_group; absent if MoveIt isn't
+        # launched, in which case compute_ik() returns None with a logged hint.
+        self.declare_parameter("compute_ik_service", "/compute_ik")
         self.declare_parameter("gripper_open_position", 0.07)
         self.declare_parameter("gripper_max_effort", 5.0)
         # skill-tunable params (read by skills through get_param)
@@ -98,6 +117,10 @@ class SkillServer(Node, SkillContext):
         self._cb = ReentrantCallbackGroup()
         self._state = ""
         self._width = 0.0
+        # Latest full /joint_states message — kept so compute_ik can seed the IK
+        # request with the live robot configuration and skills can read the
+        # current joint angles (current_joint_positions).
+        self._latest_js: Optional[JointState] = None
 
         # Lazily-created ROS camera subscriptions for object localization. Only
         # the wrist D405 streams over ROS; we subscribe on first request (see
@@ -125,6 +148,16 @@ class SkillServer(Node, SkillContext):
         self.gripper_cli = ActionClient(
             self, GripperCommand, self.get_parameter("gripper_action").value,
             callback_group=self._cb)
+        # MoveIt IK service client (only if moveit_msgs is sourced). Created up
+        # front so it's cheap to reuse; compute_ik waits for the service per call.
+        self._ik_service = self.get_parameter("compute_ik_service").value
+        self.ik_cli = (
+            self.create_client(GetPositionIK, self._ik_service,
+                               callback_group=self._cb)
+            if _MOVEIT_OK else None)
+        # Set once the IK service first answers, so a skill that probes several
+        # candidate poses doesn't re-pay the connect wait on every call.
+        self._ik_ready = False
 
         self._server = ActionServer(
             self, ExecuteSkill, "/execute_skill",
@@ -141,6 +174,7 @@ class SkillServer(Node, SkillContext):
         self._state = msg.data
 
     def _on_js(self, msg):
+        self._latest_js = msg
         try:
             i = msg.name.index(self._gripper_joint)
             self._width = float(msg.position[i])
@@ -203,6 +237,32 @@ class SkillServer(Node, SkillContext):
         ry = y + q.w * ty + (q.z * tx - q.x * tz)
         rz = z + q.w * tz + (q.x * ty - q.y * tx)
         return (rx + float(t.x), ry + float(t.y), rz + float(t.z))
+
+    def lookup_transform(self, target_frame: str, source_frame: str):
+        """Pose of source_frame in target_frame: ((x,y,z),(qx,qy,qz,qw)) or None.
+
+        Best-effort, latest available (Time()). Unlike transform_point this keeps
+        the rotation, so a skill can compose frames (e.g. desired camera-optical
+        pose -> wrist TCP pose for IK). None on any TF failure.
+        """
+        try:
+            tf = self.tf_buffer.lookup_transform(target_frame, source_frame, Time())
+        except Exception as ex:  # noqa: BLE001 - TF raises several unrelated types
+            self.get_logger().warn(
+                f"lookup_transform: TF {source_frame}->{target_frame} "
+                f"unavailable ({ex})", throttle_duration_sec=5.0)
+            return None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        return ((float(t.x), float(t.y), float(t.z)),
+                (float(q.x), float(q.y), float(q.z), float(q.w)))
+
+    def current_joint_positions(self):
+        """Latest {joint_name: position} from /joint_states, or None if not yet seen."""
+        js = self._latest_js
+        if js is None:
+            return None
+        return {n: float(p) for n, p in zip(js.name, js.position)}
 
     def latest_camera_frame(self, camera: str = "wrist"):
         """Latest (color_msg, depth_msg, camera_info_msg) for a ROS camera, or None.
@@ -345,6 +405,77 @@ class SkillServer(Node, SkillContext):
                 out[n] = [int(v) for v in pv.integer_array_value]
             # PARAMETER_NOT_SET and unhandled types are intentionally omitted.
         return out
+
+    def ik_available(self) -> bool:
+        """True if the MoveIt /compute_ik service is reachable (waits once)."""
+        if self.ik_cli is None:
+            return False
+        if self._ik_ready:
+            return True
+        if self.ik_cli.wait_for_service(timeout_sec=3.0):
+            self._ik_ready = True
+            return True
+        return False
+
+    def compute_ik(self, group: str, eef_link: str,
+                   position: Tuple[float, float, float],
+                   orientation_xyzw: Tuple[float, float, float, float],
+                   frame_id: str, timeout: float = 1.0,
+                   avoid_collisions: bool = True):
+        """Solve IK via MoveIt's /compute_ik. Returns {joint: pos} or None.
+
+        Seeds the request with the latest /joint_states so the solver returns a
+        configuration near the current one. Returns None (with a logged hint) if
+        MoveIt isn't sourced, the service is down (e.g. move_group not launched),
+        the call times out, or no solution exists.
+        """
+        if self.ik_cli is None:
+            self.get_logger().warn(
+                "compute_ik: moveit_msgs not available (source the MoveIt "
+                "overlay) — cannot solve IK", throttle_duration_sec=10.0)
+            return None
+        # Wait for the service the first time (move_group starts with a delay);
+        # once it has answered, a quick check is enough so probing several poses
+        # stays cheap and a genuinely-down service fails fast.
+        wait = max(timeout, 3.0) if not self._ik_ready else 0.2
+        if not self.ik_cli.wait_for_service(timeout_sec=wait):
+            self.get_logger().warn(
+                f"compute_ik: service {self._ik_service} unavailable — is "
+                "move_group (MoveIt) running?", throttle_duration_sec=10.0)
+            return None
+        self._ik_ready = True
+
+        req = GetPositionIK.Request()
+        ik = req.ik_request
+        ik.group_name = group
+        ik.ik_link_name = eef_link
+        ik.avoid_collisions = bool(avoid_collisions)
+        if self._latest_js is not None:           # seed from the live config
+            ik.robot_state.joint_state = self._latest_js
+        ps = PoseStamped()
+        ps.header.frame_id = frame_id
+        ps.pose.position.x = float(position[0])
+        ps.pose.position.y = float(position[1])
+        ps.pose.position.z = float(position[2])
+        ps.pose.orientation.x = float(orientation_xyzw[0])
+        ps.pose.orientation.y = float(orientation_xyzw[1])
+        ps.pose.orientation.z = float(orientation_xyzw[2])
+        ps.pose.orientation.w = float(orientation_xyzw[3])
+        ik.pose_stamped = ps
+        ik.timeout.sec = int(timeout)
+        ik.timeout.nanosec = int((timeout - int(timeout)) * 1e9)
+
+        fut = self.ik_cli.call_async(req)
+        deadline = time.time() + timeout + 2.0
+        while not fut.done() and time.time() < deadline:
+            time.sleep(0.02)
+        if not fut.done() or fut.result() is None:
+            return None
+        resp = fut.result()
+        if resp.error_code.val != _MOVEIT_ERROR_SUCCESS:
+            return None
+        js = resp.solution.joint_state
+        return {n: float(p) for n, p in zip(js.name, js.position)}
 
     def move_arm_to(self, positions: List[float],
                     time_sec: float = 5.0, timeout: float = 12.0) -> bool:

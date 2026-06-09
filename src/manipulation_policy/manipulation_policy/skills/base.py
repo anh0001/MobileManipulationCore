@@ -131,6 +131,60 @@ class SkillContext(ABC):
         """
         return None
 
+    def lookup_transform(self, target_frame: str, source_frame: str
+                         ) -> Optional[Tuple[Tuple[float, float, float],
+                                             Tuple[float, float, float, float]]]:
+        """Full TF lookup: pose of ``source_frame`` expressed in ``target_frame``.
+
+        Returns ``((x, y, z), (qx, qy, qz, qw))`` — translation + quaternion of
+        the transform that maps a point in ``source_frame`` to ``target_frame``
+        (i.e. ``source_frame``'s origin/orientation as seen from
+        ``target_frame``). Unlike :meth:`transform_point` it carries the rotation,
+        so a skill can compose frames (e.g. turn a desired camera-optical pose
+        into the wrist TCP pose for IK). Latest available transform (``Time()``).
+        Default returns None; the skill_server overrides it with a tf2 lookup.
+        Callers must handle None as "unknown frame".
+        """
+        return None
+
+    def current_joint_positions(self) -> Optional[Dict[str, float]]:
+        """Latest joint name -> position map from ``/joint_states``, or None.
+
+        Lets a skill read the live arm configuration (e.g. to measure how far an
+        IK solution would move each joint before committing to it). Default
+        returns None; the skill_server overrides it with the cached JointState.
+        """
+        return None
+
+    def ik_available(self) -> bool:
+        """Whether MoveIt's IK service is reachable (so :meth:`compute_ik` can work).
+
+        Lets a skill that probes several candidate poses fail fast with a clear
+        "MoveIt not running" message instead of re-paying the connect wait on
+        every probe. Default True (so contexts that stub compute_ik directly,
+        e.g. tests, aren't blocked); the skill_server overrides it with a real
+        service check.
+        """
+        return True
+
+    def compute_ik(self, group: str, eef_link: str,
+                   position: Tuple[float, float, float],
+                   orientation_xyzw: Tuple[float, float, float, float],
+                   frame_id: str, timeout: float = 1.0,
+                   avoid_collisions: bool = True) -> Optional[Dict[str, float]]:
+        """Inverse kinematics for ``group``: a target pose -> a joint solution.
+
+        Asks MoveIt's ``/compute_ik`` (``moveit_msgs/srv/GetPositionIK``) for a
+        joint configuration that places ``eef_link`` at the given pose
+        (``position`` + ``orientation_xyzw`` quaternion, expressed in
+        ``frame_id``), seeded with the current robot state. Returns the solved
+        ``{joint_name: position}`` map (caller filters to the joints it drives),
+        or None if MoveIt/the service is unavailable or no solution exists. The
+        skill_server owns the service client; skills pass plain tuples so they
+        stay free of ROS message plumbing. Default returns None.
+        """
+        return None
+
     # --- shared actuators / IO ---
     @abstractmethod
     def get_param(self, name: str, default: Any = None) -> Any:
